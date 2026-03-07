@@ -20,6 +20,12 @@ importers:
         specifier: ^0.181.0
         version: 0.181.2
     devDependencies:
+      '@types/react':
+        specifier: ^19.1.13
+        version: 19.2.14
+      '@types/three':
+        specifier: ^0.181.0
+        version: 0.181.0
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.8)(typescript@5.9.3)
@@ -79,6 +85,12 @@ importers:
         specifier: ^0.181.0
         version: 0.181.2
     devDependencies:
+      '@types/react':
+        specifier: ^19.1.13
+        version: 19.2.14
+      '@types/three':
+        specifier: ^0.181.0
+        version: 0.181.0
       tsup:
         specifier: ^8.5.0
         version: 8.5.1(postcss@8.5.8)(typescript@5.9.3)

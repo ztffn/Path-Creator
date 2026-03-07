@@ -81,6 +81,8 @@ node_modules/
 dist/
 **/dist/
 .pnpm-store/
+*.tsbuildinfo
+**/*.tsbuildinfo
 
 # Local agent workspace (keep shared instructions file)
 .agents/*

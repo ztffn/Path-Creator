@@ -51,6 +51,8 @@
     }
   },
   "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/three": "^0.181.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4"

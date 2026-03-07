@@ -9,6 +9,17 @@ export interface BezierPathOptions {
   autoControlLength?: number;
 }
 
+export interface SerializedBezierPath {
+  points: Vec3[];
+  perAnchorNormalsAngle: number[];
+  isClosed: boolean;
+  space: PathSpace;
+  controlMode: ControlMode;
+  autoControlLength: number;
+  flipNormals: boolean;
+  globalNormalsAngle: number;
+}
+
 export class BezierPath {
   private points: Vec3[];
   private perAnchorNormalsAngle: number[];
@@ -200,6 +211,51 @@ export class BezierPath {
     if (this.isClosed === isClosed) return;
     this.isClosed = isClosed;
     this.updateClosedState();
+  }
+
+  setControlMode(mode: ControlMode): void {
+    if (this.controlMode === mode) return;
+    this.controlMode = mode;
+    if (mode === ControlMode.Automatic) {
+      this.autoSetAllControlPoints();
+    }
+  }
+
+  toJSON(): SerializedBezierPath {
+    return {
+      points: this.points.map((p) => ({ x: p.x, y: p.y, z: p.z })),
+      perAnchorNormalsAngle: [...this.perAnchorNormalsAngle],
+      isClosed: this.isClosed,
+      space: this.space,
+      controlMode: this.controlMode,
+      autoControlLength: this.autoControlLength,
+      flipNormals: this.flipNormals,
+      globalNormalsAngle: this.globalNormalsAngle
+    };
+  }
+
+  static fromJSON(serialized: SerializedBezierPath): BezierPath {
+    if (serialized.points.length < 4) {
+      throw new Error("Serialized bezier path must contain at least 4 points");
+    }
+
+    const anchors = [serialized.points[0], serialized.points[3]];
+    const path = new BezierPath(anchors, {
+      isClosed: false,
+      space: serialized.space,
+      controlMode: serialized.controlMode,
+      autoControlLength: serialized.autoControlLength
+    });
+
+    path.points = serialized.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
+    path.perAnchorNormalsAngle = [...serialized.perAnchorNormalsAngle];
+    path.isClosed = serialized.isClosed;
+    path.flipNormals = serialized.flipNormals;
+    path.globalNormalsAngle = serialized.globalNormalsAngle;
+    path.autoControlLength = Math.max(serialized.autoControlLength, 0.01);
+    path.controlMode = serialized.controlMode;
+
+    return path;
   }
 
   private constrain(v: Vec3): Vec3 {
