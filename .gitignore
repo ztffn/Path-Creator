@@ -74,3 +74,18 @@ crashlytics-build.properties
 # Temporary auto-generated Android Assets
 /[Aa]ssets/[Ss]treamingAssets/aa.meta
 /[Aa]ssets/[Ss]treamingAssets/aa/*
+
+# Node / workspace artifacts
+node_modules/
+**/node_modules/
+dist/
+**/dist/
+.pnpm-store/
+
+# Local agent workspace (keep shared instructions file)
+.agents/*
+!.agents/AGENTS.md
+
+# macOS
+.DS_Store
+**/.DS_Store

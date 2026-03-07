@@ -1,0 +1,27 @@
+{
+  "name": "minimal-r3f-demo",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "test": "echo \"No tests configured\""
+  },
+  "dependencies": {
+    "@huma/path-creator": "workspace:*",
+    "@react-three/fiber": "^9.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.181.0"
+  },
+  "devDependencies": {
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@types/three": "^0.181.0",
+    "@vitejs/plugin-react": "^5.0.2",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}

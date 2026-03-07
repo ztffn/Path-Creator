@@ -1,0 +1,11 @@
+{
+  "name": "path-creator-workspace",
+  "private": true,
+  "packageManager": "pnpm@10.0.0",
+  "scripts": {
+    "build": "pnpm -r build",
+    "test": "pnpm -r test",
+    "lint": "pnpm -r lint",
+    "dev:demo": "pnpm --filter minimal-r3f-demo dev"
+  }
+}

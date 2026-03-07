@@ -1,0 +1,58 @@
+{
+  "name": "@huma/path-creator",
+  "version": "0.1.0",
+  "description": "Path creator runtime for Three.js and React Three Fiber",
+  "license": "MIT",
+  "type": "module",
+  "main": "./dist/index.js",
+  "module": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    },
+    "./core": {
+      "types": "./dist/core/index.d.ts",
+      "import": "./dist/core/index.js"
+    },
+    "./three": {
+      "types": "./dist/three/index.d.ts",
+      "import": "./dist/three/index.js"
+    },
+    "./r3f": {
+      "types": "./dist/r3f/index.d.ts",
+      "import": "./dist/r3f/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE"
+  ],
+  "sideEffects": false,
+  "scripts": {
+    "build": "tsup",
+    "test": "vitest run",
+    "lint": "tsc --noEmit",
+    "clean": "rm -rf dist"
+  },
+  "peerDependencies": {
+    "three": "^0.181.0",
+    "react": "^19.0.0",
+    "@react-three/fiber": "^9.0.0"
+  },
+  "peerDependenciesMeta": {
+    "react": {
+      "optional": true
+    },
+    "@react-three/fiber": {
+      "optional": true
+    }
+  },
+  "devDependencies": {
+    "tsup": "^8.5.0",
+    "typescript": "^5.9.2",
+    "vitest": "^3.2.4"
+  }
+}

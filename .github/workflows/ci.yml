@@ -1,0 +1,46 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - "**"
+  pull_request:
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 10
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Install dependencies
+        run: pnpm install --no-frozen-lockfile
+
+      - name: Lint package
+        run: pnpm --filter @huma/path-creator lint
+
+      - name: Test package
+        run: pnpm --filter @huma/path-creator test
+
+      - name: Build package
+        run: pnpm --filter @huma/path-creator build
+
+      - name: Demo smoke build
+        run: pnpm --filter minimal-r3f-demo build
