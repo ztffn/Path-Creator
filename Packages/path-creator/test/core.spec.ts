@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { BezierPath, EndOfPathInstruction, PathSpace, VertexPath } from "../src/core";
+import { BezierPath, ControlMode, EndOfPathInstruction, PathSpace, VertexPath } from "../src/core";
 
 describe("VertexPath.resolveDistance", () => {
   const path = new VertexPath(
@@ -60,5 +60,59 @@ describe("BezierPath + VertexPath integration", () => {
     const d = vertexPath.getClosestDistanceAlongPath({ x: 1.8, y: 0.2, z: 0 });
     expect(d).toBeGreaterThan(0);
     expect(d).toBeLessThanOrEqual(vertexPath.length);
+  });
+});
+
+describe("BezierPath editing operations", () => {
+  it("splits segment and increases anchor count", () => {
+    const bezier = new BezierPath(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 2, y: 0, z: 0 },
+        { x: 4, y: 0, z: 0 }
+      ],
+      { space: PathSpace.XYZ, controlMode: ControlMode.Free }
+    );
+
+    const beforeAnchors = bezier.numAnchorPoints;
+    const newAnchorIndex = bezier.splitSegment(0, 0.5);
+    expect(bezier.numAnchorPoints).toBe(beforeAnchors + 1);
+    expect(newAnchorIndex % 3).toBe(0);
+  });
+
+  it("deletes anchor when enough segments exist", () => {
+    const bezier = new BezierPath(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 2, y: 0, z: 0 },
+        { x: 4, y: 0, z: 0 },
+        { x: 6, y: 0, z: 0 }
+      ],
+      { space: PathSpace.XYZ, controlMode: ControlMode.Free }
+    );
+
+    const beforeAnchors = bezier.numAnchorPoints;
+    const deleted = bezier.deleteAnchor(3);
+    expect(deleted).toBe(true);
+    expect(bezier.numAnchorPoints).toBe(beforeAnchors - 1);
+  });
+
+  it("autoSmooth updates controls without changing anchor count", () => {
+    const bezier = new BezierPath(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 2, y: 1, z: 0 },
+        { x: 4, y: 0, z: 0 }
+      ],
+      { space: PathSpace.XYZ, controlMode: ControlMode.Free }
+    );
+
+    const beforeAnchors = bezier.numAnchorPoints;
+    const beforeControl = bezier.getPoint(1);
+    bezier.autoSmooth(0.45);
+    const afterControl = bezier.getPoint(1);
+
+    expect(bezier.numAnchorPoints).toBe(beforeAnchors);
+    expect(afterControl.x !== beforeControl.x || afterControl.y !== beforeControl.y || afterControl.z !== beforeControl.z).toBe(true);
   });
 });

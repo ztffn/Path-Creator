@@ -34,3 +34,21 @@ export function estimateCurveLength(p0: Vec3, p1: Vec3, p2: Vec3, p3: Vec3): num
     vec3.distance(p0, p1) + vec3.distance(p1, p2) + vec3.distance(p2, p3);
   return vec3.distance(p0, p3) + controlNetLength / 2;
 }
+
+export function splitCurve(
+  points: readonly [Vec3, Vec3, Vec3, Vec3],
+  t: number
+): [[Vec3, Vec3, Vec3, Vec3], [Vec3, Vec3, Vec3, Vec3]] {
+  const tt = clamp01(t);
+  const a1 = vec3.lerp(points[0], points[1], tt);
+  const a2 = vec3.lerp(points[1], points[2], tt);
+  const a3 = vec3.lerp(points[2], points[3], tt);
+  const b1 = vec3.lerp(a1, a2, tt);
+  const b2 = vec3.lerp(a2, a3, tt);
+  const pointOnCurve = vec3.lerp(b1, b2, tt);
+
+  return [
+    [points[0], a1, b1, pointOnCurve],
+    [pointOnCurve, b2, a3, points[3]]
+  ];
+}

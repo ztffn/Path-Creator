@@ -1,4 +1,4 @@
-import { evaluateCurve, estimateCurveLength } from "./cubic-bezier";
+import { evaluateCurve, estimateCurveLength, splitCurve } from "./cubic-bezier";
 import { ControlMode, PathSpace, type Vec3 } from "./types";
 import { clamp01, vec3 } from "./vec3";
 
@@ -145,6 +145,82 @@ export class BezierPath {
     }
   }
 
+  splitSegment(segmentIndex: number, splitTime = 0.5, anchorPos?: Vec3): number {
+    if (this.numSegments < 1) {
+      throw new Error("Cannot split segment on empty path");
+    }
+
+    const safeSegmentIndex = Math.max(0, Math.min(this.numSegments - 1, segmentIndex));
+    const t = clamp01(splitTime);
+    const segmentPoints = this.getPointsInSegment(safeSegmentIndex);
+    const split = splitCurve(segmentPoints, t);
+    const newAnchor = this.constrain(anchorPos ?? split[0][3]);
+
+    if (this.controlMode === ControlMode.Automatic) {
+      this.points.splice(safeSegmentIndex * 3 + 2, 0, vec3.create(), newAnchor, vec3.create());
+      const newAnchorIndex = safeSegmentIndex * 3 + 3;
+      this.perAnchorNormalsAngle.splice(
+        (safeSegmentIndex + 1) % this.perAnchorNormalsAngle.length,
+        0,
+        0
+      );
+      this.autoSetAllAffectedControlPoints(newAnchorIndex);
+      return newAnchorIndex;
+    }
+
+    const insertAt = safeSegmentIndex * 3 + 2;
+    this.points.splice(insertAt, 0, split[0][2], split[1][0], split[1][1]);
+    const newAnchorIndex = safeSegmentIndex * 3 + 3;
+    this.movePoint(newAnchorIndex - 2, split[0][1]);
+    this.movePoint(newAnchorIndex + 2, split[1][2]);
+    this.movePoint(newAnchorIndex, newAnchor);
+
+    const angleInsertIndex = (safeSegmentIndex + 1) % this.perAnchorNormalsAngle.length;
+    const anglePrev = this.perAnchorNormalsAngle[safeSegmentIndex];
+    const angleNext = this.perAnchorNormalsAngle[angleInsertIndex];
+    this.perAnchorNormalsAngle.splice(angleInsertIndex, 0, anglePrev + (angleNext - anglePrev) * t);
+
+    if (this.controlMode === ControlMode.Mirrored) {
+      const avgDistance =
+        (vec3.distance(split[0][2], newAnchor) + vec3.distance(split[1][1], newAnchor)) / 2;
+      const dir = vec3.normalize(vec3.sub(split[1][1], newAnchor));
+      this.movePoint(newAnchorIndex + 1, vec3.add(newAnchor, vec3.scale(dir, avgDistance)));
+    }
+
+    return newAnchorIndex;
+  }
+
+  deleteAnchor(anchorPointIndex: number): boolean {
+    const isAnchor = anchorPointIndex % 3 === 0;
+    if (!isAnchor) {
+      return false;
+    }
+
+    if (!(this.numSegments > 2 || (!this.isClosed && this.numSegments > 1))) {
+      return false;
+    }
+
+    if (anchorPointIndex === 0) {
+      if (this.isClosed) {
+        this.points[this.points.length - 1] = this.points[2];
+      }
+      this.points.splice(0, 3);
+    } else if (anchorPointIndex === this.points.length - 1 && !this.isClosed) {
+      this.points.splice(anchorPointIndex - 2, 3);
+    } else {
+      this.points.splice(anchorPointIndex - 1, 3);
+    }
+
+    const normalIndex = Math.floor(anchorPointIndex / 3);
+    this.perAnchorNormalsAngle.splice(normalIndex, 1);
+
+    if (this.controlMode === ControlMode.Automatic) {
+      this.autoSetAllControlPoints();
+    }
+
+    return true;
+  }
+
   movePoint(index: number, p: Vec3): void {
     const pointPos = this.constrain(p);
     const deltaMove = vec3.sub(pointPos, this.points[index]);
@@ -219,6 +295,11 @@ export class BezierPath {
     if (mode === ControlMode.Automatic) {
       this.autoSetAllControlPoints();
     }
+  }
+
+  autoSmooth(controlLength = this.autoControlLength): void {
+    this.autoControlLength = Math.max(controlLength, 0.01);
+    this.autoSetAllControlPoints();
   }
 
   toJSON(): SerializedBezierPath {
