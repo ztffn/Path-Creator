@@ -1,27 +1,27 @@
 # Path-Creator to Three.js/R3F Port Design
 
 Date: 2026-03-07
-Status: Approved
+Status: Active (partially implemented)
 Owner: Codex + project maintainer
+Last reviewed: 2026-03-08
 
 ## 1) Goal and Non-Goals
 
-Goal: port Path-Creator concepts and functionality from Unity/C# to a reusable TypeScript ecosystem for Three.js and React Three Fiber (R3F), with a strong focus on animation paths and Cinemachine-like camera motion workflows.
+Goal: port Path-Creator concepts and functionality from Unity/C# to a reusable TypeScript ecosystem for Three.js and React Three Fiber (R3F), with a focus on animation paths and Cinemachine-like camera motion workflows.
 
 Primary outcomes:
 - Installable npm package with no example files included.
 - Minimal example app proving runtime behavior and API usage.
 - Functional parity of core concepts (Bezier editing model, sampled vertex path, path-following, mesh generation primitives, end-of-path behaviors).
 
-Non-goals (phase 1):
+Non-goals (current):
 - Full Unity editor UX parity.
 - Scene tooling parity with Unity handles/inspector polish.
 - Asset-store-level packaging or advanced UI tooling.
 
 ## 2) Architecture
 
-Use a layered architecture to keep math and runtime logic framework-agnostic:
-
+Layered architecture:
 - `Packages/path-creator/src/core`
 - `Packages/path-creator/src/three`
 - `Packages/path-creator/src/r3f`
@@ -33,31 +33,30 @@ Use a layered architecture to keep math and runtime logic framework-agnostic:
 - Utilities: cubic evaluation, derivatives, split/sampling, arc-length tables, endpoint instructions (`loop`, `reverse`, `stop`).
 
 ### Three.js adapter layer
-- Convert core vectors/quaternions to/from `THREE` types.
-- Buffer geometry builders:
-- Road mesh (top/bottom/sides + UVs).
-- Tube/cylinder-like sweep mesh around path normals.
+- Buffer data builders for:
+  - road mesh (top/bottom/sides + UVs)
+  - tube/cylinder-like sweep mesh around path normals
+  - polyline buffers
 
 ### R3F layer
-- Hooks:
-- `usePathFollower`
-- `usePathSample`
-- `useDollyCamera` (Cinemachine-style path camera)
-- Optional debug components for path/vertices/normals visualization.
+- Hooks/utilities:
+  - `usePathFollower`
+  - `usePathSample`
+  - `useDollyCamera`
+  - `applySampleToObject`
+  - `applyDollyCamera`
 
 ## 3) Cinemachine-like Scope
 
-Camera rig will be componentized and data-driven:
-- Position driver: by `distance` or normalized `t`.
-- Orientation driver: look-ahead direction + explicit up handling + roll.
-- Damping: independent positional/rotational smoothing.
-- Extensible channels (future): FOV by curve, noise, blends between rails.
+Current baseline:
+- Position driver by traveled distance.
+- Look-ahead based orientation.
+- Optional damping in camera application.
+- Endpoint behavior support (`loop`, `reverse`, `stop`).
 
-Initial feature set:
-- Follow rail with constant speed.
-- Look ahead along tangent.
-- Optional target override (look-at target with blend).
-- Loop/reverse/stop endpoint behavior.
+Still pending for parity goals:
+- higher-level camera rig presets/blending channels
+- FOV/noise/blend feature channels
 
 ## 4) Package and Publishing Constraints
 
@@ -65,54 +64,60 @@ Package-first deliverable:
 - `Packages/path-creator` publishes to npm.
 - `examples/` is never published.
 
-`package.json` strategy:
-- `files` whitelist only built output and docs (`dist`, `README`, `LICENSE`).
-- `exports` map for core/three/r3f entry points.
-- `peerDependencies` for `three`, `react`, `@react-three/fiber` where needed.
+Current package constraints (implemented):
+- `files` whitelist includes only `dist`, `README.md`, `LICENSE`.
+- `exports` map includes root + `core` + `three` + `r3f` entry points.
+- `peerDependencies` include `three`; React and R3F are optional peers.
 
 Build outputs:
-- ESM + `.d.ts`.
-- Source maps.
+- ESM + `.d.ts`
+- source maps
 
-## 5) Migration Plan (Phased)
+## 5) Migration Plan (Progress)
 
 ### Phase 1: Core parity + tests
-- Port Bezier and vertex sampling primitives from Unity runtime.
-- Implement numeric behavior for distance/time queries and closest-point APIs.
-- Add unit tests for deterministic path math and endpoint instructions.
+Status: Completed
+- Bezier + vertex sampling primitives ported.
+- Distance/time/closest-point APIs implemented.
+- Unit tests for endpoint instructions and editing behavior implemented.
 
 ### Phase 2: Three/R3F runtime
-- Add follower hook and transform utilities.
-- Implement road/tube geometry generation.
-- Provide debug rendering helpers.
+Status: In progress (major parts complete)
+- Follower/camera hooks and transform utilities implemented.
+- Road/tube/polyline mesh buffer builders implemented.
+- Demo provides interactive editing + runtime path following.
 
 ### Phase 3: Camera rigs
-- Implement dolly camera behavior and options.
-- Add example scenarios:
-- Object follows path.
-- Camera follows path and tracks moving object.
+Status: Partially started
+- Basic dolly camera behavior exists.
+- Advanced Cinemachine-like channels and blending not yet implemented.
 
-### Phase 4: docs and stabilization
-- API docs and migration notes from Unity terms to package terms.
-- Performance pass and integration tests in demo.
+### Phase 4: Documentation and stabilization
+Status: In progress
+- Baseline docs updated.
+- API deep documentation and migration guide still pending.
 
 ## 6) Testing Strategy
 
-- Unit tests (core math): cubic eval, sampling density, monotonic arc-length lookup, closest-point stability.
-- Snapshot or geometry-assert tests: vertex/triangle counts and winding for generated meshes.
-- Demo-level checks: follower/camera endpoint modes and update behavior.
-- Regression seeds: fixed path fixtures from Unity-equivalent layouts.
+Implemented:
+- Core math + endpoint instruction tests.
+- Geometry builder invariant tests (counts/triangle indexing/normals/uv shape).
+- R3F helper tests for follower state update, sample parity, and camera application.
+
+Recommended additions:
+- Golden fixture regression tests from Unity-equivalent path layouts.
+- Additional editor interaction tests for demo behavior.
 
 ## 7) Acceptance Criteria
 
-- A consumer can `npm install` the package and animate object/camera along a path in R3F.
-- Core APIs are framework-agnostic and tested.
-- Minimal demo runs locally and documents setup.
-- Published package excludes `examples/**`.
+- A consumer can install package and animate object/camera along a path in R3F. (met)
+- Core APIs are framework-agnostic and tested. (met)
+- Minimal demo runs locally and documents setup. (met)
+- Published package excludes `examples/**`. (met)
 
 ## 8) Immediate Next Steps
 
-1. Scaffold workspace (`Packages/path-creator`, `examples/minimal-r3f-demo`).
-2. Port core math/types first, with tests.
-3. Add R3F follower and camera hook.
-4. Add minimal demo proving object + camera rail behavior.
+1. Stabilize demo editing UX for anchors/control points and midpoint normal tooling.
+2. Lock interaction rules (selection, dragging, pivot/transform control interplay).
+3. Add concise API docs and publish checklist for first external release.
+4. Resume advanced camera rail feature work after editor UX is stable.

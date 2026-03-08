@@ -1,36 +1,50 @@
 ## Path-Creator Port To-Do
 
-### Phase 1 Completed
+Last updated: 2026-03-08
+
+### Completed (Phase 1 + Significant Phase 2)
 - [x] Set up workspace structure for package + demo.
 - [x] Created publishable package scaffold at `Packages/path-creator`.
-- [x] Implemented core vector/math utilities (`vec3`, lerp/clamp/pingpong, axis rotation).
-- [x] Ported cubic bezier evaluation/derivatives/length estimation.
-- [x] Implemented `BezierPath` core model:
-- [x] anchors/controls storage
-- [x] control modes
-- [x] open/closed path handling
-- [x] auto control-point placement
-- [x] Implemented vertex sampling utilities:
-- [x] split by angle error
-- [x] split by even spacing
+- [x] Implemented core vector/math utilities and cubic bezier primitives.
+- [x] Implemented `BezierPath` model:
+  - [x] anchors/controls storage
+  - [x] control modes (`free`, `aligned`, `mirrored`, `automatic`)
+  - [x] open/closed path handling
+  - [x] auto control-point placement and `autoSmooth`
+  - [x] serialize/deserialize support
 - [x] Implemented `VertexPath` runtime queries:
-- [x] point/direction/normal/rotation at time and distance
-- [x] closest point/time/distance
-- [x] end-of-path instructions (`loop`, `reverse`, `stop`)
-- [x] Added and updated tests for core behavior.
-- [x] Verified `lint`, `test`, and `build` pass for `@huma/path-creator`.
+  - [x] point/direction/normal/rotation at time and distance
+  - [x] closest point/time/distance
+  - [x] end-of-path instructions (`loop`, `reverse`, `stop`)
+- [x] Implemented Three adapter mesh builders:
+  - [x] `buildRoadMeshBuffers`
+  - [x] `buildTubeMeshBuffers`
+  - [x] `buildPolylineBuffers`
+- [x] Implemented R3F runtime helpers/hooks:
+  - [x] `usePathFollower`
+  - [x] `usePathSample`
+  - [x] `useDollyCamera`
+  - [x] object/camera apply helpers
+- [x] Built interactive minimal demo for path editing and follower validation.
+- [x] Added test coverage for core, three, and r3f layers.
 
-### Next Steps (Phase 2+)
-- [ ] Implement Three.js geometry builders in `src/three`:
-- [ ] road mesh
-- [ ] tube/cylinder mesh
-- [ ] Replace polyline stub with real `BufferGeometry` outputs.
-- [ ] Implement R3F runtime hooks in `src/r3f`:
-- [ ] `usePathFollower`
-- [ ] `usePathSample`
-- [ ] `useDollyCamera` (initial Cinemachine-like rail behavior)
-- [ ] Add demo scenes in `examples/minimal-r3f-demo`:
-- [ ] object follow path
-- [ ] camera rail follow + look-ahead
-- [ ] Add tests for geometry output invariants and follower/camera behavior.
-- [ ] Document API usage and migration notes from Unity concepts.
+### Next Steps (Current Priority)
+- [ ] Stabilize Bezier editor UX in demo:
+  - [ ] tighten selection/drag behavior for anchors and control points
+  - [ ] confirm midpoint normal visualization and pivot behavior are mathematically consistent
+  - [ ] reduce accidental control conflicts between orbiting and editing
+- [ ] Define and implement final handle UX conventions:
+  - [ ] anchors vs control points visual language
+  - [ ] interaction affordance tuning (hit area, hover/active states)
+- [ ] Add endpoint behavior UX pass:
+  - [ ] explicit endpoint editing for open paths
+  - [ ] verify open-path endpoint tangents and normals in editor
+- [ ] Package hardening:
+  - [ ] API docs for public exports
+  - [ ] semantic versioning + changelog setup
+  - [ ] npm publish dry-run validation
+
+### Deferred / Later
+- [ ] Cinemachine-like advanced camera features (blends/channels/noise).
+- [ ] Road mesh authoring pipeline demo built from edited path data.
+- [ ] Additional geometry correctness/regression fixtures from Unity-equivalent layouts.

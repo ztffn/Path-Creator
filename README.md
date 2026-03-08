@@ -1,9 +1,49 @@
-# Path-Creator
+# Path-Creator (Three.js / R3F Port)
 
-[Watch overview video](https://www.youtube.com/watch?v=saAQNRSYU9k)
+Standalone TypeScript port inspired by Seb Lague's Unity Path-Creator.
 
-[Read the documentation](https://docs.google.com/document/d/1-FInNfD2GC-fVXO6KyeTSp9OSKst5AzLxDaBRb69b-Y/edit?usp=sharing)
+This repository is focused on reusable runtime path functionality for Three.js and React Three Fiber, with a local demo for validation.
 
-[Download from asset store](https://assetstore.unity.com/packages/tools/utilities/b-zier-path-creator-136082)
+## Repository Layout
 
-![Path Creator](https://i.imgur.com/xqTCNWK.png)
+- `Packages/path-creator`: publishable npm package (`@huma/path-creator`)
+- `examples/minimal-r3f-demo`: internal demo app for interactive validation (not published)
+- `docs/plans`: design docs, implementation status, and handoff notes
+- `Assets`: original Unity source kept as reference during porting
+
+## Current Status (March 8, 2026)
+
+Implemented:
+- Core Bezier path editing model (`anchors`, `controls`, `open/closed`, control modes, auto-smooth)
+- Vertex path sampling and runtime queries (point/direction/normal/rotation, closest point/time/distance)
+- End-of-path behavior (`loop`, `reverse`, `stop`)
+- Three adapter mesh buffer builders (`road`, `tube`, `polyline`)
+- R3F runtime helpers/hooks (`usePathFollower`, `usePathSample`, `useDollyCamera`)
+- Minimal demo with in-scene path editing workflow
+
+## Workspace Commands
+
+From repo root:
+
+```bash
+pnpm install
+pnpm build
+pnpm test
+pnpm lint
+pnpm dev:demo
+```
+
+## Package Publishing Boundary
+
+`@huma/path-creator` is configured to publish only:
+- `dist`
+- `README.md`
+- `LICENSE`
+
+Demo files are intentionally excluded from npm output.
+
+## Design + Tracking Docs
+
+- `docs/plans/2026-03-07-path-creator-r3f-port-design.md`
+- `docs/plans/2026-03-07-phase1-phase2-todo.md`
+- `docs/plans/2026-03-08-agent-handoff-prompt.md`
