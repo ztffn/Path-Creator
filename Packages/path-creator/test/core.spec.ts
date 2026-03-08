@@ -61,9 +61,60 @@ describe("BezierPath + VertexPath integration", () => {
     expect(d).toBeGreaterThan(0);
     expect(d).toBeLessThanOrEqual(vertexPath.length);
   });
+
+  it("keeps evenly sampled vertex path close to bezier anchors", () => {
+    const curved = new BezierPath(
+      [
+        { x: -2, y: 0.5, z: -1.2 },
+        { x: -0.5, y: 1.8, z: 1.6 },
+        { x: 1.5, y: -1.2, z: -0.4 },
+        { x: 3, y: 0.3, z: 1.4 }
+      ],
+      { space: PathSpace.XYZ, controlMode: ControlMode.Free }
+    );
+    curved.autoSmooth(0.4);
+
+    const sampled = new VertexPath(curved, { spacing: 0.08 });
+
+    for (let i = 0; i < curved.numAnchorPoints; i += 1) {
+      const anchor = curved.getAnchor(i);
+      const closest = sampled.getClosestPointOnPath(anchor);
+      const distance = Math.hypot(
+        closest.x - anchor.x,
+        closest.y - anchor.y,
+        closest.z - anchor.z
+      );
+      expect(distance).toBeLessThan(0.2);
+    }
+  });
 });
 
 describe("BezierPath editing operations", () => {
+  it("uses correct open-path segment count and endpoint segment", () => {
+    const bezier = new BezierPath(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 1, y: 0.4, z: 0 },
+        { x: 2, y: -0.3, z: 0 },
+        { x: 3, y: 0.2, z: 0 }
+      ],
+      { space: PathSpace.XYZ, controlMode: ControlMode.Free, isClosed: false }
+    );
+
+    expect(bezier.numAnchorPoints).toBe(4);
+    expect(bezier.numSegments).toBe(3);
+
+    const firstAnchor = bezier.getAnchor(0);
+    const lastAnchor = bezier.getAnchor(bezier.numAnchorPoints - 1);
+    const firstSegment = bezier.getPointsInSegment(0);
+    const lastSegment = bezier.getPointsInSegment(bezier.numSegments - 1);
+
+    expect(firstSegment[0].x).toBeCloseTo(firstAnchor.x, 6);
+    expect(firstSegment[0].y).toBeCloseTo(firstAnchor.y, 6);
+    expect(lastSegment[3].x).toBeCloseTo(lastAnchor.x, 6);
+    expect(lastSegment[3].y).toBeCloseTo(lastAnchor.y, 6);
+  });
+
   it("splits segment and increases anchor count", () => {
     const bezier = new BezierPath(
       [

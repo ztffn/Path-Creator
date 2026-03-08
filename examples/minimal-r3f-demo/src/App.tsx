@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, OrbitControls, PivotControls, TransformControls } from "@react-three/drei";
+import { Billboard, Line, OrbitControls, PivotControls, Text, TransformControls } from "@react-three/drei";
 import {
   BezierPath,
   ControlMode,
@@ -53,17 +53,89 @@ function createDefaultBezier(): BezierPath {
   );
 }
 
-function buildPathLinePositions(path: BezierPath, samplesPerSegment = 24): Float32Array {
-  const values: number[] = [];
-  for (let segmentIndex = 0; segmentIndex < path.numSegments; segmentIndex += 1) {
-    const startStep = segmentIndex === 0 ? 0 : 1;
-    for (let step = startStep; step <= samplesPerSegment; step += 1) {
-      const t = step / samplesPerSegment;
-      const p = path.evaluate(segmentIndex, t);
-      values.push(p.x, p.y, p.z);
-    }
+function getSuggestedNextAnchor(path: BezierPath): Vec3 {
+  const lastAnchorIndex = path.numAnchorPoints - 1;
+  const lastAnchor = path.getAnchor(lastAnchorIndex);
+  const prevAnchor = path.getAnchor(Math.max(0, lastAnchorIndex - 1));
+  const lastControl = path.getPoint(path.numPoints - 2);
+
+  let tangentX = lastAnchor.x - lastControl.x;
+  let tangentY = lastAnchor.y - lastControl.y;
+  let tangentZ = lastAnchor.z - lastControl.z;
+  let tangentLen = Math.hypot(tangentX, tangentY, tangentZ);
+
+  let pathX = lastAnchor.x - prevAnchor.x;
+  let pathY = lastAnchor.y - prevAnchor.y;
+  let pathZ = lastAnchor.z - prevAnchor.z;
+  let pathLen = Math.hypot(pathX, pathY, pathZ);
+
+  if (tangentLen < 1e-5 && pathLen >= 1e-5) {
+    tangentX = pathX;
+    tangentY = pathY;
+    tangentZ = pathZ;
+    tangentLen = pathLen;
   }
-  return new Float32Array(values);
+
+  if (pathLen < 1e-5 && tangentLen >= 1e-5) {
+    pathX = tangentX;
+    pathY = tangentY;
+    pathZ = tangentZ;
+    pathLen = tangentLen;
+  }
+
+  if (tangentLen < 1e-5 && pathLen < 1e-5) {
+    tangentX = 1;
+    tangentY = 0;
+    tangentZ = 0;
+    tangentLen = 1;
+    pathX = 1;
+    pathY = 0;
+    pathZ = 0;
+    pathLen = 1;
+  }
+
+  tangentX /= tangentLen;
+  tangentY /= tangentLen;
+  tangentZ /= tangentLen;
+  pathX /= pathLen;
+  pathY /= pathLen;
+  pathZ /= pathLen;
+
+  let dirX = tangentX * 0.65 + pathX * 0.35;
+  let dirY = tangentY * 0.65 + pathY * 0.35;
+  let dirZ = tangentZ * 0.65 + pathZ * 0.35;
+  let dirLen = Math.hypot(dirX, dirY, dirZ);
+  if (dirLen < 1e-5) {
+    dirX = tangentX;
+    dirY = tangentY;
+    dirZ = tangentZ;
+    dirLen = 1;
+  }
+  dirX /= dirLen;
+  dirY /= dirLen;
+  dirZ /= dirLen;
+
+  const segmentLength = Math.hypot(
+    lastAnchor.x - prevAnchor.x,
+    lastAnchor.y - prevAnchor.y,
+    lastAnchor.z - prevAnchor.z
+  );
+  const travel = Math.max(0.25, segmentLength);
+
+  return {
+    x: lastAnchor.x + dirX * travel,
+    y: lastAnchor.y + dirY * travel,
+    z: lastAnchor.z + dirZ * travel
+  };
+}
+
+function buildPathLinePoints(path: VertexPath): [number, number, number][] {
+  const values: [number, number, number][] = [];
+  for (let i = 0; i < path.numPoints; i += 1) {
+    const p = path.getPoint(i);
+    values.push([p.x, p.y, p.z]);
+  }
+  return values;
 }
 
 function buildControlLinePositions(path: BezierPath): Float32Array {
@@ -137,15 +209,16 @@ function Scene({
   onRotateMidpointNormal: (segmentIndex: number, deltaDegrees: number) => void;
   onTransformingChange: (isTransforming: boolean) => void;
 }) {
+  const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
     path: vertexPath,
     speed,
-    mode: EndOfPathInstruction.Loop
+    mode: followMode
   });
 
-  const pathLinePositions = useMemo(
-    () => buildPathLinePositions(bezierPath, 32),
-    [bezierPath, pathVersion]
+  const pathLinePoints = useMemo(
+    () => buildPathLinePoints(vertexPath),
+    [vertexPath, pathVersion]
   );
   const controlLinePositions = useMemo(
     () => buildControlLinePositions(bezierPath),
@@ -198,7 +271,7 @@ function Scene({
       const lookSample = samplePathAtDistance(
         vertexPath,
         follower.state.current.distance + 0.6,
-        EndOfPathInstruction.Loop
+        followMode
       );
       applyDollyCamera(camera, sample, lookSample.position, 8, delta);
     }
@@ -209,16 +282,7 @@ function Scene({
       <ambientLight intensity={0.6} />
       <directionalLight position={[2, 3, 4]} intensity={1.2} />
 
-      <line>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[pathLinePositions, 3]}
-            count={pathLinePositions.length / 3}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#101828" linewidth={2} />
-      </line>
+      <Line points={pathLinePoints} color="#101828" lineWidth={4} />
 
       <lineSegments>
         <bufferGeometry>
@@ -354,6 +418,20 @@ function Scene({
                 <ringGeometry args={[isAnchor ? 0.085 : 0.065, isAnchor ? 0.11 : 0.085, 28]} />
                 <meshBasicMaterial color={color} opacity={0.35} transparent side={2} />
               </mesh>
+              {isAnchor ? (
+                <Text
+                  position={[0, 0, 0.002]}
+                  fontSize={0.09}
+                  color="#f97316"
+                  anchorX="center"
+                  anchorY="middle"
+                  renderOrder={999}
+                  material-depthTest={false}
+                  material-depthWrite={false}
+                >
+                  {String(Math.floor(i / 3) + 1)}
+                </Text>
+              ) : null}
             </group>
           );
         }
@@ -397,6 +475,20 @@ function Scene({
                 depthTest={false}
               />
             </mesh>
+            {isAnchor ? (
+              <Text
+                position={[0, 0, 0.002]}
+                fontSize={0.09}
+                color="#f97316"
+                anchorX="center"
+                anchorY="middle"
+                renderOrder={999}
+                material-depthTest={false}
+                material-depthWrite={false}
+              >
+                {String(Math.floor(i / 3) + 1)}
+              </Text>
+            ) : null}
             {isSelected ? (
               <mesh position={[0, 0, -0.001]}>
                 <ringGeometry
@@ -474,7 +566,7 @@ export function App() {
   const [transformMode, setTransformMode] = useState<TransformMode>("translate");
 
   const vertexPath = useMemo(
-    () => new VertexPath(bezierPath, { spacing: 0.06 }),
+    () => new VertexPath(bezierPath, { spacing: 0.03 }),
     [bezierPath, pathVersion]
   );
 
@@ -507,8 +599,8 @@ export function App() {
       if (path.isClosed) {
         path.setClosed(false);
       }
-      const lastAnchor = path.getAnchor(path.numAnchorPoints - 1);
-      path.addSegmentToEnd({ x: lastAnchor.x + 1, y: lastAnchor.y, z: lastAnchor.z });
+      const suggestedAnchor = getSuggestedNextAnchor(path);
+      path.addSegmentToEnd(suggestedAnchor);
       setSelectedHandleIndex(path.numPoints - 1);
       setSelectedMidpointIndex(null);
     });

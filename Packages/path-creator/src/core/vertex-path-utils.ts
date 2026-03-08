@@ -92,23 +92,44 @@ export function splitBezierPathEvenly(
     for (let t = increment; t <= 1 + 1e-6; t += increment) {
       const isLastPointOnPath = t + increment > 1 && segmentIndex === bezierPath.numSegments - 1;
       const evalT = isLastPointOnPath ? 1 : t;
+      const pointOnPath = evaluateCurve(segmentPoints, evalT);
 
-      let pointOnPath = evaluateCurve(segmentPoints, evalT);
-      distanceSinceLastVertex += vec3.distance(pointOnPath, prevPointOnPath);
-
-      if (distanceSinceLastVertex > spacing) {
-        const overshoot = distanceSinceLastVertex - spacing;
-        const backDir = vec3.normalize(vec3.sub(prevPointOnPath, pointOnPath));
-        pointOnPath = vec3.add(pointOnPath, vec3.scale(backDir, overshoot));
+      let segmentStart = prevPointOnPath;
+      let remainingSegmentLength = vec3.distance(segmentStart, pointOnPath);
+      if (remainingSegmentLength === 0) {
+        prevPointOnPath = pointOnPath;
+        continue;
       }
 
-      if (distanceSinceLastVertex >= spacing || isLastPointOnPath) {
+      while (distanceSinceLastVertex + remainingSegmentLength >= spacing) {
+        const distanceToNext = spacing - distanceSinceLastVertex;
+        const lerpT = distanceToNext / remainingSegmentLength;
+        const evenPoint = vec3.lerp(segmentStart, pointOnPath, lerpT);
+
+        currentPathLength += vec3.distance(lastAddedPoint, evenPoint);
+        splitData.cumulativeLength.push(currentPathLength);
+        splitData.vertices.push(evenPoint);
+        splitData.tangents.push(vec3.normalize(evaluateCurveDerivative(segmentPoints, evalT)));
+        lastAddedPoint = evenPoint;
+
+        segmentStart = evenPoint;
+        remainingSegmentLength = vec3.distance(segmentStart, pointOnPath);
+        distanceSinceLastVertex = 0;
+
+        if (remainingSegmentLength === 0) {
+          break;
+        }
+      }
+
+      distanceSinceLastVertex += remainingSegmentLength;
+
+      if (isLastPointOnPath && vec3.distance(lastAddedPoint, pointOnPath) > 0) {
         currentPathLength += vec3.distance(lastAddedPoint, pointOnPath);
         splitData.cumulativeLength.push(currentPathLength);
         splitData.vertices.push(pointOnPath);
-        splitData.tangents.push(vec3.normalize(evaluateCurveDerivative(segmentPoints, evalT)));
-        distanceSinceLastVertex = 0;
+        splitData.tangents.push(vec3.normalize(evaluateCurveDerivative(segmentPoints, 1)));
         lastAddedPoint = pointOnPath;
+        distanceSinceLastVertex = 0;
       }
 
       prevPointOnPath = pointOnPath;

@@ -74,7 +74,7 @@ export class BezierPath {
   }
 
   get numSegments(): number {
-    return this.points.length / 3;
+    return this.isClosed ? this.points.length / 3 : (this.points.length - 1) / 3;
   }
 
   getPoint(index: number): Vec3 {
@@ -98,7 +98,7 @@ export class BezierPath {
   }
 
   getPointsInSegment(segmentIndex: number): [Vec3, Vec3, Vec3, Vec3] {
-    const clamped = Math.max(0, Math.min(this.numSegments - 1, segmentIndex));
+    const clamped = Math.max(0, Math.min(this.numSegments - 1, Math.floor(segmentIndex)));
     return [
       this.points[clamped * 3],
       this.points[clamped * 3 + 1],
