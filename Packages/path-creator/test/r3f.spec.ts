@@ -89,6 +89,51 @@ describe("r3f runtime helpers", () => {
     expect(screenPosition(camera, target).x).toBeCloseTo(0.1, 5);
   });
 
+  it("screen composer respects non-center screen position", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.32, y: -0.12 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      {
+        screenPosition: { x: 0.2, y: -0.1 },
+        deadZone: { width: 0.1, height: 0.1 },
+        damping: { x: 0, y: 0 }
+      },
+      1 / 60
+    );
+
+    const screen = screenPosition(camera, target);
+    expect(screen.x).toBeCloseTo(0.25, 5);
+    expect(Math.abs(screen.y - -0.1)).toBeLessThanOrEqual(0.05);
+  });
+
+  it("screen composer can center on activation", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.3, y: -0.2 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      {
+        screenPosition: { x: 0.1, y: -0.1 },
+        deadZone: { width: 0.2, height: 0.2 },
+        damping: { x: 1, y: 1 },
+        centerOnActivate: true
+      },
+      1 / 60
+    );
+
+    const screen = screenPosition(camera, target);
+    expect(screen.x).toBeCloseTo(0.1, 2);
+    expect(screen.y).toBeCloseTo(-0.1, 2);
+  });
+
   it("screen composer clamps hard-limit breaches immediately", () => {
     const camera = new PerspectiveCamera(60, 1, 0.1, 100);
     const target = targetAtScreen(camera, { x: 0.7, y: 0 });

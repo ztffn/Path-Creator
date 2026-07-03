@@ -54,6 +54,7 @@ type ComposerSettings = {
   lookaheadTime: number;
   lookaheadSmoothing: number;
   lookaheadIgnoreY: boolean;
+  centerOnActivate: boolean;
 };
 
 const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
@@ -74,7 +75,8 @@ const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
   dampingY: 8,
   lookaheadTime: 0.2,
   lookaheadSmoothing: 8,
-  lookaheadIgnoreY: false
+  lookaheadIgnoreY: false,
+  centerOnActivate: false
 };
 
 function createMobiusLikeAnchors(count = 10): Vec3[] {
@@ -317,7 +319,8 @@ function applyCameraAim(
         damping: { x: settings.dampingX, y: settings.dampingY },
         lookaheadTime: settings.lookaheadTime,
         lookaheadSmoothing: settings.lookaheadSmoothing,
-        lookaheadIgnoreY: settings.lookaheadIgnoreY
+        lookaheadIgnoreY: settings.lookaheadIgnoreY,
+        centerOnActivate: settings.centerOnActivate
       },
       deltaSeconds
     );
@@ -460,6 +463,17 @@ function Scene({
   useEffect(() => {
     return () => frustumHelper.dispose();
   }, [frustumHelper]);
+
+  useEffect(() => {
+    composerState.current = createScreenComposerState();
+    previewComposerState.current = createScreenComposerState();
+  }, [
+    aimMode,
+    poseSource,
+    composerSettings.centerOnActivate,
+    composerSettings.screenX,
+    composerSettings.screenY
+  ]);
 
   useEffect(() => {
     if (!selectedHandlePoint || isTransforming) return;
@@ -1366,6 +1380,20 @@ function RigSettingsPanel({
       </SettingsSection>
 
       <SettingsSection title="Screen">
+        <div style={{ display: "flex", gap: 8 }}>
+          <button
+            onClick={() => onChange({ ...settings, screenX: 0, screenY: 0 })}
+            style={{ flex: 1 }}
+          >
+            Center Screen
+          </button>
+          <button
+            onClick={() => setValue("centerOnActivate", !settings.centerOnActivate)}
+            style={{ flex: 1 }}
+          >
+            {settings.centerOnActivate ? "Center On Activate: On" : "Center On Activate: Off"}
+          </button>
+        </div>
         <NumberSlider
           label="Screen X"
           value={settings.screenX}

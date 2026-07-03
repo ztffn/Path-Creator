@@ -78,9 +78,49 @@ const follower = usePathFollower({
 });
 ```
 
+## Rotation Composer Example
+
+`applyScreenComposerAim` is a rotation-only camera composer. The caller owns camera
+position; the composer only changes orientation. This lets the same aim behavior work
+for a dolly rail camera, a static camera, or another movement rig.
+
+```ts
+import {
+  applyScreenComposerAim,
+  createScreenComposerState
+} from "@huma/path-creator/r3f";
+
+const composerState = createScreenComposerState();
+
+function frame(camera: PerspectiveCamera, target: Vec3, railUp: Vec3, deltaSeconds: number) {
+  applyScreenComposerAim(
+    camera,
+    target,
+    railUp,
+    composerState,
+    {
+      screenPosition: { x: 0.15, y: -0.05 },
+      deadZone: { width: 0.18, height: 0.14 },
+      softZone: { width: 0.55, height: 0.45 },
+      hardLimits: { width: 0.9, height: 0.85 },
+      damping: { x: 6, y: 8 },
+      lookaheadTime: 0.2,
+      lookaheadSmoothing: 8,
+      lookaheadIgnoreY: false,
+      centerOnActivate: false
+    },
+    deltaSeconds
+  );
+}
+```
+
+Screen coordinates are Cinemachine-style normalized coordinates: `{ x: 0, y: 0 }`
+is the viewport center, positive `x` moves right, and positive `y` moves up. The
+dead/soft/hard zones are expressed as normalized viewport width/height.
+
 ## Tested Coverage
 
 - Core endpoint behavior (`loop`, `reverse`, `stop`)
 - Bezier editing operations (`splitSegment`, `deleteAnchor`, `autoSmooth`)
 - Three mesh buffer invariants (counts, normals/uvs shape, indexed triangles)
-- R3F runtime helpers (`updateFollowerState`, sampling parity, camera application)
+- R3F runtime helpers (`updateFollowerState`, sampling parity, camera application, screen composer)
