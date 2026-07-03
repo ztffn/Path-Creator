@@ -16,7 +16,7 @@ import {
   samplePathAtDistance,
   usePathFollower
 } from "@huma/path-creator/r3f";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CameraHelper,
   Euler,
@@ -29,16 +29,53 @@ import {
 } from "three";
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
-const SCREEN_COMPOSER_ZONES = {
-  deadZone: { width: 0.18, height: 0.14 },
-  softZone: { width: 0.55, height: 0.45 },
-  hardLimits: { width: 0.9, height: 0.85 }
-};
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
 type CameraPoseSource = "dolly" | "static";
 type CameraAimMode = "path-lookahead" | "look-at-target" | "screen-composer";
+
+type ComposerSettings = {
+  pathLookaheadDistance: number;
+  targetWeight: number;
+  targetOffsetX: number;
+  targetOffsetY: number;
+  targetOffsetZ: number;
+  screenX: number;
+  screenY: number;
+  deadWidth: number;
+  deadHeight: number;
+  softWidth: number;
+  softHeight: number;
+  hardWidth: number;
+  hardHeight: number;
+  dampingX: number;
+  dampingY: number;
+  lookaheadTime: number;
+  lookaheadSmoothing: number;
+  lookaheadIgnoreY: boolean;
+};
+
+const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
+  pathLookaheadDistance: 0.85,
+  targetWeight: 1,
+  targetOffsetX: 0,
+  targetOffsetY: 0,
+  targetOffsetZ: 0,
+  screenX: 0,
+  screenY: 0,
+  deadWidth: 0.18,
+  deadHeight: 0.14,
+  softWidth: 0.55,
+  softHeight: 0.45,
+  hardWidth: 0.9,
+  hardHeight: 0.85,
+  dampingX: 6,
+  dampingY: 8,
+  lookaheadTime: 0.2,
+  lookaheadSmoothing: 8,
+  lookaheadIgnoreY: false
+};
 
 function createMobiusLikeAnchors(count = 10): Vec3[] {
   const anchors: Vec3[] = [];
@@ -217,6 +254,32 @@ function getPathLookTarget(samplePosition: Vec3, pathLookTarget: Vec3, trackingT
   return dx * dx + dy * dy + dz * dz < 1e-5 ? trackingTarget : pathLookTarget;
 }
 
+function getWeightedTarget(pathTarget: Vec3, trackingTarget: Vec3, settings: ComposerSettings): Vec3 {
+  const weight = Math.max(0, Math.min(1, settings.targetWeight));
+  return {
+    x: pathTarget.x + (trackingTarget.x + settings.targetOffsetX - pathTarget.x) * weight,
+    y: pathTarget.y + (trackingTarget.y + settings.targetOffsetY - pathTarget.y) * weight,
+    z: pathTarget.z + (trackingTarget.z + settings.targetOffsetZ - pathTarget.z) * weight
+  };
+}
+
+function getComposerZones(settings: ComposerSettings) {
+  return {
+    deadZone: { width: settings.deadWidth, height: settings.deadHeight },
+    softZone: { width: settings.softWidth, height: settings.softHeight },
+    hardLimits: { width: settings.hardWidth, height: settings.hardHeight }
+  };
+}
+
+function getComposerLookaheadTarget(target: Vec3, settings: ComposerSettings, velocity?: Vec3): Vec3 {
+  if (!velocity || settings.lookaheadTime <= 0) return target;
+  return {
+    x: target.x + velocity.x * settings.lookaheadTime,
+    y: target.y + velocity.y * settings.lookaheadTime,
+    z: target.z + velocity.z * settings.lookaheadTime
+  };
+}
+
 function applyCameraPose(
   camera: PerspectiveCamera,
   poseSource: CameraPoseSource,
@@ -238,6 +301,7 @@ function applyCameraAim(
   aimMode: CameraAimMode,
   target: Vec3,
   railUp: Vec3,
+  settings: ComposerSettings,
   composerState: ReturnType<typeof createScreenComposerState>,
   deltaSeconds: number
 ): void {
@@ -248,11 +312,12 @@ function applyCameraAim(
       railUp,
       composerState,
       {
-        ...SCREEN_COMPOSER_ZONES,
-        damping: { x: 6, y: 8 },
-        lookaheadTime: 0.2,
-        lookaheadSmoothing: 8,
-        lookaheadIgnoreY: false
+        screenPosition: { x: settings.screenX, y: settings.screenY },
+        ...getComposerZones(settings),
+        damping: { x: settings.dampingX, y: settings.dampingY },
+        lookaheadTime: settings.lookaheadTime,
+        lookaheadSmoothing: settings.lookaheadSmoothing,
+        lookaheadIgnoreY: settings.lookaheadIgnoreY
       },
       deltaSeconds
     );
@@ -272,6 +337,7 @@ function Scene({
   driveMainCamera,
   poseSource,
   aimMode,
+  composerSettings,
   debugPreview,
   debugFrustum,
   selectedHandleIndex,
@@ -286,7 +352,9 @@ function Scene({
   onRotateMidpointNormal,
   onTransformingChange,
   dollyTargetMarkerRef,
-  dollyTargetLineRef
+  dollyTargetLineRef,
+  lookaheadMarkerRef,
+  lookaheadLineRef
 }: {
   bezierPath: BezierPath;
   vertexPath: VertexPath;
@@ -295,6 +363,7 @@ function Scene({
   driveMainCamera: boolean;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
+  composerSettings: ComposerSettings;
   debugPreview: boolean;
   debugFrustum: boolean;
   selectedHandleIndex: number | null;
@@ -310,6 +379,8 @@ function Scene({
   onTransformingChange: (isTransforming: boolean) => void;
   dollyTargetMarkerRef: { current: HTMLDivElement | null };
   dollyTargetLineRef: { current: SVGLineElement | null };
+  lookaheadMarkerRef: { current: HTMLDivElement | null };
+  lookaheadLineRef: { current: SVGLineElement | null };
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
@@ -418,7 +489,7 @@ function Scene({
     const elapsed = performance.now() / 1000;
     const lookSample = samplePathAtDistance(
       vertexPath,
-      follower.state.current.distance + 0.85,
+      follower.state.current.distance + composerSettings.pathLookaheadDistance,
       followMode
     );
     const tangent = new Vector3(
@@ -434,8 +505,9 @@ function Scene({
       z: lookSample.position.z + side.z * Math.sin(elapsed * 0.85) * 0.75 + normal.z * Math.sin(elapsed * 1.7) * 0.35
     };
     const pathLookTarget = getPathLookTarget(sample.position, lookSample.position, lookTarget);
+    const weightedTarget = getWeightedTarget(pathLookTarget, lookTarget, composerSettings);
     const aimTarget = aimMode === "look-at-target" || aimMode === "screen-composer"
-      ? lookTarget
+      ? weightedTarget
       : pathLookTarget;
 
     if (followerObject) {
@@ -447,10 +519,18 @@ function Scene({
     }
 
     applyCameraPose(previewCamera, poseSource, sample.position, previewCameraPositionTarget, delta);
-    applyCameraAim(previewCamera, aimMode, aimTarget, sample.normal, previewComposerState.current, delta);
+    applyCameraAim(
+      previewCamera,
+      aimMode,
+      aimTarget,
+      sample.normal,
+      composerSettings,
+      previewComposerState.current,
+      delta
+    );
     previewCamera.updateMatrixWorld();
     frustumHelper.update();
-    projectedTarget.set(lookTarget.x, lookTarget.y, lookTarget.z).project(previewCamera);
+    projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(previewCamera);
     updateDollyTargetOverlay(
       dollyTargetMarkerRef.current,
       dollyTargetLineRef.current,
@@ -463,10 +543,39 @@ function Scene({
         projectedTarget.y >= -1 &&
         projectedTarget.y <= 1
     );
+    const lookaheadTarget = getComposerLookaheadTarget(
+      aimTarget,
+      composerSettings,
+      previewComposerState.current.smoothedVelocity
+    );
+    projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(previewCamera);
+    updateDollyTargetOverlay(
+      lookaheadMarkerRef.current,
+      lookaheadLineRef.current,
+      (projectedTarget.x + 1) * 0.5,
+      (1 - projectedTarget.y) * 0.5,
+      aimMode === "screen-composer" &&
+        composerSettings.lookaheadTime > 0 &&
+        projectedTarget.z >= -1 &&
+        projectedTarget.z <= 1 &&
+        projectedTarget.x >= -1 &&
+        projectedTarget.x <= 1 &&
+        projectedTarget.y >= -1 &&
+        projectedTarget.y <= 1,
+      "lookahead"
+    );
 
     if (driveMainCamera && !isTransforming) {
       applyCameraPose(camera as PerspectiveCamera, poseSource, sample.position, cameraPositionTarget, delta);
-      applyCameraAim(camera as PerspectiveCamera, aimMode, aimTarget, sample.normal, composerState.current, delta);
+      applyCameraAim(
+        camera as PerspectiveCamera,
+        aimMode,
+        aimTarget,
+        sample.normal,
+        composerSettings,
+        composerState.current,
+        delta
+      );
     } else {
       composerState.current = createScreenComposerState();
     }
@@ -886,13 +995,21 @@ function DollyCameraPip({
 
 function DollyPreviewChrome({
   composerActive,
+  composerSettings,
   targetMarkerRef,
-  targetLineRef
+  targetLineRef,
+  lookaheadMarkerRef,
+  lookaheadLineRef
 }: {
   composerActive: boolean;
+  composerSettings: ComposerSettings;
   targetMarkerRef: { current: HTMLDivElement | null };
   targetLineRef: { current: SVGLineElement | null };
+  lookaheadMarkerRef: { current: HTMLDivElement | null };
+  lookaheadLineRef: { current: SVGLineElement | null };
 }) {
+  const zones = getComposerZones(composerSettings);
+
   return (
     <div
       style={{
@@ -910,20 +1027,20 @@ function DollyPreviewChrome({
       }}
     >
       <DollyPipZone
-        width={SCREEN_COMPOSER_ZONES.hardLimits.width}
-        height={SCREEN_COMPOSER_ZONES.hardLimits.height}
+        width={zones.hardLimits.width}
+        height={zones.hardLimits.height}
         color="rgba(248, 250, 252, 0.54)"
         fill="rgba(248, 250, 252, 0.02)"
       />
       <DollyPipZone
-        width={SCREEN_COMPOSER_ZONES.softZone.width}
-        height={SCREEN_COMPOSER_ZONES.softZone.height}
+        width={zones.softZone.width}
+        height={zones.softZone.height}
         color={composerActive ? "rgba(6, 182, 212, 0.78)" : "rgba(6, 182, 212, 0.38)"}
         fill="rgba(6, 182, 212, 0.035)"
       />
       <DollyPipZone
-        width={SCREEN_COMPOSER_ZONES.deadZone.width}
-        height={SCREEN_COMPOSER_ZONES.deadZone.height}
+        width={zones.deadZone.width}
+        height={zones.deadZone.height}
         color={composerActive ? "rgba(249, 115, 22, 0.92)" : "rgba(249, 115, 22, 0.44)"}
         fill="rgba(249, 115, 22, 0.04)"
       />
@@ -948,6 +1065,17 @@ function DollyPreviewChrome({
           strokeWidth="0.55"
           vectorEffect="non-scaling-stroke"
         />
+        <line
+          ref={lookaheadLineRef}
+          x1="50"
+          y1="50"
+          x2="50"
+          y2="50"
+          stroke="rgba(250, 204, 21, 0)"
+          strokeWidth="0.55"
+          strokeDasharray="3 2"
+          vectorEffect="non-scaling-stroke"
+        />
       </svg>
       <div
         ref={targetMarkerRef}
@@ -962,6 +1090,21 @@ function DollyPreviewChrome({
           background: "#06b6d4",
           border: "2px solid rgba(248, 250, 252, 0.95)",
           boxShadow: "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)",
+          boxSizing: "border-box"
+        }}
+      />
+      <div
+        ref={lookaheadMarkerRef}
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          width: 10,
+          height: 10,
+          transform: "translate(-50%, -50%) rotate(45deg)",
+          background: "rgba(250, 204, 21, 0)",
+          border: "2px solid rgba(250, 204, 21, 0)",
+          boxShadow: "0 0 0 3px rgba(250, 204, 21, 0)",
           boxSizing: "border-box"
         }}
       />
@@ -991,7 +1134,8 @@ function updateDollyTargetOverlay(
   line: SVGLineElement | null,
   x: number,
   y: number,
-  visible: boolean
+  visible: boolean,
+  kind: "target" | "lookahead" = "target"
 ): void {
   const clampedX = Math.max(0.02, Math.min(0.98, x));
   const clampedY = Math.max(0.02, Math.min(0.98, y));
@@ -1001,11 +1145,20 @@ function updateDollyTargetOverlay(
   if (marker) {
     marker.style.left = `${xPercent}%`;
     marker.style.top = `${yPercent}%`;
-    marker.style.opacity = visible ? "1" : "0.42";
-    marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
-    marker.style.boxShadow = visible
-      ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
-      : "0 0 0 4px rgba(6, 182, 212, 0.12)";
+    if (kind === "lookahead") {
+      marker.style.opacity = visible ? "1" : "0";
+      marker.style.background = visible ? "rgba(250, 204, 21, 0.95)" : "rgba(250, 204, 21, 0)";
+      marker.style.borderColor = visible ? "rgba(15, 23, 42, 0.8)" : "rgba(250, 204, 21, 0)";
+      marker.style.boxShadow = visible
+        ? "0 0 0 3px rgba(250, 204, 21, 0.24), 0 0 16px rgba(250, 204, 21, 0.75)"
+        : "0 0 0 3px rgba(250, 204, 21, 0)";
+    } else {
+      marker.style.opacity = visible ? "1" : "0.42";
+      marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
+      marker.style.boxShadow = visible
+        ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
+        : "0 0 0 4px rgba(6, 182, 212, 0.12)";
+    }
   }
 
   if (line) {
@@ -1013,7 +1166,9 @@ function updateDollyTargetOverlay(
     line.setAttribute("y2", yPercent.toFixed(3));
     line.setAttribute(
       "stroke",
-      visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
+      kind === "lookahead"
+        ? visible ? "rgba(250, 204, 21, 0.72)" : "rgba(250, 204, 21, 0)"
+        : visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
     );
   }
 }
@@ -1046,7 +1201,8 @@ function DollyPipZone({
   );
 }
 
-function ComposerGuides() {
+function ComposerGuides({ settings }: { settings: ComposerSettings }) {
+  const zones = getComposerZones(settings);
   return (
     <div
       style={{
@@ -1057,18 +1213,18 @@ function ComposerGuides() {
       }}
     >
       <ComposerGuideBox
-        width={SCREEN_COMPOSER_ZONES.hardLimits.width}
-        height={SCREEN_COMPOSER_ZONES.hardLimits.height}
+        width={zones.hardLimits.width}
+        height={zones.hardLimits.height}
         color="rgba(15, 23, 42, 0.45)"
       />
       <ComposerGuideBox
-        width={SCREEN_COMPOSER_ZONES.softZone.width}
-        height={SCREEN_COMPOSER_ZONES.softZone.height}
+        width={zones.softZone.width}
+        height={zones.softZone.height}
         color="rgba(6, 182, 212, 0.55)"
       />
       <ComposerGuideBox
-        width={SCREEN_COMPOSER_ZONES.deadZone.width}
-        height={SCREEN_COMPOSER_ZONES.deadZone.height}
+        width={zones.deadZone.width}
+        height={zones.deadZone.height}
         color="rgba(249, 115, 22, 0.8)"
       />
     </div>
@@ -1100,6 +1256,266 @@ function ComposerGuideBox({
   );
 }
 
+function RigSettingsPanel({
+  settings,
+  onChange,
+  onClose,
+  onReset
+}: {
+  settings: ComposerSettings;
+  onChange: (next: ComposerSettings) => void;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  function setValue<K extends keyof ComposerSettings>(key: K, value: ComposerSettings[K]): void {
+    onChange({ ...settings, [key]: value });
+  }
+
+  return (
+    <div
+      style={{
+        position: "fixed",
+        top: 12,
+        right: 12,
+        zIndex: 12,
+        width: 340,
+        maxHeight: "calc(100vh - 24px)",
+        overflowY: "auto",
+        padding: 12,
+        borderRadius: 8,
+        background: "rgba(10, 16, 28, 0.92)",
+        color: "#f8fafc",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        boxShadow: "0 24px 60px rgba(15, 23, 42, 0.35)",
+        border: "1px solid rgba(148, 163, 184, 0.26)"
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
+        <div>
+          <div style={{ fontSize: 13, fontWeight: 800 }}>Composer Settings</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Rotation Composer</div>
+        </div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onReset}>Reset</button>
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+
+      <SettingsSection title="Targets">
+        <NumberSlider
+          label="Path Lookahead"
+          value={settings.pathLookaheadDistance}
+          min={0}
+          max={3}
+          step={0.05}
+          unit="m"
+          onChange={(value) => setValue("pathLookaheadDistance", value)}
+        />
+        <NumberSlider
+          label="Target Weight"
+          value={settings.targetWeight}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("targetWeight", value)}
+        />
+        <NumberSlider
+          label="Tracked Offset X"
+          value={settings.targetOffsetX}
+          min={-2}
+          max={2}
+          step={0.05}
+          onChange={(value) => setValue("targetOffsetX", value)}
+        />
+        <NumberSlider
+          label="Tracked Offset Y"
+          value={settings.targetOffsetY}
+          min={-2}
+          max={2}
+          step={0.05}
+          onChange={(value) => setValue("targetOffsetY", value)}
+        />
+        <NumberSlider
+          label="Tracked Offset Z"
+          value={settings.targetOffsetZ}
+          min={-2}
+          max={2}
+          step={0.05}
+          onChange={(value) => setValue("targetOffsetZ", value)}
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Screen">
+        <NumberSlider
+          label="Screen X"
+          value={settings.screenX}
+          min={-0.4}
+          max={0.4}
+          step={0.01}
+          onChange={(value) => setValue("screenX", value)}
+        />
+        <NumberSlider
+          label="Screen Y"
+          value={settings.screenY}
+          min={-0.4}
+          max={0.4}
+          step={0.01}
+          onChange={(value) => setValue("screenY", value)}
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Zones">
+        <NumberSlider
+          label="Dead Width"
+          value={settings.deadWidth}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("deadWidth", value)}
+        />
+        <NumberSlider
+          label="Dead Height"
+          value={settings.deadHeight}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("deadHeight", value)}
+        />
+        <NumberSlider
+          label="Soft Width"
+          value={settings.softWidth}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("softWidth", value)}
+        />
+        <NumberSlider
+          label="Soft Height"
+          value={settings.softHeight}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("softHeight", value)}
+        />
+        <NumberSlider
+          label="Hard Width"
+          value={settings.hardWidth}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("hardWidth", value)}
+        />
+        <NumberSlider
+          label="Hard Height"
+          value={settings.hardHeight}
+          min={0}
+          max={1}
+          step={0.01}
+          onChange={(value) => setValue("hardHeight", value)}
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Damping">
+        <NumberSlider
+          label="Horizontal"
+          value={settings.dampingX}
+          min={0}
+          max={20}
+          step={0.1}
+          onChange={(value) => setValue("dampingX", value)}
+        />
+        <NumberSlider
+          label="Vertical"
+          value={settings.dampingY}
+          min={0}
+          max={20}
+          step={0.1}
+          onChange={(value) => setValue("dampingY", value)}
+        />
+      </SettingsSection>
+
+      <SettingsSection title="Lookahead">
+        <NumberSlider
+          label="Time"
+          value={settings.lookaheadTime}
+          min={0}
+          max={1.5}
+          step={0.01}
+          unit="s"
+          onChange={(value) => setValue("lookaheadTime", value)}
+        />
+        <NumberSlider
+          label="Smoothing"
+          value={settings.lookaheadSmoothing}
+          min={0}
+          max={20}
+          step={0.1}
+          onChange={(value) => setValue("lookaheadSmoothing", value)}
+        />
+        <label style={{ display: "block", fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={settings.lookaheadIgnoreY}
+            onChange={(event) => setValue("lookaheadIgnoreY", event.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Ignore Y</span>
+        </label>
+      </SettingsSection>
+    </div>
+  );
+}
+
+function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
+  return (
+    <div style={{ borderTop: "1px solid rgba(148, 163, 184, 0.18)", paddingTop: 10, marginTop: 10 }}>
+      <div style={{ fontSize: 11, fontWeight: 800, color: "#cbd5e1", marginBottom: 8 }}>{title}</div>
+      <div style={{ display: "grid", gap: 8 }}>{children}</div>
+    </div>
+  );
+}
+
+function NumberSlider({
+  label,
+  value,
+  min,
+  max,
+  step,
+  unit,
+  onChange
+}: {
+  label: string;
+  value: number;
+  min: number;
+  max: number;
+  step: number;
+  unit?: string;
+  onChange: (value: number) => void;
+}) {
+  return (
+    <label style={{ display: "grid", gridTemplateColumns: "118px 1fr 58px", alignItems: "center", gap: 8, fontSize: 12 }}>
+      <span>{label}</span>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(event) => onChange(Number(event.target.value))}
+      />
+      <input
+        type="number"
+        min={min}
+        max={max}
+        step={step}
+        value={Number.isInteger(value) ? value : Number(value.toFixed(2))}
+        onChange={(event) => onChange(Number(event.target.value))}
+        style={{ width: "100%", boxSizing: "border-box" }}
+        aria-label={`${label}${unit ? ` ${unit}` : ""}`}
+      />
+    </label>
+  );
+}
+
 export function App() {
   const [bezierPath, setBezierPath] = useState<BezierPath>(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -1120,12 +1536,16 @@ export function App() {
   const [aimMode, setAimMode] = useState<CameraAimMode>("screen-composer");
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [useWorldSpaceGizmo, setUseWorldSpaceGizmo] = useState(false);
   const [isTransforming, setIsTransforming] = useState(false);
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
   const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
   const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
+  const lookaheadMarkerRef = useRef<HTMLDivElement | null>(null);
+  const lookaheadLineRef = useRef<SVGLineElement | null>(null);
   const [anchorScales, setAnchorScales] = useState<number[]>(
     () => new Array(bezierPath.numAnchorPoints).fill(1)
   );
@@ -1380,6 +1800,13 @@ export function App() {
           <span style={{ marginLeft: 6 }}>Rig Frustum</span>
         </label>
 
+        <button
+          onClick={() => setSettingsOpen((open) => !open)}
+          style={{ marginTop: 10, width: "100%" }}
+        >
+          {settingsOpen ? "Hide Rig Settings" : "Open Rig Settings"}
+        </button>
+
         <div style={{ fontSize: 12, opacity: 0.8, marginTop: 10 }}>
           Click a handle to select it, then edit via TransformControls gizmo.
           <br />
@@ -1389,12 +1816,25 @@ export function App() {
         </div>
       </div>
 
-      {driveMainCamera && aimMode === "screen-composer" ? <ComposerGuides /> : null}
+      {driveMainCamera && aimMode === "screen-composer" ? (
+        <ComposerGuides settings={composerSettings} />
+      ) : null}
       {debugPreview ? (
         <DollyPreviewChrome
           composerActive={aimMode === "screen-composer"}
+          composerSettings={composerSettings}
           targetMarkerRef={dollyTargetMarkerRef}
           targetLineRef={dollyTargetLineRef}
+          lookaheadMarkerRef={lookaheadMarkerRef}
+          lookaheadLineRef={lookaheadLineRef}
+        />
+      ) : null}
+      {settingsOpen ? (
+        <RigSettingsPanel
+          settings={composerSettings}
+          onChange={setComposerSettings}
+          onClose={() => setSettingsOpen(false)}
+          onReset={() => setComposerSettings(DEFAULT_COMPOSER_SETTINGS)}
         />
       ) : null}
 
@@ -1415,6 +1855,7 @@ export function App() {
           driveMainCamera={driveMainCamera}
           poseSource={poseSource}
           aimMode={aimMode}
+          composerSettings={composerSettings}
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
           selectedHandleIndex={selectedHandleIndex}
@@ -1438,6 +1879,8 @@ export function App() {
           onRotateMidpointNormal={rotateMidpointNormal}
           dollyTargetMarkerRef={dollyTargetMarkerRef}
           dollyTargetLineRef={dollyTargetLineRef}
+          lookaheadMarkerRef={lookaheadMarkerRef}
+          lookaheadLineRef={lookaheadLineRef}
           onSetAnchorScale={(anchorIndex, scale) => {
             setAnchorScales((prev) => {
               const next = normalizeAnchorScales(bezierPath.numAnchorPoints, prev);
