@@ -1029,18 +1029,24 @@ function DollyPreviewChrome({
       <DollyPipZone
         width={zones.hardLimits.width}
         height={zones.hardLimits.height}
+        centerX={composerSettings.screenX}
+        centerY={composerSettings.screenY}
         color="rgba(248, 250, 252, 0.54)"
         fill="rgba(248, 250, 252, 0.02)"
       />
       <DollyPipZone
         width={zones.softZone.width}
         height={zones.softZone.height}
+        centerX={composerSettings.screenX}
+        centerY={composerSettings.screenY}
         color={composerActive ? "rgba(6, 182, 212, 0.78)" : "rgba(6, 182, 212, 0.38)"}
         fill="rgba(6, 182, 212, 0.035)"
       />
       <DollyPipZone
         width={zones.deadZone.width}
         height={zones.deadZone.height}
+        centerX={composerSettings.screenX}
+        centerY={composerSettings.screenY}
         color={composerActive ? "rgba(249, 115, 22, 0.92)" : "rgba(249, 115, 22, 0.44)"}
         fill="rgba(249, 115, 22, 0.04)"
       />
@@ -1176,11 +1182,15 @@ function updateDollyTargetOverlay(
 function DollyPipZone({
   width,
   height,
+  centerX,
+  centerY,
   color,
   fill
 }: {
   width: number;
   height: number;
+  centerX: number;
+  centerY: number;
   color: string;
   fill: string;
 }) {
@@ -1188,8 +1198,8 @@ function DollyPipZone({
     <div
       style={{
         position: "absolute",
-        left: "50%",
-        top: "50%",
+        left: `${50 + centerX * 100}%`,
+        top: `${50 - centerY * 100}%`,
         width: `${width * 100}%`,
         height: `${height * 100}%`,
         transform: "translate(-50%, -50%)",
@@ -1215,16 +1225,22 @@ function ComposerGuides({ settings }: { settings: ComposerSettings }) {
       <ComposerGuideBox
         width={zones.hardLimits.width}
         height={zones.hardLimits.height}
+        centerX={settings.screenX}
+        centerY={settings.screenY}
         color="rgba(15, 23, 42, 0.45)"
       />
       <ComposerGuideBox
         width={zones.softZone.width}
         height={zones.softZone.height}
+        centerX={settings.screenX}
+        centerY={settings.screenY}
         color="rgba(6, 182, 212, 0.55)"
       />
       <ComposerGuideBox
         width={zones.deadZone.width}
         height={zones.deadZone.height}
+        centerX={settings.screenX}
+        centerY={settings.screenY}
         color="rgba(249, 115, 22, 0.8)"
       />
     </div>
@@ -1234,18 +1250,22 @@ function ComposerGuides({ settings }: { settings: ComposerSettings }) {
 function ComposerGuideBox({
   width,
   height,
+  centerX,
+  centerY,
   color
 }: {
   width: number;
   height: number;
+  centerX: number;
+  centerY: number;
   color: string;
 }) {
   return (
     <div
       style={{
         position: "absolute",
-        left: "50%",
-        top: "50%",
+        left: `${50 + centerX * 100}vw`,
+        top: `${50 - centerY * 100}vh`,
         width: `${width * 100}vw`,
         height: `${height * 100}vh`,
         transform: "translate(-50%, -50%)",
