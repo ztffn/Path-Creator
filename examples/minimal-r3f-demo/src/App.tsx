@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, Line, OrbitControls, PivotControls, Text, TransformControls } from "@react-three/drei";
+import { Billboard, Line, OrbitControls, PivotControls, Text } from "@react-three/drei";
 import {
   BezierPath,
   ControlMode,
@@ -10,16 +10,35 @@ import {
   type Vec3
 } from "@huma/path-creator/core";
 import {
-  applyDollyCamera,
   applySampleToObject,
+  applyScreenComposerAim,
+  createScreenComposerState,
   samplePathAtDistance,
   usePathFollower
 } from "@huma/path-creator/r3f";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { Euler, MOUSE, Matrix4, Quaternion, Vector3, type Mesh, type Object3D } from "three";
+import {
+  CameraHelper,
+  Euler,
+  MOUSE,
+  Matrix4,
+  PerspectiveCamera,
+  Quaternion,
+  Vector3,
+  type Mesh
+} from "three";
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
-type TransformMode = "translate" | "rotate" | "scale";
+const SCREEN_COMPOSER_ZONES = {
+  deadZone: { width: 0.18, height: 0.14 },
+  softZone: { width: 0.55, height: 0.45 },
+  hardLimits: { width: 0.9, height: 0.85 }
+};
+const DOLLY_PIP_ASPECT = 16 / 9;
+const DOLLY_PIP_MARGIN = 16;
+const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
+type CameraPoseSource = "dolly" | "static";
+type CameraAimMode = "path-lookahead" | "look-at-target" | "screen-composer";
 
 function createMobiusLikeAnchors(count = 10): Vec3[] {
   const anchors: Vec3[] = [];
@@ -178,36 +197,119 @@ function getMidpointFrame(path: VertexPath, point: Vec3): {
   return { normal, tangent, rotation: [euler.x, euler.y, euler.z] };
 }
 
+function normalizeAnchorScales(count: number, previous: number[]): number[] {
+  const next = previous.slice(0, count);
+  while (next.length < count) next.push(1);
+  return next;
+}
+
+function getAnchorPointIndexForHandle(path: BezierPath, pointIndex: number): number {
+  const mod = pointIndex % 3;
+  if (mod === 0) return pointIndex;
+  if (mod === 1) return Math.max(0, pointIndex - 1);
+  return Math.min(path.numPoints - 1, pointIndex + 1);
+}
+
+function getPathLookTarget(samplePosition: Vec3, pathLookTarget: Vec3, trackingTarget: Vec3): Vec3 {
+  const dx = pathLookTarget.x - samplePosition.x;
+  const dy = pathLookTarget.y - samplePosition.y;
+  const dz = pathLookTarget.z - samplePosition.z;
+  return dx * dx + dy * dy + dz * dz < 1e-5 ? trackingTarget : pathLookTarget;
+}
+
+function applyCameraPose(
+  camera: PerspectiveCamera,
+  poseSource: CameraPoseSource,
+  samplePosition: Vec3,
+  target: Vector3,
+  deltaSeconds: number
+): void {
+  const alpha = 1 - Math.exp(-8 * deltaSeconds);
+  if (poseSource === "dolly") {
+    target.set(samplePosition.x, samplePosition.y, samplePosition.z);
+  } else {
+    target.set(STATIC_CAMERA_POSITION.x, STATIC_CAMERA_POSITION.y, STATIC_CAMERA_POSITION.z);
+  }
+  camera.position.lerp(target, alpha);
+}
+
+function applyCameraAim(
+  camera: PerspectiveCamera,
+  aimMode: CameraAimMode,
+  target: Vec3,
+  railUp: Vec3,
+  composerState: ReturnType<typeof createScreenComposerState>,
+  deltaSeconds: number
+): void {
+  if (aimMode === "screen-composer") {
+    applyScreenComposerAim(
+      camera,
+      target,
+      railUp,
+      composerState,
+      {
+        ...SCREEN_COMPOSER_ZONES,
+        damping: { x: 6, y: 8 },
+        lookaheadTime: 0.2,
+        lookaheadSmoothing: 8,
+        lookaheadIgnoreY: false
+      },
+      deltaSeconds
+    );
+    return;
+  }
+
+  composerState.initialized = false;
+  camera.up.set(railUp.x, railUp.y, railUp.z).normalize();
+  camera.lookAt(target.x, target.y, target.z);
+}
+
 function Scene({
   bezierPath,
   vertexPath,
   pathVersion,
   speed,
-  cameraFollow,
+  driveMainCamera,
+  poseSource,
+  aimMode,
+  debugPreview,
+  debugFrustum,
   selectedHandleIndex,
   selectedMidpointIndex,
-  transformMode,
+  anchorScales,
+  useWorldSpaceGizmo,
   isTransforming,
   onSelectHandle,
   onSelectMidpoint,
   onMovePoint,
+  onSetAnchorScale,
   onRotateMidpointNormal,
-  onTransformingChange
+  onTransformingChange,
+  dollyTargetMarkerRef,
+  dollyTargetLineRef
 }: {
   bezierPath: BezierPath;
   vertexPath: VertexPath;
   pathVersion: number;
   speed: number;
-  cameraFollow: boolean;
+  driveMainCamera: boolean;
+  poseSource: CameraPoseSource;
+  aimMode: CameraAimMode;
+  debugPreview: boolean;
+  debugFrustum: boolean;
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
-  transformMode: TransformMode;
+  anchorScales: number[];
+  useWorldSpaceGizmo: boolean;
   isTransforming: boolean;
   onSelectHandle: (index: number | null) => void;
   onSelectMidpoint: (index: number | null) => void;
   onMovePoint: (index: number, point: Vec3) => void;
+  onSetAnchorScale: (anchorIndex: number, scale: number) => void;
   onRotateMidpointNormal: (segmentIndex: number, deltaDegrees: number) => void;
   onTransformingChange: (isTransforming: boolean) => void;
+  dollyTargetMarkerRef: { current: HTMLDivElement | null };
+  dollyTargetLineRef: { current: SVGLineElement | null };
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
@@ -215,6 +317,18 @@ function Scene({
     speed,
     mode: followMode
   });
+  const composerState = useRef(createScreenComposerState());
+  const previewComposerState = useRef(createScreenComposerState());
+  const cameraPositionTarget = useMemo(() => new Vector3(), []);
+  const previewCameraPositionTarget = useMemo(() => new Vector3(), []);
+  const projectedTarget = useMemo(() => new Vector3(), []);
+  const previewCamera = useMemo(() => {
+    const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
+    camera.name = "dolly-preview-camera";
+    camera.updateProjectionMatrix();
+    return camera;
+  }, []);
+  const frustumHelper = useMemo(() => new CameraHelper(previewCamera), [previewCamera]);
 
   const pathLinePoints = useMemo(
     () => buildPathLinePoints(vertexPath),
@@ -250,7 +364,20 @@ function Scene({
   }, [midpointData]);
   const selectedMidpoint =
     selectedMidpointIndex !== null ? midpointData[selectedMidpointIndex] ?? null : null;
-  const handleRefs = useRef<Array<Object3D | null>>([]);
+  const selectedHandlePoint =
+    selectedHandleIndex !== null ? bezierPath.getPoint(selectedHandleIndex) : null;
+  const selectedHandleIsAnchor = selectedHandleIndex !== null && selectedHandleIndex % 3 === 0;
+  const selectedAnchorScale =
+    selectedHandleIsAnchor && selectedHandleIndex !== null
+      ? anchorScales[Math.floor(selectedHandleIndex / 3)] ?? 1
+      : 1;
+  const handlePivotMatrix = useMemo(() => new Matrix4(), []);
+  const [handleGizmoRotation, setHandleGizmoRotation] = useState<[number, number, number]>([0, 0, 0]);
+  const anchorDragStartRef = useRef<{
+    anchorIndex: number;
+    anchorStart: Vec3;
+    controlStarts: Array<{ index: number; point: Vec3 }>;
+  } | null>(null);
   const { gl } = useThree();
 
   useEffect(() => {
@@ -259,21 +386,89 @@ function Scene({
     return () => gl.domElement.removeEventListener("contextmenu", onContextMenu);
   }, [gl.domElement]);
 
+  useEffect(() => {
+    return () => frustumHelper.dispose();
+  }, [frustumHelper]);
+
+  useEffect(() => {
+    if (!selectedHandlePoint || isTransforming) return;
+    handlePivotMatrix.compose(
+      new Vector3(selectedHandlePoint.x, selectedHandlePoint.y, selectedHandlePoint.z),
+      new Quaternion(),
+      new Vector3(selectedAnchorScale, selectedAnchorScale, selectedAnchorScale)
+    );
+  }, [handlePivotMatrix, isTransforming, selectedAnchorScale, selectedHandlePoint]);
+  useEffect(() => {
+    if (isTransforming) return;
+    if (useWorldSpaceGizmo || selectedHandleIndex === null) {
+      setHandleGizmoRotation([0, 0, 0]);
+      return;
+    }
+    const anchorPointIndex = getAnchorPointIndexForHandle(bezierPath, selectedHandleIndex);
+    const anchorPoint = bezierPath.getPoint(anchorPointIndex);
+    const [qx, qy, qz, qw] = getSurfaceAlignedQuaternion(vertexPath, anchorPoint);
+    const euler = new Euler().setFromQuaternion(new Quaternion(qx, qy, qz, qw), "XYZ");
+    setHandleGizmoRotation([euler.x, euler.y, euler.z]);
+  }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
+
   useFrame(({ camera, scene }, delta) => {
     const followerObject = scene.getObjectByName("follower") as Mesh | null;
+    const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
     const sample = follower.step(delta);
+    const elapsed = performance.now() / 1000;
+    const lookSample = samplePathAtDistance(
+      vertexPath,
+      follower.state.current.distance + 0.85,
+      followMode
+    );
+    const tangent = new Vector3(
+      lookSample.direction.x,
+      lookSample.direction.y,
+      lookSample.direction.z
+    ).normalize();
+    const normal = new Vector3(lookSample.normal.x, lookSample.normal.y, lookSample.normal.z).normalize();
+    const side = new Vector3().crossVectors(tangent, normal).normalize();
+    const lookTarget = {
+      x: lookSample.position.x + side.x * Math.sin(elapsed * 0.85) * 0.75 + normal.x * Math.sin(elapsed * 1.7) * 0.35,
+      y: lookSample.position.y + side.y * Math.sin(elapsed * 0.85) * 0.75 + normal.y * Math.sin(elapsed * 1.7) * 0.35,
+      z: lookSample.position.z + side.z * Math.sin(elapsed * 0.85) * 0.75 + normal.z * Math.sin(elapsed * 1.7) * 0.35
+    };
+    const pathLookTarget = getPathLookTarget(sample.position, lookSample.position, lookTarget);
+    const aimTarget = aimMode === "look-at-target" || aimMode === "screen-composer"
+      ? lookTarget
+      : pathLookTarget;
 
     if (followerObject) {
       applySampleToObject(followerObject, sample);
     }
 
-    if (cameraFollow && !isTransforming) {
-      const lookSample = samplePathAtDistance(
-        vertexPath,
-        follower.state.current.distance + 0.6,
-        followMode
-      );
-      applyDollyCamera(camera, sample, lookSample.position, 8, delta);
+    if (lookTargetObject) {
+      lookTargetObject.position.set(lookTarget.x, lookTarget.y, lookTarget.z);
+    }
+
+    applyCameraPose(previewCamera, poseSource, sample.position, previewCameraPositionTarget, delta);
+    applyCameraAim(previewCamera, aimMode, aimTarget, sample.normal, previewComposerState.current, delta);
+    previewCamera.updateMatrixWorld();
+    frustumHelper.update();
+    projectedTarget.set(lookTarget.x, lookTarget.y, lookTarget.z).project(previewCamera);
+    updateDollyTargetOverlay(
+      dollyTargetMarkerRef.current,
+      dollyTargetLineRef.current,
+      (projectedTarget.x + 1) * 0.5,
+      (1 - projectedTarget.y) * 0.5,
+      projectedTarget.z >= -1 &&
+        projectedTarget.z <= 1 &&
+        projectedTarget.x >= -1 &&
+        projectedTarget.x <= 1 &&
+        projectedTarget.y >= -1 &&
+        projectedTarget.y <= 1
+    );
+
+    if (driveMainCamera && !isTransforming) {
+      applyCameraPose(camera as PerspectiveCamera, poseSource, sample.position, cameraPositionTarget, delta);
+      applyCameraAim(camera as PerspectiveCamera, aimMode, aimTarget, sample.normal, composerState.current, delta);
+    } else {
+      composerState.current = createScreenComposerState();
     }
   });
 
@@ -377,14 +572,14 @@ function Scene({
         const isSelected = selectedHandleIndex === i;
         const color = isAnchor ? "#f97316" : "#2563eb";
         const surfaceQuat = getSurfaceAlignedQuaternion(vertexPath, p);
+        const anchorIndex = Math.floor(i / 3);
+        const anchorScale = isAnchor ? anchorScales[anchorIndex] ?? 1 : 1;
+        const anchorScaleVisual = Math.max(0.65, Math.sqrt(anchorScale));
 
         if (!isAnchor) {
           return (
             <Billboard
               key={`handle-${i}`}
-              ref={(el) => {
-                handleRefs.current[i] = el;
-              }}
               position={[p.x, p.y, p.z]}
               onPointerDown={(e) => {
                 if (!draggable) return;
@@ -419,6 +614,18 @@ function Scene({
                 <meshBasicMaterial color={color} opacity={0.35} transparent side={2} />
               </mesh>
               {isAnchor ? (
+                <mesh position={[0, 0, -0.001]}>
+                  <ringGeometry
+                    args={[
+                      0.13 * anchorScaleVisual,
+                      0.145 * anchorScaleVisual,
+                      36
+                    ]}
+                  />
+                  <meshBasicMaterial color="#f97316" transparent opacity={0.55} side={2} />
+                </mesh>
+              ) : null}
+              {isAnchor ? (
                 <Text
                   position={[0, 0, 0.002]}
                   fontSize={0.09}
@@ -439,9 +646,6 @@ function Scene({
         return (
           <group
             key={`handle-${i}`}
-            ref={(el) => {
-              handleRefs.current[i] = el;
-            }}
             position={[p.x, p.y, p.z]}
             quaternion={surfaceQuat}
             onPointerDown={(e) => {
@@ -459,6 +663,18 @@ function Scene({
               />
               <meshBasicMaterial color={color} side={2} />
             </mesh>
+            {isAnchor ? (
+              <mesh position={[0, 0, -0.001]}>
+                <ringGeometry
+                  args={[
+                    0.13 * anchorScaleVisual,
+                    0.145 * anchorScaleVisual,
+                    36
+                  ]}
+                />
+                <meshBasicMaterial color="#f97316" transparent opacity={0.65} side={2} />
+              </mesh>
+            ) : null}
             <mesh
               onPointerDown={(e) => {
                 e.stopPropagation();
@@ -505,24 +721,107 @@ function Scene({
         );
       })}
 
-      {selectedHandleIndex !== null && handleRefs.current[selectedHandleIndex] ? (
-        <TransformControls
-          object={handleRefs.current[selectedHandleIndex]!}
-          mode={transformMode}
-          size={0.85}
-          space="world"
-          onMouseDown={() => onTransformingChange(true)}
-          onMouseUp={() => onTransformingChange(false)}
-          onObjectChange={() => {
-            const obj = handleRefs.current[selectedHandleIndex];
-            if (!obj) return;
-            onMovePoint(selectedHandleIndex, {
-              x: obj.position.x,
-              y: obj.position.y,
-              z: obj.position.z
-            });
+      {selectedHandleIndex !== null && selectedHandlePoint ? (
+        <PivotControls
+          matrix={handlePivotMatrix}
+          autoTransform={false}
+          fixed
+          scale={65}
+          lineWidth={2}
+          depthTest={false}
+          disableRotations={!selectedHandleIsAnchor}
+          disableScaling={!selectedHandleIsAnchor}
+          anchor={[0, 0, 0]}
+          rotation={handleGizmoRotation}
+          onDragStart={() => {
+            if (selectedHandleIsAnchor && bezierPath.controlMode !== ControlMode.Automatic) {
+              const controlStarts: Array<{ index: number; point: Vec3 }> = [];
+              const prevControlIndex = bezierPath.isClosed
+                ? (selectedHandleIndex - 1 + bezierPath.numPoints) % bezierPath.numPoints
+                : selectedHandleIndex - 1;
+              const nextControlIndex = bezierPath.isClosed
+                ? (selectedHandleIndex + 1) % bezierPath.numPoints
+                : selectedHandleIndex + 1;
+
+              if (prevControlIndex >= 0 && prevControlIndex < bezierPath.numPoints && prevControlIndex % 3 !== 0) {
+                const p = bezierPath.getPoint(prevControlIndex);
+                controlStarts.push({ index: prevControlIndex, point: { x: p.x, y: p.y, z: p.z } });
+              }
+              if (nextControlIndex >= 0 && nextControlIndex < bezierPath.numPoints && nextControlIndex % 3 !== 0) {
+                const p = bezierPath.getPoint(nextControlIndex);
+                controlStarts.push({ index: nextControlIndex, point: { x: p.x, y: p.y, z: p.z } });
+              }
+
+              const a = bezierPath.getPoint(selectedHandleIndex);
+              anchorDragStartRef.current = {
+                anchorIndex: selectedHandleIndex,
+                anchorStart: { x: a.x, y: a.y, z: a.z },
+                controlStarts
+              };
+            } else {
+              anchorDragStartRef.current = null;
+            }
+
+            onTransformingChange(true);
           }}
-        />
+          onDragEnd={() => {
+            anchorDragStartRef.current = null;
+            onTransformingChange(false);
+          }}
+          onDrag={(l, deltaL) => {
+            handlePivotMatrix.copy(l);
+            const position = new Vector3();
+            const dq = new Quaternion();
+            const ds = new Vector3();
+            l.decompose(position, dq, ds);
+
+            onMovePoint(selectedHandleIndex, {
+              x: position.x,
+              y: position.y,
+              z: position.z
+            });
+
+            if (selectedHandleIsAnchor) {
+              const uniformScale = Math.max(0.05, (ds.x + ds.y + ds.z) / 3);
+              onSetAnchorScale(Math.floor(selectedHandleIndex / 3), uniformScale);
+            }
+
+            const dragState = anchorDragStartRef.current;
+            if (
+              !dragState ||
+              !selectedHandleIsAnchor ||
+              dragState.anchorIndex !== selectedHandleIndex
+            ) {
+              return;
+            }
+
+            const deltaQuat = new Quaternion().setFromRotationMatrix(deltaL);
+            const translation = new Vector3(
+              position.x - dragState.anchorStart.x,
+              position.y - dragState.anchorStart.y,
+              position.z - dragState.anchorStart.z
+            );
+
+            for (const c of dragState.controlStarts) {
+              const offset = new Vector3(
+                c.point.x - dragState.anchorStart.x,
+                c.point.y - dragState.anchorStart.y,
+                c.point.z - dragState.anchorStart.z
+              ).applyQuaternion(deltaQuat);
+
+              onMovePoint(c.index, {
+                x: dragState.anchorStart.x + offset.x + translation.x,
+                y: dragState.anchorStart.y + offset.y + translation.y,
+                z: dragState.anchorStart.z + offset.z + translation.z
+              });
+            }
+          }}
+        >
+          <mesh>
+            <sphereGeometry args={[0.001, 4, 4]} />
+            <meshBasicMaterial transparent opacity={0} />
+          </mesh>
+        </PivotControls>
       ) : null}
 
       <mesh
@@ -540,7 +839,264 @@ function Scene({
         <sphereGeometry args={[0.13, 16, 16]} />
         <meshStandardMaterial color="#ef4444" />
       </mesh>
+
+      <mesh name="look-target">
+        <sphereGeometry args={[0.1, 16, 16]} />
+        <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
+      </mesh>
+
+      {debugFrustum ? <primitive object={frustumHelper} /> : null}
+      {debugPreview ? <DollyCameraPip camera={previewCamera} frustumHelper={frustumHelper} /> : null}
     </>
+  );
+}
+
+function DollyCameraPip({
+  camera: dollyCamera,
+  frustumHelper
+}: {
+  camera: PerspectiveCamera;
+  frustumHelper: CameraHelper;
+}) {
+  const { gl, scene, size } = useThree();
+
+  useFrame(({ camera }) => {
+    gl.setScissorTest(false);
+    gl.setViewport(0, 0, size.width, size.height);
+    gl.render(scene, camera);
+
+    const width = Math.min(360, Math.max(220, size.width * 0.28));
+    const height = width / DOLLY_PIP_ASPECT;
+    const x = Math.max(DOLLY_PIP_MARGIN, size.width - width - DOLLY_PIP_MARGIN);
+    const y = DOLLY_PIP_MARGIN;
+
+    gl.clearDepth();
+    gl.setScissorTest(true);
+    gl.setScissor(x, y, width, height);
+    gl.setViewport(x, y, width, height);
+    frustumHelper.visible = false;
+    gl.render(scene, dollyCamera);
+    frustumHelper.visible = true;
+    gl.setScissorTest(false);
+    gl.setViewport(0, 0, size.width, size.height);
+  }, 1);
+
+  return null;
+}
+
+function DollyPreviewChrome({
+  composerActive,
+  targetMarkerRef,
+  targetLineRef
+}: {
+  composerActive: boolean;
+  targetMarkerRef: { current: HTMLDivElement | null };
+  targetLineRef: { current: SVGLineElement | null };
+}) {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        right: DOLLY_PIP_MARGIN,
+        bottom: DOLLY_PIP_MARGIN,
+        zIndex: 9,
+        width: "min(360px, max(220px, 28vw))",
+        aspectRatio: "16 / 9",
+        pointerEvents: "none",
+        border: "2px solid rgba(248, 250, 252, 0.92)",
+        boxShadow: "0 18px 44px rgba(15, 23, 42, 0.28)",
+        background: "rgba(15, 23, 42, 0.2)",
+        boxSizing: "border-box"
+      }}
+    >
+      <DollyPipZone
+        width={SCREEN_COMPOSER_ZONES.hardLimits.width}
+        height={SCREEN_COMPOSER_ZONES.hardLimits.height}
+        color="rgba(248, 250, 252, 0.54)"
+        fill="rgba(248, 250, 252, 0.02)"
+      />
+      <DollyPipZone
+        width={SCREEN_COMPOSER_ZONES.softZone.width}
+        height={SCREEN_COMPOSER_ZONES.softZone.height}
+        color={composerActive ? "rgba(6, 182, 212, 0.78)" : "rgba(6, 182, 212, 0.38)"}
+        fill="rgba(6, 182, 212, 0.035)"
+      />
+      <DollyPipZone
+        width={SCREEN_COMPOSER_ZONES.deadZone.width}
+        height={SCREEN_COMPOSER_ZONES.deadZone.height}
+        color={composerActive ? "rgba(249, 115, 22, 0.92)" : "rgba(249, 115, 22, 0.44)"}
+        fill="rgba(249, 115, 22, 0.04)"
+      />
+      <svg
+        viewBox="0 0 100 100"
+        preserveAspectRatio="none"
+        style={{
+          position: "absolute",
+          inset: 0,
+          width: "100%",
+          height: "100%",
+          overflow: "visible"
+        }}
+      >
+        <line
+          ref={targetLineRef}
+          x1="50"
+          y1="50"
+          x2="50"
+          y2="50"
+          stroke="rgba(6, 182, 212, 0.72)"
+          strokeWidth="0.55"
+          vectorEffect="non-scaling-stroke"
+        />
+      </svg>
+      <div
+        ref={targetMarkerRef}
+        style={{
+          position: "absolute",
+          left: "50%",
+          top: "50%",
+          width: 14,
+          height: 14,
+          transform: "translate(-50%, -50%)",
+          borderRadius: 999,
+          background: "#06b6d4",
+          border: "2px solid rgba(248, 250, 252, 0.95)",
+          boxShadow: "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)",
+          boxSizing: "border-box"
+        }}
+      />
+      <div
+        style={{
+          position: "absolute",
+          top: 8,
+          left: 8,
+          padding: "3px 7px",
+          borderRadius: 4,
+          background: "rgba(15, 23, 42, 0.72)",
+          color: "#f8fafc",
+          fontSize: 11,
+          fontWeight: 700,
+          letterSpacing: 0,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif"
+        }}
+      >
+        Rig Camera
+      </div>
+    </div>
+  );
+}
+
+function updateDollyTargetOverlay(
+  marker: HTMLDivElement | null,
+  line: SVGLineElement | null,
+  x: number,
+  y: number,
+  visible: boolean
+): void {
+  const clampedX = Math.max(0.02, Math.min(0.98, x));
+  const clampedY = Math.max(0.02, Math.min(0.98, y));
+  const xPercent = clampedX * 100;
+  const yPercent = clampedY * 100;
+
+  if (marker) {
+    marker.style.left = `${xPercent}%`;
+    marker.style.top = `${yPercent}%`;
+    marker.style.opacity = visible ? "1" : "0.42";
+    marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
+    marker.style.boxShadow = visible
+      ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
+      : "0 0 0 4px rgba(6, 182, 212, 0.12)";
+  }
+
+  if (line) {
+    line.setAttribute("x2", xPercent.toFixed(3));
+    line.setAttribute("y2", yPercent.toFixed(3));
+    line.setAttribute(
+      "stroke",
+      visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
+    );
+  }
+}
+
+function DollyPipZone({
+  width,
+  height,
+  color,
+  fill
+}: {
+  width: number;
+  height: number;
+  color: string;
+  fill: string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        width: `${width * 100}%`,
+        height: `${height * 100}%`,
+        transform: "translate(-50%, -50%)",
+        border: `1.5px solid ${color}`,
+        background: fill,
+        boxSizing: "border-box"
+      }}
+    />
+  );
+}
+
+function ComposerGuides() {
+  return (
+    <div
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 8,
+        pointerEvents: "none"
+      }}
+    >
+      <ComposerGuideBox
+        width={SCREEN_COMPOSER_ZONES.hardLimits.width}
+        height={SCREEN_COMPOSER_ZONES.hardLimits.height}
+        color="rgba(15, 23, 42, 0.45)"
+      />
+      <ComposerGuideBox
+        width={SCREEN_COMPOSER_ZONES.softZone.width}
+        height={SCREEN_COMPOSER_ZONES.softZone.height}
+        color="rgba(6, 182, 212, 0.55)"
+      />
+      <ComposerGuideBox
+        width={SCREEN_COMPOSER_ZONES.deadZone.width}
+        height={SCREEN_COMPOSER_ZONES.deadZone.height}
+        color="rgba(249, 115, 22, 0.8)"
+      />
+    </div>
+  );
+}
+
+function ComposerGuideBox({
+  width,
+  height,
+  color
+}: {
+  width: number;
+  height: number;
+  color: string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: "50%",
+        top: "50%",
+        width: `${width * 100}vw`,
+        height: `${height * 100}vh`,
+        transform: "translate(-50%, -50%)",
+        border: `2px solid ${color}`,
+        boxSizing: "border-box"
+      }}
+    />
   );
 }
 
@@ -559,16 +1115,29 @@ export function App() {
 
   const [pathVersion, setPathVersion] = useState(0);
   const [speed, setSpeed] = useState(1);
-  const [cameraFollow, setCameraFollow] = useState(false);
+  const [driveMainCamera, setDriveMainCamera] = useState(false);
+  const [poseSource, setPoseSource] = useState<CameraPoseSource>("dolly");
+  const [aimMode, setAimMode] = useState<CameraAimMode>("screen-composer");
+  const [debugPreview, setDebugPreview] = useState(true);
+  const [debugFrustum, setDebugFrustum] = useState(true);
+  const [useWorldSpaceGizmo, setUseWorldSpaceGizmo] = useState(false);
   const [isTransforming, setIsTransforming] = useState(false);
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
   const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
-  const [transformMode, setTransformMode] = useState<TransformMode>("translate");
+  const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
+  const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
+  const [anchorScales, setAnchorScales] = useState<number[]>(
+    () => new Array(bezierPath.numAnchorPoints).fill(1)
+  );
 
   const vertexPath = useMemo(
     () => new VertexPath(bezierPath, { spacing: 0.03 }),
     [bezierPath, pathVersion]
   );
+  const selectedAnchorScaleForUi =
+    selectedHandleIndex !== null && selectedHandleIndex % 3 === 0
+      ? anchorScales[Math.floor(selectedHandleIndex / 3)] ?? 1
+      : null;
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -581,6 +1150,7 @@ export function App() {
 
   function mutatePath(mutator: (path: BezierPath) => void): void {
     mutator(bezierPath);
+    setAnchorScales((prev) => normalizeAnchorScales(bezierPath.numAnchorPoints, prev));
     setPathVersion((v) => v + 1);
   }
 
@@ -648,6 +1218,7 @@ export function App() {
       const parsed = JSON.parse(raw) as SerializedBezierPath;
       const loaded = BezierPath.fromJSON(parsed);
       setBezierPath(loaded);
+      setAnchorScales(new Array(loaded.numAnchorPoints).fill(1));
       setSelectedHandleIndex(0);
       setSelectedMidpointIndex(null);
       setPathVersion((v) => v + 1);
@@ -657,7 +1228,9 @@ export function App() {
   }
 
   function resetPath(): void {
-    setBezierPath(createDefaultBezier());
+    const reset = createDefaultBezier();
+    setBezierPath(reset);
+    setAnchorScales(new Array(reset.numAnchorPoints).fill(1));
     setSelectedHandleIndex(0);
     setSelectedMidpointIndex(null);
     setPathVersion((v) => v + 1);
@@ -682,6 +1255,22 @@ export function App() {
         <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
           Path Editor (TransformControls)
         </div>
+        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
+          Anchor scale: select an anchor and use scale handles.
+        </div>
+        {selectedAnchorScaleForUi !== null ? (
+          <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>
+            Selected anchor scale: {selectedAnchorScaleForUi.toFixed(2)}
+          </div>
+        ) : null}
+        <label style={{ display: "block", marginBottom: 8 }}>
+          <input
+            type="checkbox"
+            checked={useWorldSpaceGizmo}
+            onChange={(e) => setUseWorldSpaceGizmo(e.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>World-space gizmo</span>
+        </label>
 
         <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
           <button onClick={addAnchor}>Add Anchor</button>
@@ -727,19 +1316,6 @@ export function App() {
         </label>
 
         <label style={{ display: "block", marginBottom: 8 }}>
-          Transform Mode
-          <select
-            style={{ marginLeft: 8 }}
-            value={transformMode}
-            onChange={(e) => setTransformMode(e.target.value as TransformMode)}
-          >
-            <option value="translate">Translate</option>
-            <option value="rotate">Rotate</option>
-            <option value="scale">Scale</option>
-          </select>
-        </label>
-
-        <label style={{ display: "block", marginBottom: 8 }}>
           Speed: {speed.toFixed(2)}
           <input
             style={{ width: "100%" }}
@@ -752,13 +1328,56 @@ export function App() {
           />
         </label>
 
-        <label style={{ display: "block" }}>
+        <label style={{ display: "block", marginBottom: 8 }}>
           <input
             type="checkbox"
-            checked={cameraFollow}
-            onChange={(e) => setCameraFollow(e.target.checked)}
+            checked={driveMainCamera}
+            onChange={(e) => setDriveMainCamera(e.target.checked)}
           />
-          <span style={{ marginLeft: 6 }}>Dolly Camera</span>
+          <span style={{ marginLeft: 6 }}>Drive main viewport</span>
+        </label>
+
+        <label style={{ display: "block", marginBottom: 8 }}>
+          Pose Source
+          <select
+            style={{ marginLeft: 8 }}
+            value={poseSource}
+            onChange={(e) => setPoseSource(e.target.value as CameraPoseSource)}
+          >
+            <option value="dolly">Dolly Rail</option>
+            <option value="static">Static</option>
+          </select>
+        </label>
+
+        <label style={{ display: "block", marginBottom: 8 }}>
+          Aim Mode
+          <select
+            style={{ marginLeft: 8 }}
+            value={aimMode}
+            onChange={(e) => setAimMode(e.target.value as CameraAimMode)}
+          >
+            <option value="screen-composer">Screen Composer</option>
+            <option value="path-lookahead">Path Lookahead</option>
+            <option value="look-at-target">Look At Target</option>
+          </select>
+        </label>
+
+        <label style={{ display: "block", marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={debugPreview}
+            onChange={(e) => setDebugPreview(e.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Rig PiP</span>
+        </label>
+
+        <label style={{ display: "block", marginTop: 8 }}>
+          <input
+            type="checkbox"
+            checked={debugFrustum}
+            onChange={(e) => setDebugFrustum(e.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Rig Frustum</span>
         </label>
 
         <div style={{ fontSize: 12, opacity: 0.8, marginTop: 10 }}>
@@ -770,11 +1389,20 @@ export function App() {
         </div>
       </div>
 
+      {driveMainCamera && aimMode === "screen-composer" ? <ComposerGuides /> : null}
+      {debugPreview ? (
+        <DollyPreviewChrome
+          composerActive={aimMode === "screen-composer"}
+          targetMarkerRef={dollyTargetMarkerRef}
+          targetLineRef={dollyTargetLineRef}
+        />
+      ) : null}
+
       <Canvas style={{ width: "100%", height: "100%" }} camera={{ position: [0, 0, 6], fov: 45 }}>
         <color attach="background" args={["#f8fafc"]} />
         <OrbitControls
           makeDefault
-          enabled={!isTransforming}
+          enabled={!isTransforming && !driveMainCamera}
           enableDamping
           dampingFactor={0.08}
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
@@ -784,10 +1412,15 @@ export function App() {
           vertexPath={vertexPath}
           pathVersion={pathVersion}
           speed={speed}
-          cameraFollow={cameraFollow}
+          driveMainCamera={driveMainCamera}
+          poseSource={poseSource}
+          aimMode={aimMode}
+          debugPreview={debugPreview}
+          debugFrustum={debugFrustum}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
-          transformMode={transformMode}
+          anchorScales={anchorScales}
+          useWorldSpaceGizmo={useWorldSpaceGizmo}
           isTransforming={isTransforming}
           onSelectHandle={(idx) => {
             setSelectedHandleIndex(idx);
@@ -803,6 +1436,15 @@ export function App() {
           }}
           onTransformingChange={setIsTransforming}
           onRotateMidpointNormal={rotateMidpointNormal}
+          dollyTargetMarkerRef={dollyTargetMarkerRef}
+          dollyTargetLineRef={dollyTargetLineRef}
+          onSetAnchorScale={(anchorIndex, scale) => {
+            setAnchorScales((prev) => {
+              const next = normalizeAnchorScales(bezierPath.numAnchorPoints, prev);
+              if (anchorIndex >= 0 && anchorIndex < next.length) next[anchorIndex] = scale;
+              return next;
+            });
+          }}
           onMovePoint={(index, point) => {
             mutatePath((path) => path.movePoint(index, point));
           }}
