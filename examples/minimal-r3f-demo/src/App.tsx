@@ -1445,13 +1445,8 @@ function RigSettingsPanel({
   return (
     <div
       style={{
-        position: "fixed",
-        top: 12,
-        right: 366,
-        zIndex: 12,
-        width: 340,
-        maxHeight: "calc(100vh - 24px)",
-        overflowY: "auto",
+        width: "100%",
+        boxSizing: "border-box",
         padding: 12,
         borderRadius: 8,
         background: "rgba(10, 16, 28, 0.92)",
@@ -1733,13 +1728,8 @@ function VirtualCameraPanel({
   return (
     <div
       style={{
-        position: "fixed",
-        right: 12,
-        top: 12,
-        zIndex: 11,
-        width: 340,
-        maxHeight: "calc(100vh - 260px)",
-        overflowY: "auto",
+        width: "100%",
+        boxSizing: "border-box",
         padding: 12,
         borderRadius: 8,
         background: "rgba(9, 14, 24, 0.9)",
@@ -2087,176 +2077,218 @@ export function App() {
           top: 12,
           left: 12,
           zIndex: 10,
+          width: 380,
+          maxHeight: "calc(100vh - 24px)",
+          overflowY: "auto",
           padding: 12,
-          borderRadius: 10,
-          background: "rgba(16, 24, 40, 0.86)",
+          borderRadius: 8,
+          background: "rgba(16, 24, 40, 0.9)",
           color: "#f8fafc",
           fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          width: 380
+          boxShadow: "0 24px 60px rgba(15, 23, 42, 0.28)",
+          border: "1px solid rgba(148, 163, 184, 0.22)",
+          boxSizing: "border-box"
         }}
       >
-        <div style={{ fontSize: 14, fontWeight: 700, marginBottom: 10 }}>
-          Path Editor (TransformControls)
-        </div>
-        <div style={{ fontSize: 12, opacity: 0.8, marginBottom: 8 }}>
-          Anchor scale: select an anchor and use scale handles.
-        </div>
-        {selectedAnchorScaleForUi !== null ? (
-          <div style={{ fontSize: 12, opacity: 0.9, marginBottom: 8 }}>
-            Selected anchor scale: {selectedAnchorScaleForUi.toFixed(2)}
+        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
+          <div>
+            <div style={{ fontSize: 14, fontWeight: 800 }}>Path Creator Demo</div>
+            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+              Edit spline, drive rigs, validate cameras
+            </div>
           </div>
-        ) : null}
-        <label style={{ display: "block", marginBottom: 8 }}>
-          <input
-            type="checkbox"
-            checked={useWorldSpaceGizmo}
-            onChange={(e) => setUseWorldSpaceGizmo(e.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>World-space gizmo</span>
-        </label>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <button onClick={addAnchor}>Add Anchor</button>
-          <button onClick={insertAnchorAtSelectedSegment}>Insert Midpoint</button>
-          <button onClick={deleteSelectedAnchor}>Delete Selected Anchor</button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <button
-            onClick={() =>
-              mutatePath((p) => {
-                p.autoSmooth();
-              })
-            }
-          >
-            Auto Smooth
-          </button>
-          <button onClick={() => mutatePath((p) => p.setClosed(!p.isClosed))}>
-            {bezierPath.isClosed ? "Open Path" : "Close Path"}
-          </button>
-          <button onClick={resetPath}>Reset</button>
-        </div>
-
-        <div style={{ display: "flex", gap: 8, marginBottom: 8 }}>
-          <button onClick={savePath}>Save</button>
-          <button onClick={loadPath}>Load</button>
-        </div>
-
-        <label style={{ display: "block", marginBottom: 8 }}>
-          Control Mode
-          <select
-            style={{ marginLeft: 8 }}
-            value={bezierPath.controlMode}
-            onChange={(e) => {
-              mutatePath((p) => p.setControlMode(e.target.value as ControlMode));
+          <div
+            style={{
+              padding: "3px 7px",
+              borderRadius: 4,
+              background: isTransforming ? "rgba(249, 115, 22, 0.24)" : "rgba(34, 197, 94, 0.16)",
+              color: isTransforming ? "#fed7aa" : "#bbf7d0",
+              fontSize: 11,
+              fontWeight: 800
             }}
           >
-            <option value={ControlMode.Automatic}>Automatic</option>
-            <option value={ControlMode.Free}>Free</option>
-            <option value={ControlMode.Aligned}>Aligned</option>
-            <option value={ControlMode.Mirrored}>Mirrored</option>
-          </select>
-        </label>
+            {isTransforming ? "Editing" : "Ready"}
+          </div>
+        </div>
 
-        <label style={{ display: "block", marginBottom: 8 }}>
-          Speed: {speed.toFixed(2)}
-          <input
-            style={{ width: "100%" }}
-            type="range"
+        <SettingsSection title="Path Editing">
+          {selectedAnchorScaleForUi !== null ? (
+            <div style={{ fontSize: 12, color: "#e2e8f0" }}>
+              Selected anchor scale: {selectedAnchorScaleForUi.toFixed(2)}
+            </div>
+          ) : (
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>
+              Select an anchor to move, rotate, or scale it.
+            </div>
+          )}
+
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={useWorldSpaceGizmo}
+              onChange={(e) => setUseWorldSpaceGizmo(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>World-space gizmo</span>
+          </label>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <button onClick={addAnchor}>Add Anchor</button>
+            <button onClick={insertAnchorAtSelectedSegment}>Insert Midpoint</button>
+            <button onClick={deleteSelectedAnchor}>Delete Anchor</button>
+            <button
+              onClick={() =>
+                mutatePath((p) => {
+                  p.autoSmooth();
+                })
+              }
+            >
+              Auto Smooth
+            </button>
+            <button onClick={() => mutatePath((p) => p.setClosed(!p.isClosed))}>
+              {bezierPath.isClosed ? "Open Path" : "Close Path"}
+            </button>
+            <button onClick={resetPath}>Reset Path</button>
+          </div>
+
+          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
+            <button onClick={savePath}>Save Path</button>
+            <button onClick={loadPath}>Load Path</button>
+          </div>
+
+          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span>Control Mode</span>
+            <select
+              value={bezierPath.controlMode}
+              onChange={(e) => {
+                mutatePath((p) => p.setControlMode(e.target.value as ControlMode));
+              }}
+            >
+              <option value={ControlMode.Automatic}>Automatic</option>
+              <option value={ControlMode.Free}>Free</option>
+              <option value={ControlMode.Aligned}>Aligned</option>
+              <option value={ControlMode.Mirrored}>Mirrored</option>
+            </select>
+          </label>
+        </SettingsSection>
+
+        <SettingsSection title="Rig Driver">
+          <NumberSlider
+            label="Speed"
+            value={speed}
             min={0.2}
             max={3}
             step={0.1}
-            value={speed}
-            onChange={(e) => setSpeed(Number(e.target.value))}
+            onChange={setSpeed}
           />
-        </label>
 
-        <label style={{ display: "block", marginBottom: 8 }}>
-          <input
-            type="checkbox"
-            checked={driveMainCamera}
-            onChange={(e) => setDriveMainCamera(e.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Drive main viewport</span>
-        </label>
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={driveMainCamera}
+              onChange={(e) => {
+                setDriveMainCamera(e.target.checked);
+                if (e.target.checked) releaseVirtualCamera();
+              }}
+            />
+            <span style={{ marginLeft: 6 }}>Drive main viewport from rig</span>
+          </label>
 
-        <label style={{ display: "block", marginBottom: 8 }}>
-          Pose Source
-          <select
-            style={{ marginLeft: 8 }}
-            value={poseSource}
-            onChange={(e) => setPoseSource(e.target.value as CameraPoseSource)}
-          >
-            <option value="dolly">Dolly Rail</option>
-            <option value="static">Static</option>
-          </select>
-        </label>
+          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span>Pose Source</span>
+            <select
+              value={poseSource}
+              onChange={(e) => setPoseSource(e.target.value as CameraPoseSource)}
+            >
+              <option value="dolly">Dolly Rail</option>
+              <option value="static">Static</option>
+            </select>
+          </label>
 
-        <label style={{ display: "block", marginBottom: 8 }}>
-          Aim Mode
-          <select
-            style={{ marginLeft: 8 }}
-            value={aimMode}
-            onChange={(e) => setAimMode(e.target.value as CameraAimMode)}
-          >
-            <option value="screen-composer">Screen Composer</option>
-            <option value="path-lookahead">Path Lookahead</option>
-            <option value="look-at-target">Look At Target</option>
-          </select>
-        </label>
+          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <span>Aim Mode</span>
+            <select
+              value={aimMode}
+              onChange={(e) => setAimMode(e.target.value as CameraAimMode)}
+            >
+              <option value="screen-composer">Screen Composer</option>
+              <option value="path-lookahead">Path Lookahead</option>
+              <option value="look-at-target">Look At Target</option>
+            </select>
+          </label>
+        </SettingsSection>
 
-        <label style={{ display: "block", marginTop: 8 }}>
-          <input
-            type="checkbox"
-            checked={debugPreview}
-            onChange={(e) => setDebugPreview(e.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Rig PiP</span>
-        </label>
+        <SettingsSection title="Viewport Debug">
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={debugPreview}
+              onChange={(e) => setDebugPreview(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>Show rig PiP</span>
+          </label>
 
-        <label style={{ display: "block", marginTop: 8 }}>
-          <input
-            type="checkbox"
-            checked={debugFrustum}
-            onChange={(e) => setDebugFrustum(e.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Rig Frustum</span>
-        </label>
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={debugFrustum}
+              onChange={(e) => setDebugFrustum(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>Show rig frustum</span>
+          </label>
 
-        <button
-          onClick={() => setSettingsOpen((open) => !open)}
-          style={{ marginTop: 10, width: "100%" }}
-        >
-          {settingsOpen ? "Hide Rig Settings" : "Open Rig Settings"}
-        </button>
-
-        <div style={{ fontSize: 12, opacity: 0.8, marginTop: 10 }}>
-          Click a handle to select it, then edit via TransformControls gizmo.
-          <br />
-          Orbit: right-drag. Zoom: wheel. Pan: middle-drag.
-          <br />
-          Insert Midpoint splits the segment after selected anchor.
-        </div>
+          <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
+            Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
+          </div>
+        </SettingsSection>
       </div>
 
       {driveMainCamera && aimMode === "screen-composer" ? (
         <ComposerGuides settings={composerSettings} />
       ) : null}
-      <VirtualCameraPanel
-        cameras={virtualCameras}
-        activeId={activeVirtualCameraId}
-        captureSource={virtualCameraCaptureSource}
-        blendCurve={virtualCameraBlendCurve}
-        blendDuration={virtualCameraBlendDuration}
-        transitionProgress={virtualCameraTransitionProgress}
-        onCaptureSourceChange={setVirtualCameraCaptureSource}
-        onBlendCurveChange={setVirtualCameraBlendCurve}
-        onBlendDurationChange={setVirtualCameraBlendDuration}
-        onCapture={captureVirtualCamera}
-        onActivate={activateVirtualCamera}
-        onDelete={deleteVirtualCamera}
-        onRelease={releaseVirtualCamera}
-      />
+      <div
+        style={{
+          position: "fixed",
+          top: 12,
+          right: 12,
+          zIndex: 11,
+          width: 360,
+          maxHeight: debugPreview ? "calc(100vh - 260px)" : "calc(100vh - 24px)",
+          overflowY: "auto",
+          display: "grid",
+          gap: 10,
+          fontFamily: "ui-sans-serif, system-ui, sans-serif"
+        }}
+      >
+        <VirtualCameraPanel
+          cameras={virtualCameras}
+          activeId={activeVirtualCameraId}
+          captureSource={virtualCameraCaptureSource}
+          blendCurve={virtualCameraBlendCurve}
+          blendDuration={virtualCameraBlendDuration}
+          transitionProgress={virtualCameraTransitionProgress}
+          onCaptureSourceChange={setVirtualCameraCaptureSource}
+          onBlendCurveChange={setVirtualCameraBlendCurve}
+          onBlendDurationChange={setVirtualCameraBlendDuration}
+          onCapture={captureVirtualCamera}
+          onActivate={activateVirtualCamera}
+          onDelete={deleteVirtualCamera}
+          onRelease={releaseVirtualCamera}
+        />
+        <button
+          onClick={() => setSettingsOpen((open) => !open)}
+          style={{ width: "100%" }}
+        >
+          {settingsOpen ? "Hide Composer Settings" : "Open Composer Settings"}
+        </button>
+        {settingsOpen ? (
+          <RigSettingsPanel
+            settings={composerSettings}
+            onChange={setComposerSettings}
+            onClose={() => setSettingsOpen(false)}
+            onReset={() => setComposerSettings(DEFAULT_COMPOSER_SETTINGS)}
+          />
+        ) : null}
+      </div>
       {debugPreview ? (
         <DollyPreviewChrome
           composerActive={aimMode === "screen-composer"}
@@ -2265,14 +2297,6 @@ export function App() {
           targetLineRef={dollyTargetLineRef}
           lookaheadMarkerRef={lookaheadMarkerRef}
           lookaheadLineRef={lookaheadLineRef}
-        />
-      ) : null}
-      {settingsOpen ? (
-        <RigSettingsPanel
-          settings={composerSettings}
-          onChange={setComposerSettings}
-          onClose={() => setSettingsOpen(false)}
-          onReset={() => setComposerSettings(DEFAULT_COMPOSER_SETTINGS)}
         />
       ) : null}
 
