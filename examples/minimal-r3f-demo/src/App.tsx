@@ -70,6 +70,7 @@ import {
 } from "three";
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
+const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 const DEMO_RAIL_PATH_ID = "rail";
@@ -2636,7 +2637,31 @@ export function App() {
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
-  const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
+  const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() => {
+    // The show (shots, mounts, moves) survives reloads like the spline does.
+    const raw = localStorage.getItem(SHOW_STORAGE_KEY);
+    if (!raw) return [];
+    try {
+      const parsed = JSON.parse(raw) as Partial<DemoVirtualCamera>[];
+      return parsed.map((vcam, index) => ({
+        cartId: DEFAULT_DOLLY_ID,
+        cartOffset: { x: 0, y: 0, z: 0 },
+        trackTargetId: null,
+        noisePreset: "off" as const,
+        dutchDeg: 0,
+        shotStart: index * 5,
+        shotEnd: index * 5 + 5,
+        railFrom: null,
+        railTo: null,
+        ...vcam
+      })) as DemoVirtualCamera[];
+    } catch {
+      return [];
+    }
+  });
+  useEffect(() => {
+    localStorage.setItem(SHOW_STORAGE_KEY, JSON.stringify(virtualCameras));
+  }, [virtualCameras]);
   const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
   const [virtualCameraCaptureSource, setVirtualCameraCaptureSource] =
