@@ -62,6 +62,16 @@ export interface VirtualCameraTransition {
   curve?: VirtualCameraBlendCurve;
 }
 
+export interface VirtualCameraBrainState {
+  live?: VirtualCameraSnapshot;
+  previous?: VirtualCameraSnapshot;
+  target?: VirtualCameraSnapshot;
+  elapsedSeconds: number;
+  durationSeconds: number;
+  curve: VirtualCameraBlendCurve;
+  isBlending: boolean;
+}
+
 interface LensCamera extends Camera {
   fov?: number;
   zoom?: number;
@@ -329,6 +339,103 @@ export function applyVirtualCameraTransition(
   const snapshot = resolveVirtualCameraTransition(from, to, transition);
   applyVirtualCameraSnapshot(camera, snapshot);
   return snapshot;
+}
+
+export function createVirtualCameraBrainState(
+  initial?: VirtualCameraSnapshot
+): VirtualCameraBrainState {
+  const state: VirtualCameraBrainState = {
+    elapsedSeconds: 0,
+    durationSeconds: 0,
+    curve: "cut",
+    isBlending: false
+  };
+
+  if (initial) {
+    const live = cloneVirtualCameraSnapshot(initial);
+    state.live = live;
+    state.target = cloneVirtualCameraSnapshot(live);
+  }
+
+  return state;
+}
+
+export function activateVirtualCameraBrain(
+  state: VirtualCameraBrainState,
+  target: VirtualCameraSnapshot,
+  transition: Omit<VirtualCameraTransition, "elapsedSeconds"> = {}
+): void {
+  const previous = state.live ? cloneVirtualCameraSnapshot(state.live) : undefined;
+  const durationSeconds = Math.max(0, transition.durationSeconds ?? 0);
+  const curve = transition.curve ?? "easeInOut";
+
+  state.target = cloneVirtualCameraSnapshot(target);
+  state.elapsedSeconds = 0;
+  state.durationSeconds = durationSeconds;
+  state.curve = curve;
+
+  if (!previous || durationSeconds === 0 || curve === "cut") {
+    delete state.previous;
+    state.live = cloneVirtualCameraSnapshot(target);
+    state.isBlending = false;
+    return;
+  }
+
+  state.previous = previous;
+  state.live = resolveVirtualCameraTransition(previous, target, {
+    durationSeconds,
+    elapsedSeconds: 0,
+    curve
+  });
+  state.isBlending = true;
+}
+
+export function updateVirtualCameraBrain(
+  state: VirtualCameraBrainState,
+  deltaSeconds: number
+): VirtualCameraSnapshot | undefined {
+  if (!state.target) {
+    return state.live ? cloneVirtualCameraSnapshot(state.live) : undefined;
+  }
+
+  if (!state.isBlending || !state.previous) {
+    state.live = cloneVirtualCameraSnapshot(state.target);
+    return cloneVirtualCameraSnapshot(state.live);
+  }
+
+  state.elapsedSeconds = Math.min(
+    state.durationSeconds,
+    state.elapsedSeconds + Math.max(0, deltaSeconds)
+  );
+  state.live = resolveVirtualCameraTransition(state.previous, state.target, {
+    durationSeconds: state.durationSeconds,
+    elapsedSeconds: state.elapsedSeconds,
+    curve: state.curve
+  });
+
+  if (state.elapsedSeconds >= state.durationSeconds) {
+    state.live = cloneVirtualCameraSnapshot(state.target);
+    state.isBlending = false;
+  }
+
+  return cloneVirtualCameraSnapshot(state.live);
+}
+
+export function applyVirtualCameraBrain(
+  camera: Camera,
+  state: VirtualCameraBrainState,
+  deltaSeconds: number
+): VirtualCameraSnapshot | undefined {
+  const snapshot = updateVirtualCameraBrain(state, deltaSeconds);
+  if (snapshot) {
+    applyVirtualCameraSnapshot(camera, snapshot);
+  }
+  return snapshot;
+}
+
+export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): number {
+  if (!state.isBlending || state.durationSeconds <= 0) return 1;
+  return Math.min(1, Math.max(0, state.elapsedSeconds / state.durationSeconds));
 }
 
 export function evaluateVirtualCameraBlendCurve(

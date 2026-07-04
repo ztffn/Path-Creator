@@ -2,13 +2,17 @@ import { describe, expect, it } from "vitest";
 import { PerspectiveCamera, Quaternion, Vector3 } from "three";
 import { VertexPath } from "../src/core";
 import {
+  activateVirtualCameraBrain,
+  applyVirtualCameraBrain,
   applyVirtualCameraSnapshot,
   applyVirtualCameraTransition,
   blendVirtualCameraSnapshots,
   buildRoadMeshBuffers,
   buildTubeMeshBuffers,
   captureVirtualCameraSnapshot,
+  createVirtualCameraBrainState,
   evaluateVirtualCameraBlendCurve,
+  getVirtualCameraBrainProgress,
   resolveVirtualCameraTransition,
   type VirtualCameraSnapshot
 } from "../src/three";
@@ -123,6 +127,61 @@ describe("three virtual cameras", () => {
     expect(evaluateVirtualCameraBlendCurve(0.5, "easeIn")).toBeCloseTo(0.25, 6);
     expect(resolved.position.x).toBeCloseTo(2.5, 6);
   });
+
+  it("brain cuts on first activation", () => {
+    const brain = createVirtualCameraBrainState();
+    const to = snapshot("b", 10, new Quaternion());
+
+    activateVirtualCameraBrain(brain, to, {
+      durationSeconds: 2,
+      curve: "easeInOut"
+    });
+
+    expect(brain.isBlending).toBe(false);
+    expect(brain.live?.position.x).toBeCloseTo(10, 6);
+    expect(getVirtualCameraBrainProgress(brain)).toBeCloseTo(1, 6);
+  });
+
+  it("brain advances a timed blend and completes on target", () => {
+    const from = snapshot("a", 0, new Quaternion());
+    const to = snapshot("b", 10, new Quaternion());
+    const brain = createVirtualCameraBrainState(from);
+
+    activateVirtualCameraBrain(brain, to, {
+      durationSeconds: 2,
+      curve: "linear"
+    });
+
+    const halfway = applyVirtualCameraBrain(new PerspectiveCamera(), brain, 1);
+    expect(halfway?.position.x).toBeCloseTo(5, 6);
+    expect(getVirtualCameraBrainProgress(brain)).toBeCloseTo(0.5, 6);
+    expect(brain.isBlending).toBe(true);
+
+    const done = updateToCompletion(brain, 1);
+    expect(done?.position.x).toBeCloseTo(10, 6);
+    expect(brain.live?.position.x).toBeCloseTo(10, 6);
+    expect(brain.isBlending).toBe(false);
+    expect(getVirtualCameraBrainProgress(brain)).toBeCloseTo(1, 6);
+  });
+
+  it("brain applies resolved snapshots to a camera", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const from = snapshot("a", 0, new Quaternion(), { lens: { fov: 60 } });
+    const to = snapshot("b", 10, new Quaternion().setFromAxisAngle(yAxis, Math.PI), {
+      lens: { fov: 40 }
+    });
+    const brain = createVirtualCameraBrainState(from);
+
+    activateVirtualCameraBrain(brain, to, {
+      durationSeconds: 2,
+      curve: "linear"
+    });
+    applyVirtualCameraBrain(camera, brain, 1);
+
+    expect(camera.position.x).toBeCloseTo(5, 6);
+    expect(camera.quaternion.angleTo(new Quaternion())).toBeCloseTo(Math.PI / 2, 6);
+    expect(camera.fov).toBeCloseTo(50, 6);
+  });
 });
 
 function snapshot(
@@ -151,4 +210,11 @@ function toQuaternion(snapshot: VirtualCameraSnapshot): Quaternion {
     snapshot.quaternion.z,
     snapshot.quaternion.w
   );
+}
+
+function updateToCompletion(
+  brain: ReturnType<typeof createVirtualCameraBrainState>,
+  deltaSeconds: number
+): VirtualCameraSnapshot | undefined {
+  return applyVirtualCameraBrain(new PerspectiveCamera(), brain, deltaSeconds);
 }

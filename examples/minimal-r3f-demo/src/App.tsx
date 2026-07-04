@@ -17,8 +17,11 @@ import {
   usePathFollower
 } from "@huma/path-creator/r3f";
 import {
-  applyVirtualCameraTransition,
+  activateVirtualCameraBrain,
+  applyVirtualCameraBrain,
   captureVirtualCameraSnapshot,
+  createVirtualCameraBrainState,
+  getVirtualCameraBrainProgress,
   type VirtualCameraBlendCurve,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
@@ -75,7 +78,6 @@ type DemoVirtualCamera = {
 
 type VirtualCameraActivation = {
   key: number;
-  from?: VirtualCameraSnapshot;
   to: DemoVirtualCamera;
   durationSeconds: number;
   curve: VirtualCameraBlendCurve;
@@ -544,7 +546,8 @@ function Scene({
   } | null>(null);
   const lastCaptureRequestRef = useRef(virtualCameraCaptureRequest);
   const activeVirtualCameraKeyRef = useRef<number | null>(null);
-  const virtualCameraElapsedRef = useRef(0);
+  const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
+  const virtualCameraBrainRef = useRef(createVirtualCameraBrainState());
   const { gl } = useThree();
 
   useEffect(() => {
@@ -688,34 +691,41 @@ function Scene({
     if (virtualCameraActivation && !isTransforming) {
       if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
         activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
-        virtualCameraElapsedRef.current = 0;
+        resolvedVirtualCameraKeyRef.current = null;
         composerState.current = createScreenComposerState();
-      } else {
-        virtualCameraElapsedRef.current += delta;
+        activateVirtualCameraBrain(
+          virtualCameraBrainRef.current,
+          virtualCameraActivation.to.snapshot,
+          {
+            durationSeconds: virtualCameraActivation.durationSeconds,
+            curve: virtualCameraActivation.curve
+          }
+        );
       }
 
-      const resolvedSnapshot = applyVirtualCameraTransition(
+      const resolvedSnapshot = applyVirtualCameraBrain(
         mainCamera,
-        virtualCameraActivation.from,
-        virtualCameraActivation.to.snapshot,
-        {
-          durationSeconds: virtualCameraActivation.durationSeconds,
-          elapsedSeconds: virtualCameraElapsedRef.current,
-          curve: virtualCameraActivation.curve
-        }
+        virtualCameraBrainRef.current,
+        delta
       );
-      onVirtualCameraResolved({
-        snapshot: resolvedSnapshot,
-        progress:
-          virtualCameraActivation.durationSeconds <= 0
-            ? 1
-            : Math.min(1, virtualCameraElapsedRef.current / virtualCameraActivation.durationSeconds),
-        done:
-          virtualCameraActivation.durationSeconds <= 0 ||
-          virtualCameraElapsedRef.current >= virtualCameraActivation.durationSeconds
-      });
+      if (resolvedSnapshot) {
+        const done = !virtualCameraBrainRef.current.isBlending;
+        const progress = getVirtualCameraBrainProgress(virtualCameraBrainRef.current);
+        if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
+          onVirtualCameraResolved({
+            snapshot: resolvedSnapshot,
+            progress,
+            done
+          });
+          if (done) {
+            resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
+          }
+        }
+      }
     } else if (driveMainCamera && !isTransforming) {
       activeVirtualCameraKeyRef.current = null;
+      resolvedVirtualCameraKeyRef.current = null;
+      virtualCameraBrainRef.current = createVirtualCameraBrainState();
       applyCameraPose(mainCamera, poseSource, sample.position, cameraPositionTarget, delta);
       applyCameraAim(
         mainCamera,
@@ -728,6 +738,8 @@ function Scene({
       );
     } else {
       activeVirtualCameraKeyRef.current = null;
+      resolvedVirtualCameraKeyRef.current = null;
+      virtualCameraBrainRef.current = createVirtualCameraBrainState();
       composerState.current = createScreenComposerState();
     }
   });
@@ -1878,8 +1890,6 @@ export function App() {
     useState<VirtualCameraCaptureSource>("rig");
   const [virtualCameraActivation, setVirtualCameraActivation] =
     useState<VirtualCameraActivation | null>(null);
-  const [liveVirtualCameraSnapshot, setLiveVirtualCameraSnapshot] =
-    useState<VirtualCameraSnapshot | null>(null);
   const [virtualCameraBlendCurve, setVirtualCameraBlendCurve] =
     useState<VirtualCameraBlendCurve>("easeInOut");
   const [virtualCameraBlendDuration, setVirtualCameraBlendDuration] = useState(1.2);
@@ -2032,10 +2042,7 @@ export function App() {
     const camera = virtualCameras.find((item) => item.id === id);
     if (!camera) return;
 
-    const durationSeconds =
-      !liveVirtualCameraSnapshot || virtualCameraBlendCurve === "cut"
-        ? 0
-        : virtualCameraBlendDuration;
+    const durationSeconds = virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration;
     setActiveVirtualCameraId(id);
     setDriveMainCamera(false);
     setPoseSource(camera.poseSource);
@@ -2048,7 +2055,6 @@ export function App() {
       durationSeconds,
       curve: virtualCameraBlendCurve
     };
-    if (liveVirtualCameraSnapshot) activation.from = liveVirtualCameraSnapshot;
     setVirtualCameraActivation(activation);
   }
 
@@ -2057,7 +2063,6 @@ export function App() {
     if (activeVirtualCameraId === id) {
       setActiveVirtualCameraId(null);
       setVirtualCameraActivation(null);
-      setLiveVirtualCameraSnapshot(null);
       setVirtualCameraTransitionProgress(1);
     }
   }
@@ -2065,7 +2070,6 @@ export function App() {
   function releaseVirtualCamera(): void {
     setActiveVirtualCameraId(null);
     setVirtualCameraActivation(null);
-    setLiveVirtualCameraSnapshot(null);
     setVirtualCameraTransitionProgress(1);
   }
 
@@ -2348,7 +2352,6 @@ export function App() {
           virtualCameraActivation={virtualCameraActivation}
           onVirtualCameraCaptured={addCapturedVirtualCamera}
           onVirtualCameraResolved={({ snapshot, progress }) => {
-            setLiveVirtualCameraSnapshot(snapshot);
             setVirtualCameraTransitionProgress(progress);
             setComposerSettings((current) => mergeVirtualCameraSettings(current, snapshot.settings));
           }}

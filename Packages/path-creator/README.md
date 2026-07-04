@@ -73,8 +73,11 @@ real Three camera is updated by cutting to a snapshot or blending between snapsh
 
 ```ts
 import {
+  activateVirtualCameraBrain,
   applyVirtualCameraTransition,
-  captureVirtualCameraSnapshot
+  applyVirtualCameraBrain,
+  captureVirtualCameraSnapshot,
+  createVirtualCameraBrainState
 } from "@huma/path-creator/three";
 
 const shotA = captureVirtualCameraSnapshot(camera, {
@@ -101,6 +104,22 @@ const resolved = applyVirtualCameraTransition(camera, shotA, shotB, {
 It also returns the resolved snapshot, including blended numeric rig settings for
 timeline/editor code to feed into composers or other rig controls. A zero-duration
 transition is a cut.
+
+For frame-driven shot control, use the virtual camera brain helpers:
+
+```ts
+const brain = createVirtualCameraBrainState();
+
+activateVirtualCameraBrain(brain, shotB, {
+  durationSeconds: 1.2,
+  curve: "easeInOut"
+});
+
+function frame(deltaSeconds: number) {
+  const live = applyVirtualCameraBrain(camera, brain, deltaSeconds);
+  // live?.settings contains blended rig values for the current frame.
+}
+```
 
 ## R3F Runtime Example
 
