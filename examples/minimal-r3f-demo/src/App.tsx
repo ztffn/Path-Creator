@@ -637,7 +637,7 @@ function Scene({
   onSelectVirtualCamera,
   onUpdateVirtualCameraSnapshot,
   targetRegistry,
-  timelineMode,
+  timelineActive,
   timeline,
   timelinePlayerRef
 }: {
@@ -678,7 +678,7 @@ function Scene({
   onSelectVirtualCamera: (id: string | null) => void;
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   targetRegistry: TargetRegistry;
-  timelineMode: boolean;
+  timelineActive: boolean;
   timeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
 }) {
@@ -742,7 +742,6 @@ function Scene({
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
-  const timelineActive = timelineMode && timeline != null;
   const pipCamera =
     timelineActive || virtualCameraActivation || selectedVirtualCamera
       ? brainCamera
@@ -2467,13 +2466,13 @@ function VirtualCameraPanel({
 function TimelinePanel({
   timeline,
   playerRef,
-  enabled,
-  onEnabledChange
+  driving,
+  onTransport
 }: {
   timeline: Timeline | null;
   playerRef: { current: TimelinePlayer };
-  enabled: boolean;
-  onEnabledChange: (enabled: boolean) => void;
+  driving: boolean;
+  onTransport: () => void;
 }) {
   const [playing, setPlaying] = useState(false);
   const rangeRef = useRef<HTMLInputElement>(null);
@@ -2509,14 +2508,9 @@ function TimelinePanel({
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
         <div style={{ fontSize: 13, fontWeight: 800 }}>Timeline</div>
-        <label style={{ fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={enabled}
-            onChange={(event) => onEnabledChange(event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Drive PiP</span>
-        </label>
+        <span style={{ fontSize: 11, color: driving ? "#22c55e" : "#64748b" }}>
+          {driving ? "driving PiP" : "play or scrub to drive PiP"}
+        </span>
       </div>
 
       {timeline == null ? (
@@ -2534,6 +2528,7 @@ function TimelinePanel({
                 }
                 player.playing = !player.playing;
                 setPlaying(player.playing);
+                onTransport();
               }}
             >
               {playing ? "Pause" : "Play"}
@@ -2562,6 +2557,7 @@ function TimelinePanel({
             defaultValue={0}
             onChange={(event) => {
               seekTimelinePlayer(playerRef.current, Number(event.target.value));
+              onTransport();
             }}
           />
         </div>
@@ -2594,7 +2590,7 @@ export function App() {
   const [showTargetRig, setShowTargetRig] = useState(false);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
-  const [timelineMode, setTimelineMode] = useState(false);
+  const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
@@ -2657,14 +2653,14 @@ export function App() {
       tracks: [{ type: "camera", id: "camera-track", blocks }]
     });
   }, [virtualCameras]);
-  const pipLabel =
-    timelineMode && demoTimeline
-      ? "Timeline"
-      : virtualCameraActivation
-        ? "Brain Camera"
-        : selectedVirtualCamera
-          ? selectedVirtualCamera.name
-          : "Rig Camera";
+  const timelineActive = pipDriver === "timeline" && demoTimeline != null;
+  const pipLabel = timelineActive
+    ? "Timeline"
+    : virtualCameraActivation
+      ? "Brain Camera"
+      : selectedVirtualCamera
+        ? selectedVirtualCamera.name
+        : "Rig Camera";
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2832,6 +2828,8 @@ export function App() {
     const durationSeconds = virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration;
     setActiveVirtualCameraId(id);
     setSelectedVirtualCameraId(id);
+    setPipDriver("shots");
+    timelinePlayerRef.current.playing = false;
     setDriveMainCamera(false);
     setPoseSource(camera.poseSource);
     setAimMode(camera.aimMode);
@@ -2875,6 +2873,8 @@ export function App() {
     if (id !== null) {
       setSelectedHandleIndex(null);
       setSelectedMidpointIndex(null);
+      setPipDriver("shots");
+      timelinePlayerRef.current.playing = false;
     }
   }
 
@@ -3131,8 +3131,8 @@ export function App() {
         <TimelinePanel
           timeline={demoTimeline}
           playerRef={timelinePlayerRef}
-          enabled={timelineMode}
-          onEnabledChange={setTimelineMode}
+          driving={timelineActive}
+          onTransport={() => setPipDriver("timeline")}
         />
         <button
           onClick={() => setSettingsOpen((open) => !open)}
@@ -3174,7 +3174,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
-          timelineMode={timelineMode}
+          timelineActive={timelineActive}
           timeline={demoTimeline}
           timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}
