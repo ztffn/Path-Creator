@@ -56,6 +56,7 @@ import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNod
 import { TimelineLanes } from "./TimelineLanes";
 import {
   CameraHelper,
+  Color,
   Euler,
   MOUSE,
   Matrix4,
@@ -776,8 +777,19 @@ function Scene({
       ? brainCamera
       : previewCamera;
   // The frustum visualizes whichever camera feeds the PiP (rig, shot brain,
-  // or timeline), not just the rig preview.
+  // or timeline), not just the rig preview — tinted to match the vcam glyph
+  // state colors (green live, orange selected, slate rig).
   const frustumHelper = useMemo(() => new CameraHelper(pipCamera), [pipCamera]);
+  const frustumColor =
+    activeTimeline || virtualCameraActivation
+      ? "#22c55e"
+      : selectedVirtualCamera
+        ? "#f97316"
+        : "#64748b";
+  useEffect(() => {
+    const color = new Color(frustumColor);
+    frustumHelper.setColors(color, color, color, color, color);
+  }, [frustumHelper, frustumColor]);
 
   const pathLinePoints = useMemo(
     () => buildPathLinePoints(vertexPath),
