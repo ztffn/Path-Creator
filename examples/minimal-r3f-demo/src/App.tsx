@@ -2215,15 +2215,15 @@ function VirtualCameraPanel({
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 800 }}>Virtual Cameras</div>
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-            {activeId ? `Live: ${cameras.find((camera) => camera.id === activeId)?.name ?? "Camera"}` : "No live vcam"}
+        <div style={{ fontSize: 13, fontWeight: 800 }}>Virtual Cameras</div>
+        {activeId ? (
+          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+            <span style={{ fontSize: 11, color: "#22c55e" }}>
+              Live: {cameras.find((camera) => camera.id === activeId)?.name ?? "Camera"}
+            </span>
+            <button onClick={onRelease}>Release</button>
           </div>
-        </div>
-        <button onClick={onRelease} disabled={!activeId}>
-          Release
-        </button>
+        ) : null}
       </div>
 
       <SettingsSection title="Capture">
@@ -2233,8 +2233,8 @@ function VirtualCameraPanel({
             value={captureSource}
             onChange={(event) => onCaptureSourceChange(event.target.value as VirtualCameraCaptureSource)}
           >
-            <option value="rig">Rig Camera</option>
-            <option value="viewport">Main Viewport</option>
+            <option value="rig">Rig camera (dolly pose)</option>
+            <option value="viewport">Main viewport (orbit camera)</option>
           </select>
         </label>
         <div style={{ display: "flex", gap: 6 }}>
@@ -2921,24 +2921,10 @@ export function App() {
           boxSizing: "border-box"
         }}
       >
-        <div style={{ display: "flex", alignItems: "flex-start", justifyContent: "space-between", gap: 12 }}>
-          <div>
-            <div style={{ fontSize: 14, fontWeight: 800 }}>Path Creator Demo</div>
-            <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
-              Edit spline, drive rigs, validate cameras
-            </div>
-          </div>
-          <div
-            style={{
-              padding: "3px 7px",
-              borderRadius: 4,
-              background: isTransforming ? "rgba(249, 115, 22, 0.24)" : "rgba(34, 197, 94, 0.16)",
-              color: isTransforming ? "#fed7aa" : "#bbf7d0",
-              fontSize: 11,
-              fontWeight: 800
-            }}
-          >
-            {isTransforming ? "Editing" : "Ready"}
+        <div>
+          <div style={{ fontSize: 14, fontWeight: 800 }}>Path Creator Demo</div>
+          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+            Edit spline, drive rigs, validate cameras
           </div>
         </div>
 
