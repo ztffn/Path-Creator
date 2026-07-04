@@ -2,36 +2,30 @@ import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three"
 import {
   PathSpace,
   type CartFrame,
+  type QuaternionLike,
   type TargetRegistry,
   type Vec3,
   type VertexPath,
+  type VirtualCameraBlendCurve,
+  type VirtualCameraDefinition,
+  type VirtualCameraLens,
+  type VirtualCameraNoiseSettings,
+  type VirtualCameraResolveContext,
+  type VirtualCameraSnapshot,
   vec3
 } from "../core";
 
-export type VirtualCameraBodyDefinition =
-  | { type: "static"; position: Vec3; quaternion: QuaternionLike }
-  | { type: "cart"; cartId: string; positionOffset?: Vec3 };
-
-export type VirtualCameraAimDefinition =
-  | { type: "body" }
-  | { type: "look-at"; target: Vec3 | { targetId: string } };
-
-export interface VirtualCameraDefinition {
-  id: string;
-  name?: string;
-  body: VirtualCameraBodyDefinition;
-  aim?: VirtualCameraAimDefinition;
-  noise?: VirtualCameraNoiseSettings;
-  lens?: VirtualCameraLens;
-  settings?: Record<string, number>;
-}
-
-export interface VirtualCameraResolveContext {
-  getCartFrame?: (cartId: string) => CartFrame | null;
-  getTargetPosition?: (targetId: string) => Vec3 | null;
-  /** Clock feeding the noise stage; same time always yields the same pose. */
-  elapsedSeconds?: number;
-}
+export type {
+  QuaternionLike,
+  VirtualCameraAimDefinition,
+  VirtualCameraBlendCurve,
+  VirtualCameraBodyDefinition,
+  VirtualCameraDefinition,
+  VirtualCameraLens,
+  VirtualCameraNoiseSettings,
+  VirtualCameraResolveContext,
+  VirtualCameraSnapshot
+} from "../core";
 
 export interface MeshBuffers {
   positions: number[];
@@ -51,52 +45,6 @@ export interface TubeMeshOptions {
   radialSegments?: number;
   segmentsPerUnit?: number;
 }
-
-export interface QuaternionLike {
-  x: number;
-  y: number;
-  z: number;
-  w: number;
-}
-
-export interface VirtualCameraLens {
-  fov?: number;
-  zoom?: number;
-  near?: number;
-  far?: number;
-  orthographicSize?: number;
-  /** Roll around the view axis in degrees (positive tilts the horizon CW). */
-  dutchDeg?: number;
-}
-
-export interface VirtualCameraNoiseSettings {
-  seed?: number;
-  /** Camera-local position wobble amplitude in scene units (scalar or per-axis). */
-  positionAmplitude?: number | Vec3;
-  /** Position wobble frequency in Hz (scalar or per-axis; default 1). */
-  positionFrequency?: number | Vec3;
-  /** Local pitch/yaw/roll wobble amplitude in degrees (scalar or per-axis). */
-  rotationAmplitudeDeg?: number | Vec3;
-  /** Rotation wobble frequency in Hz (scalar or per-axis; default 1). */
-  rotationFrequencyDeg?: number | Vec3;
-}
-
-export interface VirtualCameraSnapshot {
-  name?: string;
-  position: Vec3;
-  quaternion: QuaternionLike;
-  lens?: VirtualCameraLens;
-  settings?: Record<string, number>;
-}
-
-export type VirtualCameraBlendCurve =
-  | "cut"
-  | "linear"
-  | "easeInOut"
-  | "easeIn"
-  | "easeOut"
-  | "hardIn"
-  | "hardOut";
 
 export interface VirtualCameraBlendOptions {
   curve?: VirtualCameraBlendCurve;

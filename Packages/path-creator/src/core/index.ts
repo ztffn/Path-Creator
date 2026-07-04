@@ -7,3 +7,4 @@ export * from "./vec3";
 export * from "./cart";
 export * from "./rig";
 export * from "./targets";
+export * from "./virtual-camera";
