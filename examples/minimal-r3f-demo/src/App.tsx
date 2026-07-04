@@ -133,6 +133,12 @@ type DemoVirtualCamera = {
   /** Block placement on the show timeline; overlap with the previous shot crossfades. */
   shotStart: number;
   shotEnd: number;
+  /**
+   * Dolly move for cart shots: rail distance at shot start/end, compiled to
+   * cart-track keys. Null = the cart free-runs at the rig speed.
+   */
+  railFrom: number | null;
+  railTo: number | null;
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
@@ -142,7 +148,14 @@ type DemoVirtualCamera = {
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
-    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotStart" | "shotEnd" | "cartOffset"
+    | "trackTargetId"
+    | "noisePreset"
+    | "dutchDeg"
+    | "shotStart"
+    | "shotEnd"
+    | "cartOffset"
+    | "railFrom"
+    | "railTo"
   >
 >;
 
@@ -993,6 +1006,12 @@ function Scene({
       );
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
+      }
+      // Glyphs and shot previews follow the timeline-evaluated cart, not the
+      // free-running one, while the timeline owns playback.
+      const evaluatedFrame = sample.cartFrames.get(DEMO_RAIL_CART_ID);
+      if (evaluatedFrame) {
+        vcamCartFrameRef.current = evaluatedFrame;
       }
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
@@ -2490,6 +2509,40 @@ function VirtualCameraPanel({
                       }
                     />
                   </label>
+                  {camera.bodyType === "cart" ? (
+                    <label
+                      onClick={(event) => event.stopPropagation()}
+                      title="Rail distance at shot start/end; empty = free-run at rig speed"
+                      style={shotRowLabelStyle("48px 1fr 20px 1fr")}
+                    >
+                      <span>Rail</span>
+                      <input
+                        type="number"
+                        placeholder="free"
+                        value={camera.railFrom ?? ""}
+                        step={0.5}
+                        style={{ width: "100%" }}
+                        onChange={(event) =>
+                          onUpdateShot(camera.id, {
+                            railFrom: event.target.value === "" ? null : Number(event.target.value)
+                          })
+                        }
+                      />
+                      <span style={{ textAlign: "center" }}>→</span>
+                      <input
+                        type="number"
+                        placeholder="free"
+                        value={camera.railTo ?? ""}
+                        step={0.5}
+                        style={{ width: "100%" }}
+                        onChange={(event) =>
+                          onUpdateShot(camera.id, {
+                            railTo: event.target.value === "" ? null : Number(event.target.value)
+                          })
+                        }
+                      />
+                    </label>
+                  ) : null}
                   <div
                     onClick={(event) => event.stopPropagation()}
                     style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
@@ -2586,7 +2639,10 @@ export function App() {
   // pointer rate) don't rebuild the timeline object every frame — the lane
   // editor treats a new editorData as a full re-init.
   const shotTimingKey = virtualCameras
-    .map((vcam) => `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}`)
+    .map(
+      (vcam) =>
+        `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.railFrom ?? ""}:${vcam.railTo ?? ""}`
+    )
     .join("|");
   const demoTimeline = useMemo(() => {
     if (virtualCameras.length === 0) return null;
@@ -2606,9 +2662,25 @@ export function App() {
         })
       };
     });
+    // Shots that define a dolly move compile to cart-track keys: the rail
+    // camera travels railFrom -> railTo across its block, eased; between
+    // moves the evaluator interpolates toward the next move's start.
+    const cartKeys = ordered
+      .filter(
+        (vcam) => vcam.bodyType === "cart" && vcam.railFrom !== null && vcam.railTo !== null
+      )
+      .flatMap((vcam) => [
+        { time: vcam.shotStart, distance: vcam.railFrom ?? 0, easing: "easeInOut" as const },
+        { time: vcam.shotEnd, distance: vcam.railTo ?? 0 }
+      ]);
     return createTimeline({
       duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
-      tracks: [{ type: "camera", id: "camera-track", blocks }]
+      tracks: [
+        { type: "camera", id: "camera-track", blocks },
+        ...(cartKeys.length > 0
+          ? [{ type: "cart" as const, id: "dolly-track", cartId: DEMO_RAIL_CART_ID, keys: cartKeys }]
+          : [])
+      ]
     });
     // shotTimingKey covers every field this memo reads from virtualCameras.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2744,6 +2816,8 @@ export function App() {
         dutchDeg: 0,
         shotStart,
         shotEnd: shotStart + 5,
+        railFrom: null,
+        railTo: null,
         snapshot: {
           ...snapshot,
           name,
