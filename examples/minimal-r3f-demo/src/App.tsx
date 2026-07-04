@@ -364,6 +364,37 @@ function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
   return `${snapshot.position.x.toFixed(1)}, ${snapshot.position.y.toFixed(1)}, ${snapshot.position.z.toFixed(1)} - ${lens}`;
 }
 
+function getSnapshotMatrix(snapshot: VirtualCameraSnapshot): Matrix4 {
+  return new Matrix4().compose(
+    new Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z),
+    new Quaternion(
+      snapshot.quaternion.x,
+      snapshot.quaternion.y,
+      snapshot.quaternion.z,
+      snapshot.quaternion.w
+    ),
+    new Vector3(1, 1, 1)
+  );
+}
+
+function updateSnapshotTransform(snapshot: VirtualCameraSnapshot, matrix: Matrix4): VirtualCameraSnapshot {
+  const position = new Vector3();
+  const quaternion = new Quaternion();
+  const scale = new Vector3();
+  matrix.decompose(position, quaternion, scale);
+
+  return {
+    ...snapshot,
+    position: { x: position.x, y: position.y, z: position.z },
+    quaternion: {
+      x: quaternion.x,
+      y: quaternion.y,
+      z: quaternion.z,
+      w: quaternion.w
+    }
+  };
+}
+
 function applyCameraPose(
   camera: PerspectiveCamera,
   poseSource: CameraPoseSource,
@@ -443,8 +474,12 @@ function Scene({
   virtualCameraCaptureRequest,
   virtualCameraCaptureSource,
   virtualCameraActivation,
+  virtualCameras,
+  selectedVirtualCameraId,
   onVirtualCameraCaptured,
-  onVirtualCameraResolved
+  onVirtualCameraResolved,
+  onSelectVirtualCamera,
+  onUpdateVirtualCameraSnapshot
 }: {
   bezierPath: BezierPath;
   vertexPath: VertexPath;
@@ -474,8 +509,12 @@ function Scene({
   virtualCameraCaptureRequest: number;
   virtualCameraCaptureSource: VirtualCameraCaptureSource;
   virtualCameraActivation: VirtualCameraActivation | null;
+  virtualCameras: DemoVirtualCamera[];
+  selectedVirtualCameraId: string | null;
   onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
+  onSelectVirtualCamera: (id: string | null) => void;
+  onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
@@ -494,7 +533,23 @@ function Scene({
     camera.updateProjectionMatrix();
     return camera;
   }, []);
+  const brainCamera = useMemo(() => {
+    const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
+    camera.name = "virtual-camera-brain";
+    camera.updateProjectionMatrix();
+    return camera;
+  }, []);
   const frustumHelper = useMemo(() => new CameraHelper(previewCamera), [previewCamera]);
+  const selectedVirtualCamera = selectedVirtualCameraId
+    ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
+    : null;
+  const pipCamera =
+    virtualCameraActivation || selectedVirtualCamera ? brainCamera : previewCamera;
+  const pipLabel = virtualCameraActivation
+    ? "Brain Camera"
+    : selectedVirtualCamera
+      ? selectedVirtualCamera.name
+      : "Rig Camera";
 
   const pathLinePoints = useMemo(
     () => buildPathLinePoints(vertexPath),
@@ -653,7 +708,7 @@ function Scene({
       );
     }
 
-    projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(previewCamera);
+    projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(pipCamera);
     updateDollyTargetOverlay(
       dollyTargetMarkerRef.current,
       dollyTargetLineRef.current,
@@ -671,7 +726,7 @@ function Scene({
       composerSettings,
       previewComposerState.current.smoothedVelocity
     );
-    projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(previewCamera);
+    projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(pipCamera);
     updateDollyTargetOverlay(
       lookaheadMarkerRef.current,
       lookaheadLineRef.current,
@@ -704,7 +759,7 @@ function Scene({
       }
 
       const resolvedSnapshot = applyVirtualCameraBrain(
-        mainCamera,
+        brainCamera,
         virtualCameraBrainRef.current,
         delta
       );
@@ -722,6 +777,11 @@ function Scene({
           }
         }
       }
+    } else if (selectedVirtualCamera) {
+      activeVirtualCameraKeyRef.current = null;
+      resolvedVirtualCameraKeyRef.current = null;
+      virtualCameraBrainRef.current = createVirtualCameraBrainState(selectedVirtualCamera.snapshot);
+      applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
     } else if (driveMainCamera && !isTransforming) {
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
@@ -1101,6 +1161,7 @@ function Scene({
         onPointerDown={() => {
           onSelectHandle(null);
           onSelectMidpoint(null);
+          onSelectVirtualCamera(null);
         }}
       >
         <sphereGeometry args={[0.0001, 4, 4]} />
@@ -1117,22 +1178,91 @@ function Scene({
         <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
       </mesh>
 
+      {virtualCameras.map((virtualCamera) => {
+        const isSelected = virtualCamera.id === selectedVirtualCameraId;
+        const isActive = virtualCamera.id === virtualCameraActivation?.to.id;
+        const snapshot = virtualCamera.snapshot;
+
+        if (isSelected) {
+          return (
+            <PivotControls
+              key={virtualCamera.id}
+              matrix={getSnapshotMatrix(snapshot)}
+              autoTransform={false}
+              fixed
+              scale={75}
+              lineWidth={2}
+              depthTest={false}
+              disableScaling
+              onDragStart={() => onTransformingChange(true)}
+              onDragEnd={() => onTransformingChange(false)}
+              onDrag={(matrix) => {
+                onUpdateVirtualCameraSnapshot(
+                  virtualCamera.id,
+                  updateSnapshotTransform(snapshot, matrix)
+                );
+              }}
+            >
+              <VirtualCameraGlyph
+                name={virtualCamera.name}
+                selected
+                active={isActive}
+                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
+              />
+            </PivotControls>
+          );
+        }
+
+        return (
+          <group
+            key={virtualCamera.id}
+            position={[
+              snapshot.position.x,
+              snapshot.position.y,
+              snapshot.position.z
+            ]}
+            quaternion={[
+              snapshot.quaternion.x,
+              snapshot.quaternion.y,
+              snapshot.quaternion.z,
+              snapshot.quaternion.w
+            ]}
+          >
+            <VirtualCameraGlyph
+              name={virtualCamera.name}
+              selected={false}
+              active={isActive}
+              onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
+            />
+          </group>
+        );
+      })}
+
       {debugFrustum ? <primitive object={frustumHelper} /> : null}
-      {debugPreview ? <DollyCameraPip camera={previewCamera} frustumHelper={frustumHelper} /> : null}
+      {debugPreview ? (
+        <DollyCameraPip
+          camera={pipCamera}
+          frustumHelper={frustumHelper}
+          label={pipLabel}
+        />
+      ) : null}
     </>
   );
 }
 
 function DollyCameraPip({
   camera: dollyCamera,
-  frustumHelper
+  frustumHelper,
+  label
 }: {
   camera: PerspectiveCamera;
   frustumHelper: CameraHelper;
+  label: string;
 }) {
   const { gl, scene, size } = useThree();
 
   useFrame(({ camera }) => {
+    dollyCamera.name = label;
     gl.setScissorTest(false);
     gl.setViewport(0, 0, size.width, size.height);
     gl.render(scene, camera);
@@ -1156,9 +1286,66 @@ function DollyCameraPip({
   return null;
 }
 
+function VirtualCameraGlyph({
+  name,
+  selected,
+  active,
+  onSelect
+}: {
+  name: string;
+  selected: boolean;
+  active: boolean;
+  onSelect: () => void;
+}) {
+  const color = active ? "#22c55e" : selected ? "#f97316" : "#0f172a";
+  const glow = active ? "#bbf7d0" : selected ? "#fed7aa" : "#e2e8f0";
+
+  return (
+    <group
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onSelect();
+      }}
+    >
+      <mesh>
+        <boxGeometry args={[0.18, 0.12, 0.1]} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={active ? 0.35 : 0.12} />
+      </mesh>
+      <mesh position={[0, 0, -0.16]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.08, 0.18, 4]} />
+        <meshStandardMaterial color={glow} emissive={glow} emissiveIntensity={0.2} />
+      </mesh>
+      <Line
+        points={[
+          [-0.16, -0.1, -0.34],
+          [0.16, -0.1, -0.34],
+          [0.16, 0.1, -0.34],
+          [-0.16, 0.1, -0.34],
+          [-0.16, -0.1, -0.34]
+        ]}
+        color={glow}
+        lineWidth={1.5}
+      />
+      <Text
+        position={[0, 0.18, 0]}
+        fontSize={0.08}
+        color={glow}
+        anchorX="center"
+        anchorY="middle"
+        renderOrder={999}
+        material-depthTest={false}
+        material-depthWrite={false}
+      >
+        {name}
+      </Text>
+    </group>
+  );
+}
+
 function DollyPreviewChrome({
   composerActive,
   composerSettings,
+  label,
   targetMarkerRef,
   targetLineRef,
   lookaheadMarkerRef,
@@ -1166,6 +1353,7 @@ function DollyPreviewChrome({
 }: {
   composerActive: boolean;
   composerSettings: ComposerSettings;
+  label: string;
   targetMarkerRef: { current: HTMLDivElement | null };
   targetLineRef: { current: SVGLineElement | null };
   lookaheadMarkerRef: { current: HTMLDivElement | null };
@@ -1292,7 +1480,7 @@ function DollyPreviewChrome({
           fontFamily: "ui-sans-serif, system-ui, sans-serif"
         }}
       >
-        Rig Camera
+        {label}
       </div>
     </div>
   );
@@ -1711,6 +1899,7 @@ function NumberSlider({
 function VirtualCameraPanel({
   cameras,
   activeId,
+  selectedId,
   captureSource,
   blendCurve,
   blendDuration,
@@ -1719,12 +1908,14 @@ function VirtualCameraPanel({
   onBlendCurveChange,
   onBlendDurationChange,
   onCapture,
+  onSelect,
   onActivate,
   onDelete,
   onRelease
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
+  selectedId: string | null;
   captureSource: VirtualCameraCaptureSource;
   blendCurve: VirtualCameraBlendCurve;
   blendDuration: number;
@@ -1733,6 +1924,7 @@ function VirtualCameraPanel({
   onBlendCurveChange: (curve: VirtualCameraBlendCurve) => void;
   onBlendDurationChange: (duration: number) => void;
   onCapture: () => void;
+  onSelect: (id: string) => void;
   onActivate: (id: string) => void;
   onDelete: (id: string) => void;
   onRelease: () => void;
@@ -1827,9 +2019,11 @@ function VirtualCameraPanel({
           <div style={{ display: "grid", gap: 8 }}>
             {cameras.map((camera) => {
               const isActive = camera.id === activeId;
+              const isSelected = camera.id === selectedId;
               return (
                 <div
                   key={camera.id}
+                  onClick={() => onSelect(camera.id)}
                   style={{
                     display: "grid",
                     gridTemplateColumns: "1fr auto auto",
@@ -1837,8 +2031,19 @@ function VirtualCameraPanel({
                     alignItems: "center",
                     padding: 8,
                     borderRadius: 6,
-                    background: isActive ? "rgba(34, 197, 94, 0.16)" : "rgba(15, 23, 42, 0.62)",
-                    border: `1px solid ${isActive ? "rgba(34, 197, 94, 0.54)" : "rgba(148, 163, 184, 0.18)"}`
+                    cursor: "pointer",
+                    background: isActive
+                      ? "rgba(34, 197, 94, 0.16)"
+                      : isSelected
+                        ? "rgba(249, 115, 22, 0.16)"
+                        : "rgba(15, 23, 42, 0.62)",
+                    border: `1px solid ${
+                      isActive
+                        ? "rgba(34, 197, 94, 0.54)"
+                        : isSelected
+                          ? "rgba(249, 115, 22, 0.58)"
+                          : "rgba(148, 163, 184, 0.18)"
+                    }`
                   }}
                 >
                   <div style={{ minWidth: 0 }}>
@@ -1847,10 +2052,22 @@ function VirtualCameraPanel({
                       {getSnapshotLabel(camera.snapshot)}
                     </div>
                   </div>
-                  <button onClick={() => onActivate(camera.id)}>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onActivate(camera.id);
+                    }}
+                  >
                     {isActive ? "Reapply" : "Go"}
                   </button>
-                  <button onClick={() => onDelete(camera.id)}>Del</button>
+                  <button
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      onDelete(camera.id);
+                    }}
+                  >
+                    Del
+                  </button>
                 </div>
               );
             })}
@@ -1885,6 +2102,7 @@ export function App() {
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
   const [activeVirtualCameraId, setActiveVirtualCameraId] = useState<string | null>(null);
+  const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
   const [virtualCameraCaptureSource, setVirtualCameraCaptureSource] =
     useState<VirtualCameraCaptureSource>("rig");
@@ -1914,6 +2132,14 @@ export function App() {
     selectedHandleIndex !== null && selectedHandleIndex % 3 === 0
       ? anchorScales[Math.floor(selectedHandleIndex / 3)] ?? 1
       : null;
+  const selectedVirtualCamera = selectedVirtualCameraId
+    ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
+    : null;
+  const pipLabel = virtualCameraActivation
+    ? "Brain Camera"
+    : selectedVirtualCamera
+      ? selectedVirtualCamera.name
+      : "Rig Camera";
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2017,9 +2243,10 @@ export function App() {
   }
 
   function addCapturedVirtualCamera(snapshot: VirtualCameraSnapshot): void {
+    const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
+    const name = `VCam ${virtualCameras.length + 1}`;
+    setSelectedVirtualCameraId(id);
     setVirtualCameras((current) => {
-      const id = `vcam-${Date.now()}-${current.length + 1}`;
-      const name = `VCam ${current.length + 1}`;
       return [
         ...current,
         {
@@ -2044,6 +2271,7 @@ export function App() {
 
     const durationSeconds = virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration;
     setActiveVirtualCameraId(id);
+    setSelectedVirtualCameraId(id);
     setDriveMainCamera(false);
     setPoseSource(camera.poseSource);
     setAimMode(camera.aimMode);
@@ -2060,6 +2288,9 @@ export function App() {
 
   function deleteVirtualCamera(id: string): void {
     setVirtualCameras((current) => current.filter((camera) => camera.id !== id));
+    if (selectedVirtualCameraId === id) {
+      setSelectedVirtualCameraId(null);
+    }
     if (activeVirtualCameraId === id) {
       setActiveVirtualCameraId(null);
       setVirtualCameraActivation(null);
@@ -2071,6 +2302,36 @@ export function App() {
     setActiveVirtualCameraId(null);
     setVirtualCameraActivation(null);
     setVirtualCameraTransitionProgress(1);
+  }
+
+  function selectVirtualCamera(id: string | null): void {
+    setSelectedVirtualCameraId(id);
+    if (id !== null) {
+      setSelectedHandleIndex(null);
+      setSelectedMidpointIndex(null);
+    }
+  }
+
+  function updateVirtualCameraSnapshot(id: string, snapshot: VirtualCameraSnapshot): void {
+    setVirtualCameras((current) =>
+      current.map((camera) =>
+        camera.id === id
+          ? {
+              ...camera,
+              snapshot: {
+                ...snapshot,
+                name: camera.name,
+                settings: camera.snapshot.settings ?? {}
+              }
+            }
+          : camera
+      )
+    );
+    if (activeVirtualCameraId === id) {
+      setVirtualCameraActivation(null);
+      setActiveVirtualCameraId(null);
+      setVirtualCameraTransitionProgress(1);
+    }
   }
 
   return (
@@ -2228,7 +2489,7 @@ export function App() {
               checked={debugPreview}
               onChange={(e) => setDebugPreview(e.target.checked)}
             />
-            <span style={{ marginLeft: 6 }}>Show rig PiP</span>
+            <span style={{ marginLeft: 6 }}>Show camera PiP</span>
           </label>
 
           <label style={{ display: "block", fontSize: 12 }}>
@@ -2266,6 +2527,7 @@ export function App() {
         <VirtualCameraPanel
           cameras={virtualCameras}
           activeId={activeVirtualCameraId}
+          selectedId={selectedVirtualCameraId}
           captureSource={virtualCameraCaptureSource}
           blendCurve={virtualCameraBlendCurve}
           blendDuration={virtualCameraBlendDuration}
@@ -2274,6 +2536,7 @@ export function App() {
           onBlendCurveChange={setVirtualCameraBlendCurve}
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
+          onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
           onRelease={releaseVirtualCamera}
@@ -2297,6 +2560,7 @@ export function App() {
         <DollyPreviewChrome
           composerActive={aimMode === "screen-composer"}
           composerSettings={composerSettings}
+          label={pipLabel}
           targetMarkerRef={dollyTargetMarkerRef}
           targetLineRef={dollyTargetLineRef}
           lookaheadMarkerRef={lookaheadMarkerRef}
@@ -2308,7 +2572,7 @@ export function App() {
         <color attach="background" args={["#f8fafc"]} />
         <OrbitControls
           makeDefault
-          enabled={!isTransforming && !driveMainCamera && !virtualCameraActivation}
+          enabled={!isTransforming && !driveMainCamera}
           enableDamping
           dampingFactor={0.08}
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
@@ -2350,11 +2614,15 @@ export function App() {
           virtualCameraCaptureRequest={virtualCameraCaptureRequest}
           virtualCameraCaptureSource={virtualCameraCaptureSource}
           virtualCameraActivation={virtualCameraActivation}
+          virtualCameras={virtualCameras}
+          selectedVirtualCameraId={selectedVirtualCameraId}
           onVirtualCameraCaptured={addCapturedVirtualCamera}
           onVirtualCameraResolved={({ snapshot, progress }) => {
             setVirtualCameraTransitionProgress(progress);
             setComposerSettings((current) => mergeVirtualCameraSettings(current, snapshot.settings));
           }}
+          onSelectVirtualCamera={selectVirtualCamera}
+          onUpdateVirtualCameraSnapshot={updateVirtualCameraSnapshot}
           onSetAnchorScale={(anchorIndex, scale) => {
             setAnchorScales((prev) => {
               const next = normalizeAnchorScales(bezierPath.numAnchorPoints, prev);

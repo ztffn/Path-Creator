@@ -218,6 +218,55 @@ describe("r3f runtime helpers", () => {
     applyScreenComposerAim(camera, { x: 100, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, state, options, 1 / 60);
     expect(vec3Distance(state.smoothedVelocity ?? { x: 1, y: 1, z: 1 }, { x: 0, y: 0, z: 0 })).toBeCloseTo(0, 6);
   });
+
+  it("screen composer lookahead smoothing increases prediction lag", () => {
+    const fastState = createScreenComposerState();
+    const slowState = createScreenComposerState();
+    const fastCamera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const slowCamera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const baseOptions = {
+      lookaheadTime: 0.25,
+      damping: { x: 0, y: 0 }
+    };
+
+    applyScreenComposerAim(
+      fastCamera,
+      { x: 0, y: 0, z: -10 },
+      { x: 0, y: 1, z: 0 },
+      fastState,
+      { ...baseOptions, lookaheadSmoothing: 1 },
+      1 / 60
+    );
+    applyScreenComposerAim(
+      slowCamera,
+      { x: 0, y: 0, z: -10 },
+      { x: 0, y: 1, z: 0 },
+      slowState,
+      { ...baseOptions, lookaheadSmoothing: 12 },
+      1 / 60
+    );
+
+    applyScreenComposerAim(
+      fastCamera,
+      { x: 1, y: 0, z: -10 },
+      { x: 0, y: 1, z: 0 },
+      fastState,
+      { ...baseOptions, lookaheadSmoothing: 1 },
+      1 / 60
+    );
+    applyScreenComposerAim(
+      slowCamera,
+      { x: 1, y: 0, z: -10 },
+      { x: 0, y: 1, z: 0 },
+      slowState,
+      { ...baseOptions, lookaheadSmoothing: 12 },
+      1 / 60
+    );
+
+    expect(Math.abs(slowState.smoothedVelocity?.x ?? 0)).toBeLessThan(
+      Math.abs(fastState.smoothedVelocity?.x ?? 0)
+    );
+  });
 });
 
 function targetAtScreen(

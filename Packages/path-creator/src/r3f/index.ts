@@ -350,7 +350,7 @@ function applyLookahead(
   if (options.lookaheadIgnoreY) velocity.y = 0;
 
   const smoothing = Math.max(0, options.lookaheadSmoothing ?? 6);
-  const alpha = smoothing > 0 ? 1 - Math.exp(-smoothing * deltaSeconds) : 1;
+  const alpha = smoothing > 0 ? 1 - Math.exp(-(12 / smoothing) * deltaSeconds) : 1;
   state.smoothedVelocity = state.smoothedVelocity
     ? vec3.lerp(state.smoothedVelocity, velocity, alpha)
     : velocity;
