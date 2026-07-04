@@ -230,35 +230,6 @@ export function TimelineLanes({
               >
                 {playing ? "Pause" : "Play"}
               </button>
-              <label>
-                <input
-                  type="checkbox"
-                  defaultChecked={playerRef.current.loop}
-                  onChange={(event) => {
-                    playerRef.current.loop = event.target.checked;
-                  }}
-                />
-                <span style={{ marginLeft: 4 }}>Loop</span>
-              </label>
-              <select
-                defaultValue="1"
-                title="Playback rate"
-                onChange={(event) => {
-                  playerRef.current.rate = Number(event.target.value);
-                }}
-              >
-                <option value="0.5">0.5x</option>
-                <option value="1">1x</option>
-                <option value="2">2x</option>
-              </select>
-              <label title="In gaps between clips: hold the last shot, or release to the rig camera (Cinemachine)">
-                <input
-                  type="checkbox"
-                  checked={gapRelease}
-                  onChange={(event) => onGapReleaseChange(event.target.checked)}
-                />
-                <span style={{ marginLeft: 4 }}>Release gaps</span>
-              </label>
               <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
                 0.0s
               </span>
@@ -414,6 +385,51 @@ export function TimelineLanes({
             </div>
           </div>
         )}
+
+        {shots.length > 0 ? (
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              justifyContent: "flex-end",
+              gap: 12,
+              marginTop: 6,
+              fontSize: 11,
+              color: "#94a3b8"
+            }}
+          >
+            <label>
+              <input
+                type="checkbox"
+                defaultChecked={playerRef.current.loop}
+                onChange={(event) => {
+                  playerRef.current.loop = event.target.checked;
+                }}
+              />
+              <span style={{ marginLeft: 4 }}>Loop</span>
+            </label>
+            <label title="Playback rate">
+              <select
+                defaultValue="1"
+                onChange={(event) => {
+                  playerRef.current.rate = Number(event.target.value);
+                }}
+              >
+                <option value="0.5">0.5x</option>
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+              </select>
+            </label>
+            <label title="In gaps between clips: hold the last shot, or release to the rig camera (Cinemachine)">
+              <input
+                type="checkbox"
+                checked={gapRelease}
+                onChange={(event) => onGapReleaseChange(event.target.checked)}
+              />
+              <span style={{ marginLeft: 4 }}>Release gaps</span>
+            </label>
+          </div>
+        ) : null}
       </div>
     </LaneErrorBoundary>
   );
