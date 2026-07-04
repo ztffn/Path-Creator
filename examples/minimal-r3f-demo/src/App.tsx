@@ -7,6 +7,7 @@ import {
   PathSpace,
   TargetRegistry,
   VertexPath,
+  createPathCart,
   type CartFrame,
   type RegisteredTarget,
   type SerializedBezierPath,
@@ -27,6 +28,7 @@ import {
   activateVirtualCameraBrain,
   applyCartFrameToObject,
   applyVirtualCameraBrain,
+  applyVirtualCameraSnapshot,
   cameraQuaternionFromFrame,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
@@ -34,9 +36,20 @@ import {
   resolveVirtualCameraDefinition,
   retargetVirtualCameraBrain,
   type VirtualCameraBlendCurve,
+  type VirtualCameraDefinition,
   type VirtualCameraNoiseSettings,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
+import {
+  createTimeline,
+  createTimelinePlayer,
+  evaluateTimeline,
+  seekTimelinePlayer,
+  stepTimelinePlayer,
+  type Timeline,
+  type TimelinePlayer,
+  type TimelineRigContext
+} from "@huma/path-creator/timeline";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   CameraHelper,
@@ -112,6 +125,32 @@ type DemoVirtualCamera = {
   aimMode: CameraAimMode;
   composerSettings: ComposerSettings;
 };
+
+function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition {
+  const noise = NOISE_PRESETS[vcam.noisePreset];
+  const lens = {
+    ...vcam.snapshot.lens,
+    ...(vcam.dutchDeg !== 0 && { dutchDeg: vcam.dutchDeg })
+  };
+  return {
+    id: vcam.id,
+    name: vcam.name,
+    body:
+      vcam.bodyType === "cart"
+        ? { type: "cart", cartId: "demo-rail" }
+        : {
+            type: "static",
+            position: vcam.snapshot.position,
+            quaternion: vcam.snapshot.quaternion
+          },
+    ...(vcam.trackTargetId && {
+      aim: { type: "look-at" as const, target: { targetId: vcam.trackTargetId } }
+    }),
+    ...(noise && { noise }),
+    ...(Object.keys(lens).length > 0 && { lens }),
+    ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
+  };
+}
 
 type VirtualCameraActivation = {
   key: number;
@@ -586,7 +625,10 @@ function Scene({
   onVirtualCameraResolved,
   onSelectVirtualCamera,
   onUpdateVirtualCameraSnapshot,
-  targetRegistry
+  targetRegistry,
+  timelineMode,
+  timeline,
+  timelinePlayerRef
 }: {
   bezierPath: BezierPath;
   vertexPath: VertexPath;
@@ -625,6 +667,9 @@ function Scene({
   onSelectVirtualCamera: (id: string | null) => void;
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   targetRegistry: TargetRegistry;
+  timelineMode: boolean;
+  timeline: Timeline | null;
+  timelinePlayerRef: { current: TimelinePlayer };
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
@@ -646,37 +691,25 @@ function Scene({
     if (vcam.bodyType !== "cart" && !vcam.trackTargetId && !noise && !vcam.dutchDeg) {
       return vcam.snapshot;
     }
-    const lens = {
-      ...vcam.snapshot.lens,
-      ...(vcam.dutchDeg !== 0 && { dutchDeg: vcam.dutchDeg })
-    };
-    const resolved = resolveVirtualCameraDefinition(
-      {
-        id: vcam.id,
-        name: vcam.name,
-        body:
-          vcam.bodyType === "cart"
-            ? { type: "cart", cartId: "demo-rail" }
-            : {
-                type: "static",
-                position: vcam.snapshot.position,
-                quaternion: vcam.snapshot.quaternion
-              },
-        ...(vcam.trackTargetId && {
-          aim: { type: "look-at" as const, target: { targetId: vcam.trackTargetId } }
-        }),
-        ...(noise && { noise }),
-        ...(Object.keys(lens).length > 0 && { lens }),
-        ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
-      },
-      {
-        getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null),
-        getTargetPosition: (id) => targetRegistry.resolve(id),
-        elapsedSeconds
-      }
-    );
+    const resolved = resolveVirtualCameraDefinition(toDemoVcamDefinition(vcam), {
+      getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null),
+      getTargetPosition: (id) => targetRegistry.resolve(id),
+      elapsedSeconds
+    });
     return resolved ?? vcam.snapshot;
   };
+  const timelineContext = useMemo<TimelineRigContext>(
+    () => ({
+      rig: {
+        paths: new Map([["rail", vertexPath]]),
+        carts: new Map([["demo-rail", createPathCart({ speed })]]),
+        cartPaths: new Map([["demo-rail", "rail"]])
+      },
+      vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
+      getTargetPosition: (id) => targetRegistry.resolve(id)
+    }),
+    [speed, targetRegistry, vertexPath, virtualCameras]
+  );
   const composerState = useRef(createScreenComposerState());
   const previewComposerState = useRef(createScreenComposerState());
   const cameraPositionTarget = useMemo(() => new Vector3(), []);
@@ -698,8 +731,11 @@ function Scene({
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
+  const timelineActive = timelineMode && timeline != null;
   const pipCamera =
-    virtualCameraActivation || selectedVirtualCamera ? brainCamera : previewCamera;
+    timelineActive || virtualCameraActivation || selectedVirtualCamera
+      ? brainCamera
+      : previewCamera;
   const pipLabel = virtualCameraActivation
     ? "Brain Camera"
     : selectedVirtualCamera
@@ -899,7 +935,15 @@ function Scene({
       "lookahead"
     );
 
-    if (virtualCameraActivation && !isTransforming) {
+    if (timelineActive && timeline) {
+      stepTimelinePlayer(timelinePlayerRef.current, timeline, delta);
+      const sample = evaluateTimeline(timeline, timelineContext, timelinePlayerRef.current.time);
+      if (sample.camera) {
+        applyVirtualCameraSnapshot(brainCamera, sample.camera);
+      }
+      activeVirtualCameraKeyRef.current = null;
+      resolvedVirtualCameraKeyRef.current = null;
+    } else if (virtualCameraActivation && !isTransforming) {
       if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
         activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
         resolvedVirtualCameraKeyRef.current = null;
@@ -2366,6 +2410,112 @@ function VirtualCameraPanel({
   );
 }
 
+function TimelinePanel({
+  timeline,
+  playerRef,
+  enabled,
+  onEnabledChange
+}: {
+  timeline: Timeline | null;
+  playerRef: { current: TimelinePlayer };
+  enabled: boolean;
+  onEnabledChange: (enabled: boolean) => void;
+}) {
+  const [playing, setPlaying] = useState(false);
+  const rangeRef = useRef<HTMLInputElement>(null);
+  const timeLabelRef = useRef<HTMLSpanElement>(null);
+
+  useEffect(() => {
+    let raf = 0;
+    const sync = () => {
+      const player = playerRef.current;
+      if (rangeRef.current) rangeRef.current.value = String(player.time);
+      if (timeLabelRef.current) {
+        timeLabelRef.current.textContent = `${player.time.toFixed(1)}s`;
+      }
+      setPlaying(player.playing);
+      raf = requestAnimationFrame(sync);
+    };
+    raf = requestAnimationFrame(sync);
+    return () => cancelAnimationFrame(raf);
+  }, [playerRef]);
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        padding: 12,
+        borderRadius: 8,
+        background: "rgba(9, 14, 24, 0.9)",
+        color: "#f8fafc",
+        fontFamily: "ui-sans-serif, system-ui, sans-serif",
+        border: "1px solid rgba(148, 163, 184, 0.24)"
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+        <div style={{ fontSize: 13, fontWeight: 800 }}>Timeline</div>
+        <label style={{ fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={enabled}
+            onChange={(event) => onEnabledChange(event.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Drive PiP</span>
+        </label>
+      </div>
+
+      {timeline == null ? (
+        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
+          Add vcams to build the show (5s per shot, 1.5s blends).
+        </div>
+      ) : (
+        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+            <button
+              onClick={() => {
+                const player = playerRef.current;
+                if (!player.playing && player.time >= timeline.duration) {
+                  seekTimelinePlayer(player, 0);
+                }
+                player.playing = !player.playing;
+                setPlaying(player.playing);
+              }}
+            >
+              {playing ? "Pause" : "Play"}
+            </button>
+            <label>
+              <input
+                type="checkbox"
+                defaultChecked={playerRef.current.loop}
+                onChange={(event) => {
+                  playerRef.current.loop = event.target.checked;
+                }}
+              />
+              <span style={{ marginLeft: 4 }}>Loop</span>
+            </label>
+            <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
+              0.0s
+            </span>
+            <span style={{ color: "#64748b" }}>/ {timeline.duration.toFixed(0)}s</span>
+          </div>
+          <input
+            ref={rangeRef}
+            type="range"
+            min={0}
+            max={timeline.duration}
+            step={0.01}
+            defaultValue={0}
+            onChange={(event) => {
+              seekTimelinePlayer(playerRef.current, Number(event.target.value));
+            }}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 export function App() {
   const [bezierPath, setBezierPath] = useState<BezierPath>(() => {
     const raw = localStorage.getItem(STORAGE_KEY);
@@ -2390,6 +2540,8 @@ export function App() {
   const [showTargetRig, setShowTargetRig] = useState(false);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
+  const [timelineMode, setTimelineMode] = useState(false);
+  const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
@@ -2427,11 +2579,35 @@ export function App() {
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
-  const pipLabel = virtualCameraActivation
-    ? "Brain Camera"
-    : selectedVirtualCamera
-      ? selectedVirtualCamera.name
-      : "Rig Camera";
+  const demoTimeline = useMemo(() => {
+    if (virtualCameras.length === 0) return null;
+    return createTimeline({
+      duration: virtualCameras.length * 5,
+      tracks: [
+        {
+          type: "camera",
+          id: "camera-track",
+          blocks: virtualCameras.map((vcam, index) => ({
+            id: `block-${vcam.id}`,
+            vcamId: vcam.id,
+            start: index * 5,
+            end: index * 5 + 5,
+            ...(index > 0 && {
+              blendIn: { durationSeconds: 1.5, curve: "easeInOut" as const }
+            })
+          }))
+        }
+      ]
+    });
+  }, [virtualCameras]);
+  const pipLabel =
+    timelineMode && demoTimeline
+      ? "Timeline"
+      : virtualCameraActivation
+        ? "Brain Camera"
+        : selectedVirtualCamera
+          ? selectedVirtualCamera.name
+          : "Rig Camera";
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2894,6 +3070,12 @@ export function App() {
           onDelete={deleteVirtualCamera}
           onRelease={releaseVirtualCamera}
         />
+        <TimelinePanel
+          timeline={demoTimeline}
+          playerRef={timelinePlayerRef}
+          enabled={timelineMode}
+          onEnabledChange={setTimelineMode}
+        />
         <button
           onClick={() => setSettingsOpen((open) => !open)}
           style={{ width: "100%" }}
@@ -2934,6 +3116,9 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
+          timelineMode={timelineMode}
+          timeline={demoTimeline}
+          timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}
           speed={speed}
           driveMainCamera={driveMainCamera}
