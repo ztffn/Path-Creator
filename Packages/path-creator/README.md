@@ -65,6 +65,43 @@ const road = buildRoadMeshBuffers(vertexPath, {
 // road.positions / road.indices / road.normals / road.uvs
 ```
 
+## Virtual Camera Example
+
+Virtual cameras are lightweight shot states, not render cameras. Any rig can produce
+one: a dolly rail, a static camera, a follow rig, or a future timeline block. The
+real Three camera is updated by cutting to a snapshot or blending between snapshots.
+
+```ts
+import {
+  applyVirtualCameraTransition,
+  captureVirtualCameraSnapshot
+} from "@huma/path-creator/three";
+
+const shotA = captureVirtualCameraSnapshot(camera, {
+  name: "wide",
+  settings: { targetWeight: 0.5, composerScreenX: 0 }
+});
+
+const shotB = {
+  ...shotA,
+  name: "close",
+  position: { x: 4, y: 2, z: 6 },
+  lens: { fov: 35, near: 0.1, far: 200 },
+  settings: { targetWeight: 1, composerScreenX: 0.18 }
+};
+
+const resolved = applyVirtualCameraTransition(camera, shotA, shotB, {
+  durationSeconds: 1.2,
+  elapsedSeconds: 0.4,
+  curve: "easeInOut"
+});
+```
+
+`applyVirtualCameraTransition` applies camera position, rotation, and lens values.
+It also returns the resolved snapshot, including blended numeric rig settings for
+timeline/editor code to feed into composers or other rig controls. A zero-duration
+transition is a cut.
+
 ## R3F Runtime Example
 
 ```ts
@@ -123,4 +160,5 @@ dead/soft/hard zones are expressed as normalized viewport width/height.
 - Core endpoint behavior (`loop`, `reverse`, `stop`)
 - Bezier editing operations (`splitSegment`, `deleteAnchor`, `autoSmooth`)
 - Three mesh buffer invariants (counts, normals/uvs shape, indexed triangles)
+- Three virtual camera cuts and blends
 - R3F runtime helpers (`updateFollowerState`, sampling parity, camera application, screen composer)
