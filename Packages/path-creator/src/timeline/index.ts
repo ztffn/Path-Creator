@@ -89,7 +89,7 @@ export function evaluateTimeline(
   // Later camera tracks override earlier ones (layering).
   for (const track of timeline.tracks) {
     if (track.type !== "camera") continue;
-    const result = evaluateCameraTrack(track, t, resolveBlock);
+    const result = evaluateCameraTrack(track, t, timeline.gapMode ?? "hold", resolveBlock);
     if (result) {
       camera = result.snapshot;
       activeBlock = { trackId: track.id, block: result.block };
@@ -172,6 +172,7 @@ export function seekTimelinePlayer(player: TimelinePlayer, timeSeconds: number):
 function evaluateCameraTrack(
   track: CameraTrack,
   t: number,
+  gapMode: "hold" | "release",
   resolveBlock: (block: CameraBlock) => VirtualCameraSnapshot | null
 ): { snapshot: VirtualCameraSnapshot; block: CameraBlock; blendProgress: number } | null {
   // Sorted-by-start is a construction invariant (sortTimelineTracks) so this
@@ -182,11 +183,13 @@ function evaluateCameraTrack(
   for (let i = 0; i < blocks.length; i += 1) {
     if (blocks[i].start <= t) activeIndex = i;
   }
-  // Before the first block the host camera is free; gaps after a block hold
-  // its shot until the next block starts.
+  // Before the first block the host camera is always free.
   if (activeIndex < 0) return null;
 
   const block = blocks[activeIndex];
+  // In a gap after the block: "hold" keeps its shot until the next block,
+  // "release" hands control back to the host's live camera.
+  if (gapMode === "release" && t > block.end) return null;
   const snapshot = resolveBlock(block);
   if (!snapshot) return null;
 

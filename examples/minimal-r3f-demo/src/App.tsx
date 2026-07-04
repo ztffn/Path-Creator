@@ -74,13 +74,11 @@ const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 const DEMO_RAIL_PATH_ID = "rail";
-// A production can run several dollies; the demo mounts two on the one rail.
-// Cameras mount a dolly via their cart body's cartId.
-const DEMO_DOLLIES = [
-  { id: "dolly-a", name: "Dolly A" },
-  { id: "dolly-b", name: "Dolly B" }
-] as const;
-const DEFAULT_DOLLY_ID = DEMO_DOLLIES[0].id;
+// A production can run several dollies, all riding the demo's one rail;
+// cameras mount a dolly via their cart body's cartId.
+type DemoDolly = { id: string; name: string };
+const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1" };
+const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
@@ -693,6 +691,7 @@ function Scene({
   onUpdateVirtualCameraSnapshot,
   onUpdateCartOffset,
   targetRegistry,
+  dollies,
   activeTimeline,
   timelinePlayerRef
 }: {
@@ -734,6 +733,7 @@ function Scene({
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   onUpdateCartOffset: (id: string, offset: Vec3) => void;
   targetRegistry: TargetRegistry;
+  dollies: DemoDolly[];
   /** Non-null while the timeline owns the PiP. */
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
@@ -748,8 +748,8 @@ function Scene({
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
-    () => new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, createPathCart()])),
-    []
+    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart()])),
+    [dollies]
   );
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   const followerRef = useRef<Mesh>(null);
@@ -774,8 +774,8 @@ function Scene({
     () => ({
       rig: {
         paths: new Map([[DEMO_RAIL_PATH_ID, vertexPath]]),
-        carts: new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, createPathCart({ speed })])),
-        cartPaths: new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, DEMO_RAIL_PATH_ID]))
+        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed })])),
+        cartPaths: new Map(dollies.map((dolly) => [dolly.id, DEMO_RAIL_PATH_ID]))
       },
       vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
       getTargetPosition: (id) => targetRegistry.resolve(id)
@@ -1028,6 +1028,10 @@ function Scene({
       );
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
+      } else {
+        // Released gap (Cinemachine semantics): the live rig camera takes over.
+        brainCamera.position.copy(previewCamera.position);
+        brainCamera.quaternion.copy(previewCamera.quaternion);
       }
       // Glyphs and shot previews follow the timeline-evaluated carts, not
       // the free-running ones, while the timeline owns playback.
@@ -2314,7 +2318,10 @@ function VirtualCameraPanel({
   onRelease,
   trackTargets,
   onUpdateShot,
-  onUpdateComposer
+  onUpdateComposer,
+  dollies,
+  onAddDolly,
+  onDeleteDolly
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2335,6 +2342,9 @@ function VirtualCameraPanel({
   trackTargets: RegisteredTarget[];
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
   onUpdateComposer: (id: string, settings: ComposerSettings) => void;
+  dollies: DemoDolly[];
+  onAddDolly: () => void;
+  onDeleteDolly: (id: string) => void;
 }) {
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
@@ -2377,6 +2387,27 @@ function VirtualCameraPanel({
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={onCapture}>Add VCam</button>
           <button onClick={onAddCart}>Add Cart VCam</button>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Dollies">
+        <div style={{ display: "grid", gap: 4 }}>
+          {dollies.map((dolly) => (
+            <div
+              key={dolly.id}
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+            >
+              <span style={{ flex: 1 }}>{dolly.name}</span>
+              <button
+                disabled={dollies.length <= 1}
+                title={dollies.length <= 1 ? "A production needs at least one dolly" : undefined}
+                onClick={() => onDeleteDolly(dolly.id)}
+              >
+                Del
+              </button>
+            </div>
+          ))}
+          <button onClick={onAddDolly}>Add Dolly</button>
         </div>
       </SettingsSection>
 
@@ -2546,7 +2577,7 @@ function VirtualCameraPanel({
                           onUpdateShot(camera.id, { cartId: event.target.value })
                         }
                       >
-                        {DEMO_DOLLIES.map((dolly) => (
+                        {dollies.map((dolly) => (
                           <option key={dolly.id} value={dolly.id}>
                             {dolly.name}
                           </option>
@@ -2635,33 +2666,60 @@ export function App() {
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
+  const [gapRelease, setGapRelease] = useState(false);
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
-  const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() => {
-    // The show (shots, mounts, moves) survives reloads like the spline does.
-    const raw = localStorage.getItem(SHOW_STORAGE_KEY);
-    if (!raw) return [];
+  // The show (dollies, shots, mounts, moves) survives reloads like the spline.
+  const storedShow = useMemo(() => {
     try {
-      const parsed = JSON.parse(raw) as Partial<DemoVirtualCamera>[];
-      return parsed.map((vcam, index) => ({
-        cartId: DEFAULT_DOLLY_ID,
-        cartOffset: { x: 0, y: 0, z: 0 },
-        trackTargetId: null,
-        noisePreset: "off" as const,
-        dutchDeg: 0,
-        shotStart: index * 5,
-        shotEnd: index * 5 + 5,
-        railFrom: null,
-        railTo: null,
-        ...vcam
-      })) as DemoVirtualCamera[];
+      const raw = localStorage.getItem(SHOW_STORAGE_KEY);
+      if (!raw) return null;
+      const parsed = JSON.parse(raw) as
+        | Partial<DemoVirtualCamera>[]
+        | { dollies?: DemoDolly[]; vcams?: Partial<DemoVirtualCamera>[] };
+      return Array.isArray(parsed) ? { vcams: parsed } : parsed;
     } catch {
-      return [];
+      return null;
     }
-  });
+  }, []);
+  const [dollies, setDollies] = useState<DemoDolly[]>(
+    () => storedShow?.dollies ?? INITIAL_DOLLIES
+  );
+  const defaultDollyId = dollies[0]?.id ?? FALLBACK_DOLLY.id;
+  const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() =>
+    (storedShow?.vcams ?? []).map((vcam, index) => ({
+      cartId: storedShow?.dollies?.[0]?.id ?? FALLBACK_DOLLY.id,
+      cartOffset: { x: 0, y: 0, z: 0 },
+      trackTargetId: null,
+      noisePreset: "off" as const,
+      dutchDeg: 0,
+      shotStart: index * 5,
+      shotEnd: index * 5 + 5,
+      railFrom: null,
+      railTo: null,
+      ...vcam
+    })) as DemoVirtualCamera[]
+  );
   useEffect(() => {
-    localStorage.setItem(SHOW_STORAGE_KEY, JSON.stringify(virtualCameras));
-  }, [virtualCameras]);
+    localStorage.setItem(SHOW_STORAGE_KEY, JSON.stringify({ dollies, vcams: virtualCameras }));
+  }, [dollies, virtualCameras]);
+
+  function addDolly(): void {
+    const id = `dolly-${Date.now()}`;
+    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}` }]);
+  }
+
+  function deleteDolly(id: string): void {
+    setDollies((current) => {
+      const next = current.filter((dolly) => dolly.id !== id);
+      if (next.length === 0) return current;
+      // Remount any cameras that were on the deleted dolly.
+      setVirtualCameras((vcams) =>
+        vcams.map((vcam) => (vcam.cartId === id ? { ...vcam, cartId: next[0]?.id ?? FALLBACK_DOLLY.id } : vcam))
+      );
+      return next;
+    });
+  }
   const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
   const [virtualCameraCaptureSource, setVirtualCameraCaptureSource] =
@@ -2704,6 +2762,7 @@ export function App() {
         `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}:${vcam.railFrom ?? ""}:${vcam.railTo ?? ""}`
     )
     .join("|");
+  const dollyKey = dollies.map((dolly) => dolly.id).join(",");
   const demoTimeline = useMemo(() => {
     if (virtualCameras.length === 0) return null;
     const ordered = [...virtualCameras].sort((a, b) => a.shotStart - b.shotStart);
@@ -2725,7 +2784,7 @@ export function App() {
     // Shots that define a dolly move compile to cart-track keys on THEIR
     // dolly: the camera travels railFrom -> railTo across its block, eased;
     // between moves the evaluator interpolates toward the next move's start.
-    const cartTracks = DEMO_DOLLIES.map((dolly) => ({
+    const cartTracks = dollies.map((dolly) => ({
       type: "cart" as const,
       id: `dolly-track-${dolly.id}`,
       cartId: dolly.id,
@@ -2744,11 +2803,12 @@ export function App() {
     })).filter((track) => track.keys.length > 0);
     return createTimeline({
       duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
+      ...(gapRelease && { gapMode: "release" as const }),
       tracks: [{ type: "camera", id: "camera-track", blocks }, ...cartTracks]
     });
-    // shotTimingKey covers every field this memo reads from virtualCameras.
+    // shotTimingKey + dollyKey cover every field this memo reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey]);
+  }, [shotTimingKey, dollyKey, gapRelease]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   const pipLabel = timelineActive
     ? "Timeline"
@@ -2874,7 +2934,7 @@ export function App() {
         id,
         name,
         bodyType,
-        cartId: DEFAULT_DOLLY_ID,
+        cartId: defaultDollyId,
         cartOffset: { x: 0, y: 0, z: 0 },
         trackTargetId: null,
         noisePreset: "off",
@@ -3208,6 +3268,9 @@ export function App() {
           trackTargets={registeredTargets}
           onUpdateShot={updateVirtualCameraShot}
           onUpdateComposer={updateVirtualCameraComposer}
+          dollies={dollies}
+          onAddDolly={addDolly}
+          onDeleteDolly={deleteDolly}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
@@ -3228,7 +3291,7 @@ export function App() {
             .map((vcam) => ({
               shotId: vcam.id,
               dollyId: vcam.cartId,
-              dollyName: DEMO_DOLLIES.find((dolly) => dolly.id === vcam.cartId)?.name ?? vcam.cartId,
+              dollyName: dollies.find((dolly) => dolly.id === vcam.cartId)?.name ?? vcam.cartId,
               start: vcam.shotStart,
               end: vcam.shotEnd,
               label: `${vcam.railFrom} → ${vcam.railTo}`
@@ -3246,6 +3309,8 @@ export function App() {
             setPipDriver("timeline");
           }}
           onTransport={() => setPipDriver("timeline")}
+          gapRelease={gapRelease}
+          onGapReleaseChange={setGapRelease}
         />
       </div>
       {debugPreview ? (
@@ -3273,6 +3338,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
+          dollies={dollies}
           activeTimeline={timelineActive ? demoTimeline : null}
           timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}

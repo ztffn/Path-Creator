@@ -69,7 +69,9 @@ export function TimelineLanes({
   onShotTiming,
   onSelectShot,
   onSeek,
-  onTransport
+  onTransport,
+  gapRelease,
+  onGapReleaseChange
 }: {
   shots: LaneShot[];
   dollyMoves: LaneDollyMove[];
@@ -81,6 +83,8 @@ export function TimelineLanes({
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
   onTransport: () => void;
+  gapRelease: boolean;
+  onGapReleaseChange: (release: boolean) => void;
 }) {
   const laneStateRef = useRef<TimelineState>(null);
   const [playing, setPlaying] = useState(false);
@@ -235,6 +239,25 @@ export function TimelineLanes({
                   }}
                 />
                 <span style={{ marginLeft: 4 }}>Loop</span>
+              </label>
+              <select
+                defaultValue="1"
+                title="Playback rate"
+                onChange={(event) => {
+                  playerRef.current.rate = Number(event.target.value);
+                }}
+              >
+                <option value="0.5">0.5x</option>
+                <option value="1">1x</option>
+                <option value="2">2x</option>
+              </select>
+              <label title="In gaps between clips: hold the last shot, or release to the rig camera (Cinemachine)">
+                <input
+                  type="checkbox"
+                  checked={gapRelease}
+                  onChange={(event) => onGapReleaseChange(event.target.checked)}
+                />
+                <span style={{ marginLeft: 4 }}>Release gaps</span>
               </label>
               <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
                 0.0s

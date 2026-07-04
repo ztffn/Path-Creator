@@ -68,6 +68,12 @@ export type TimelineTrack = CameraTrack | CartTrack | EventTrack;
 export interface Timeline {
   schemaVersion: typeof TIMELINE_SCHEMA_VERSION;
   duration: number;
+  /**
+   * Camera behavior in gaps between blocks: "hold" keeps the last shot
+   * (editing-software semantics, default); "release" returns null so the
+   * host's live camera takes over (Cinemachine semantics).
+   */
+  gapMode?: "hold" | "release";
   tracks: TimelineTrack[];
 }
 
@@ -75,6 +81,7 @@ export function createTimeline(init: Partial<Omit<Timeline, "schemaVersion">> = 
   return {
     schemaVersion: TIMELINE_SCHEMA_VERSION,
     duration: init.duration ?? 0,
+    ...(init.gapMode && { gapMode: init.gapMode }),
     tracks: sortTimelineTracks(init.tracks ?? [])
   };
 }

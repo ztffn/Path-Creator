@@ -376,3 +376,22 @@ describe("timeline construction invariants", () => {
     expect(events.type === "event" && events.events.map((e) => e.id)).toEqual(["a", "b"]);
   });
 });
+
+describe("gap mode", () => {
+  it("release returns null in gaps; hold (default) keeps the last shot", () => {
+    const context = buildContext();
+    const tracks = [
+      {
+        type: "camera" as const,
+        id: "cam",
+        blocks: [{ id: "b", vcamId: "wide", start: 1, end: 3 }]
+      }
+    ];
+    const holding = createTimeline({ duration: 10, tracks });
+    const releasing = createTimeline({ duration: 10, gapMode: "release", tracks });
+
+    expect(evaluateTimeline(holding, context, 5).camera).not.toBeNull();
+    expect(evaluateTimeline(releasing, context, 5).camera).toBeNull();
+    expect(evaluateTimeline(releasing, context, 2).camera).not.toBeNull();
+  });
+});
