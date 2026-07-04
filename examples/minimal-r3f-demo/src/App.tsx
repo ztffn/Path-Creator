@@ -589,20 +589,21 @@ function CartRiderProp({
     <group ref={groupRef}>
       <mesh>
         <boxGeometry args={[0.16, 0.08, 0.24]} />
-        <meshStandardMaterial color="#eab308" emissive="#eab308" emissiveIntensity={0.15} />
+        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
       </mesh>
       <mesh position={[0, 0, 0.16]} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.05, 0.1, 12]} />
-        <meshStandardMaterial color="#fde047" emissive="#fde047" emissiveIntensity={0.25} />
+        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.35} />
       </mesh>
     </group>
   );
 }
 
+// Targets are cyan across the demo (look-target ball, buoys).
 const TARGET_RIG_BUOYS = [
-  { name: "Buoy-A", color: "#a855f7", position: [0.9, 0, 0] as const },
-  { name: "Buoy-B", color: "#ec4899", position: [-0.45, 0.35, 0.78] as const },
-  { name: "Buoy-C", color: "#14b8a6", position: [-0.45, -0.2, -0.78] as const }
+  { name: "Buoy-A", position: [0.9, 0, 0] as const },
+  { name: "Buoy-B", position: [-0.45, 0.35, 0.78] as const },
+  { name: "Buoy-C", position: [-0.45, -0.2, -0.78] as const }
 ];
 
 function TargetRigProp({ targetRegistry }: { targetRegistry: TargetRegistry }) {
@@ -619,7 +620,7 @@ function TargetRigProp({ targetRegistry }: { targetRegistry: TargetRegistry }) {
         <group key={buoy.name} name={buoy.name} position={buoy.position}>
           <mesh>
             <sphereGeometry args={[0.09, 12, 12]} />
-            <meshStandardMaterial color={buoy.color} emissive={buoy.color} emissiveIntensity={0.3} />
+            <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={0.3} />
           </mesh>
         </group>
       ))}
@@ -1417,7 +1418,7 @@ function Scene({
 
       <mesh name="follower" ref={followerRef}>
         <sphereGeometry args={[0.13, 16, 16]} />
-        <meshStandardMaterial color="#ef4444" />
+        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
       </mesh>
 
       <mesh name="look-target" ref={lookTargetRef}>
@@ -1625,8 +1626,9 @@ function VirtualCameraGlyph({
   active: boolean;
   onSelect: () => void;
 }) {
-  const color = active ? "#22c55e" : selected ? "#f97316" : "#0f172a";
-  const glow = active ? "#bbf7d0" : selected ? "#fed7aa" : "#e2e8f0";
+  // One hue per state: green = live, orange = selected, slate = idle.
+  const color = active ? "#22c55e" : selected ? "#f97316" : "#64748b";
+  const emissiveIntensity = active ? 0.4 : selected ? 0.3 : 0.12;
 
   return (
     <group
@@ -1637,11 +1639,11 @@ function VirtualCameraGlyph({
     >
       <mesh>
         <boxGeometry args={[0.18, 0.12, 0.1]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={active ? 0.35 : 0.12} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={emissiveIntensity} />
       </mesh>
       <mesh position={[0, 0, -0.16]} rotation={[Math.PI / 2, 0, 0]}>
         <coneGeometry args={[0.08, 0.18, 4]} />
-        <meshStandardMaterial color={glow} emissive={glow} emissiveIntensity={0.2} />
+        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={emissiveIntensity} />
       </mesh>
       <Line
         points={[
@@ -1651,13 +1653,13 @@ function VirtualCameraGlyph({
           [-0.16, 0.1, -0.34],
           [-0.16, -0.1, -0.34]
         ]}
-        color={glow}
+        color={color}
         lineWidth={1.5}
       />
       <Text
         position={[0, 0.18, 0]}
         fontSize={0.08}
-        color={glow}
+        color={color}
         anchorX="center"
         anchorY="middle"
         renderOrder={999}
@@ -1981,7 +1983,7 @@ function RigSettingsPanel({
         color: "#f8fafc",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
         boxShadow: "0 24px 60px rgba(15, 23, 42, 0.35)",
-        border: "1px solid rgba(148, 163, 184, 0.26)"
+        border: "1px solid rgba(148, 163, 184, 0.22)"
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
@@ -2200,14 +2202,26 @@ function NumberSlider({
   onChange: (value: number) => void;
 }) {
   return (
-    <label style={{ display: "grid", gridTemplateColumns: "118px 1fr 58px", alignItems: "center", gap: 8, fontSize: 12 }}>
-      <span>{label}</span>
+    <label
+      style={{
+        display: "grid",
+        gridTemplateColumns: "minmax(72px, 96px) minmax(48px, 1fr) 52px",
+        alignItems: "center",
+        gap: 8,
+        fontSize: 12,
+        minWidth: 0
+      }}
+    >
+      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+        {label}
+      </span>
       <input
         type="range"
         min={min}
         max={max}
         step={step}
         value={value}
+        style={{ width: "100%", minWidth: 0 }}
         onChange={(event) => onChange(Number(event.target.value))}
       />
       <input
@@ -2273,11 +2287,11 @@ function VirtualCameraPanel({
         boxSizing: "border-box",
         padding: 12,
         borderRadius: 8,
-        background: "rgba(9, 14, 24, 0.9)",
+        background: "rgba(10, 16, 28, 0.92)",
         color: "#f8fafc",
         fontFamily: "ui-sans-serif, system-ui, sans-serif",
         boxShadow: "0 24px 60px rgba(15, 23, 42, 0.32)",
-        border: "1px solid rgba(148, 163, 184, 0.24)"
+        border: "1px solid rgba(148, 163, 184, 0.22)"
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
@@ -2369,6 +2383,7 @@ function VirtualCameraPanel({
                   style={{
                     display: "grid",
                     gridTemplateColumns: "1fr auto auto",
+                    minWidth: 0,
                     gap: 6,
                     alignItems: "center",
                     padding: 8,
@@ -2378,7 +2393,7 @@ function VirtualCameraPanel({
                       ? "rgba(34, 197, 94, 0.16)"
                       : isSelected
                         ? "rgba(249, 115, 22, 0.16)"
-                        : "rgba(15, 23, 42, 0.62)",
+                        : "rgba(15, 23, 42, 0.6)",
                     border: `1px solid ${
                       isActive
                         ? "rgba(34, 197, 94, 0.54)"
@@ -2463,7 +2478,7 @@ function VirtualCameraPanel({
                   </label>
                   <div
                     onClick={(event) => event.stopPropagation()}
-                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6 }}
+                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
                   >
                     <button
                       style={{ fontSize: 11, textAlign: "left" }}
@@ -2843,7 +2858,7 @@ export function App() {
           overflowY: "auto",
           padding: 12,
           borderRadius: 8,
-          background: "rgba(16, 24, 40, 0.9)",
+          background: "rgba(10, 16, 28, 0.92)",
           color: "#f8fafc",
           fontFamily: "ui-sans-serif, system-ui, sans-serif",
           boxShadow: "0 24px 60px rgba(15, 23, 42, 0.28)",

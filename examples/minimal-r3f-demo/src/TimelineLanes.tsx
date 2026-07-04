@@ -155,10 +155,10 @@ export function TimelineLanes({
           boxSizing: "border-box",
           padding: 10,
           borderRadius: 8,
-          background: "rgba(9, 14, 24, 0.9)",
+          background: "rgba(10, 16, 28, 0.92)",
           color: "#f8fafc",
           fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          border: "1px solid rgba(148, 163, 184, 0.24)"
+          border: "1px solid rgba(148, 163, 184, 0.22)"
         }}
       >
         <div
