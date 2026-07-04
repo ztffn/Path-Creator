@@ -30,15 +30,35 @@ export interface RegisteredTarget {
  */
 export class TargetRegistry {
   private readonly sources = new Map<string, { name: string; source: TargetSource }>();
+  private readonly listeners = new Set<() => void>();
+  private version_ = 0;
 
   /** Registers a target source; returns an unregister function. */
   register(id: string, source: TargetSource, name = id): () => void {
     this.sources.set(id, { name, source });
+    this.notify();
     return () => {
       if (this.sources.get(id)?.source === source) {
         this.sources.delete(id);
+        this.notify();
       }
     };
+  }
+
+  /** Notified when targets are added or removed (not when they move). */
+  subscribe(listener: () => void): () => void {
+    this.listeners.add(listener);
+    return () => this.listeners.delete(listener);
+  }
+
+  /** Monotonic counter bumped on registration changes; cheap snapshot key. */
+  get version(): number {
+    return this.version_;
+  }
+
+  private notify(): void {
+    this.version_ += 1;
+    for (const listener of this.listeners) listener();
   }
 
   resolve(id: string): Vec3 | null {

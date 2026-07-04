@@ -19,6 +19,8 @@ import {
   samplePathAtDistance,
   usePathCart,
   usePathFollower,
+  useObjectTargets,
+  useRegisteredTargets,
   useTrackingTarget
 } from "@huma/path-creator/r3f";
 import {
@@ -496,6 +498,34 @@ function CartRiderProp({
   );
 }
 
+const TARGET_RIG_BUOYS = [
+  { name: "Buoy-A", color: "#a855f7", position: [0.9, 0, 0] as const },
+  { name: "Buoy-B", color: "#ec4899", position: [-0.45, 0.35, 0.78] as const },
+  { name: "Buoy-C", color: "#14b8a6", position: [-0.45, -0.2, -0.78] as const }
+];
+
+function TargetRigProp({ targetRegistry }: { targetRegistry: TargetRegistry }) {
+  const groupRef = useRef<Group>(null);
+  useObjectTargets(groupRef, { pattern: /^Buoy/, idPrefix: "rig" }, targetRegistry);
+
+  useFrame(({ clock }) => {
+    groupRef.current?.rotation.set(0, clock.elapsedTime * 0.4, 0);
+  });
+
+  return (
+    <group ref={groupRef} name="TargetRig" position={[2.4, 0.8, 0]}>
+      {TARGET_RIG_BUOYS.map((buoy) => (
+        <group key={buoy.name} name={buoy.name} position={buoy.position}>
+          <mesh>
+            <sphereGeometry args={[0.09, 12, 12]} />
+            <meshStandardMaterial color={buoy.color} emissive={buoy.color} emissiveIntensity={0.3} />
+          </mesh>
+        </group>
+      ))}
+    </group>
+  );
+}
+
 function Scene({
   bezierPath,
   vertexPath,
@@ -508,6 +538,7 @@ function Scene({
   debugPreview,
   debugFrustum,
   showCartRider,
+  showTargetRig,
   selectedHandleIndex,
   selectedMidpointIndex,
   anchorScales,
@@ -545,6 +576,7 @@ function Scene({
   debugPreview: boolean;
   debugFrustum: boolean;
   showCartRider: boolean;
+  showTargetRig: boolean;
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
   anchorScales: number[];
@@ -1358,6 +1390,8 @@ function Scene({
           targetRegistry={targetRegistry}
         />
       ) : null}
+
+      {showTargetRig ? <TargetRigProp targetRegistry={targetRegistry} /> : null}
 
       {debugFrustum ? <primitive object={frustumHelper} /> : null}
       {debugPreview ? (
@@ -2277,7 +2311,9 @@ export function App() {
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   const [showCartRider, setShowCartRider] = useState(false);
+  const [showTargetRig, setShowTargetRig] = useState(false);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
+  const registeredTargets = useRegisteredTargets(targetRegistry);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
@@ -2723,6 +2759,15 @@ export function App() {
             <span style={{ marginLeft: 6 }}>Show cart rider prop</span>
           </label>
 
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={showTargetRig}
+              onChange={(e) => setShowTargetRig(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>Show target rig (named nodes)</span>
+          </label>
+
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
             Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
           </div>
@@ -2759,7 +2804,7 @@ export function App() {
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
           onAddCart={addCartVirtualCamera}
-          trackTargets={targetRegistry.list()}
+          trackTargets={registeredTargets}
           onSetTrackTarget={setVirtualCameraTrackTarget}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
@@ -2815,6 +2860,7 @@ export function App() {
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
           showCartRider={showCartRider}
+          showTargetRig={showTargetRig}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
           anchorScales={anchorScales}

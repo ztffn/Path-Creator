@@ -3,10 +3,10 @@
 // look-at aims referencing targets by id through the resolve context. Pins
 // the contract that lets vcams track arbitrary scene objects without knowing
 // what they are.
-import { Quaternion, Vector3 } from "three";
+import { Group, Quaternion, Vector3 } from "three";
 import { describe, expect, it } from "vitest";
 import { TargetRegistry, type Vec3 } from "../src/core";
-import { resolveVirtualCameraDefinition } from "../src/three";
+import { registerObjectTargets, resolveVirtualCameraDefinition } from "../src/three";
 
 describe("TargetRegistry", () => {
   it("resolves the live position at query time", () => {
@@ -93,5 +93,59 @@ describe("vcam aim by targetId", () => {
     );
 
     expect(snapshot?.quaternion).toEqual({ x: 0, y: 0, z: 0, w: 1 });
+  });
+});
+
+describe("registerObjectTargets", () => {
+  function buildRig(): Group {
+    const root = new Group();
+    root.name = "Rig";
+    const a = new Group();
+    a.name = "Buoy-A";
+    a.position.set(1, 0, 0);
+    const b = new Group();
+    b.name = "Buoy-B";
+    b.position.set(0, 2, 0);
+    const misc = new Group();
+    misc.name = "Debris";
+    root.add(a, b, misc);
+    return root;
+  }
+
+  it("registers matching named descendants with prefixed ids", () => {
+    const registry = new TargetRegistry();
+    const dispose = registerObjectTargets(registry, buildRig(), { pattern: /^Buoy/ });
+
+    expect(registry.list().map((t) => t.id).sort()).toEqual(["Rig/Buoy-A", "Rig/Buoy-B"]);
+    expect(registry.resolve("Rig/Buoy-B")?.y).toBeCloseTo(2);
+    expect(registry.has("Rig/Debris")).toBe(false);
+
+    dispose();
+    expect(registry.list()).toEqual([]);
+  });
+
+  it("resolves world positions through parent transforms", () => {
+    const registry = new TargetRegistry();
+    const rig = buildRig();
+    rig.position.set(10, 0, 0);
+    rig.updateMatrixWorld(true);
+    registerObjectTargets(registry, rig, { names: ["Buoy-A"] });
+
+    expect(registry.resolve("Rig/Buoy-A")?.x).toBeCloseTo(11);
+  });
+
+  it("bumps the registry version so subscribers can refresh lists", () => {
+    const registry = new TargetRegistry();
+    let notified = 0;
+    registry.subscribe(() => {
+      notified += 1;
+    });
+
+    const before = registry.version;
+    const dispose = registerObjectTargets(registry, buildRig(), { pattern: /^Buoy/ });
+    dispose();
+
+    expect(registry.version).toBeGreaterThan(before);
+    expect(notified).toBe(4);
   });
 });

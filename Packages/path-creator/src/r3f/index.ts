@@ -408,6 +408,8 @@ export function useTrackingTarget(
   }, [id, name, object, registry]);
 }
 
+export * from "./targets";
+
 export function vec3Distance(a: Vec3, b: Vec3): number {
   return vec3.distance(a, b);
 }

@@ -1,5 +1,12 @@
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
-import { PathSpace, type CartFrame, type Vec3, type VertexPath, vec3 } from "../core";
+import {
+  PathSpace,
+  type CartFrame,
+  type TargetRegistry,
+  type Vec3,
+  type VertexPath,
+  vec3
+} from "../core";
 
 export type VirtualCameraBodyDefinition =
   | { type: "static"; position: Vec3; quaternion: QuaternionLike }
@@ -104,6 +111,80 @@ interface LensCamera extends Camera {
   top?: number;
   bottom?: number;
   updateProjectionMatrix?: () => void;
+}
+
+export interface ObjectTargetsOptions {
+  /** Only register descendants whose name is in this list. */
+  names?: string[];
+  /** Only register descendants whose name matches. */
+  pattern?: RegExp;
+  /** Arbitrary predicate; combined with names/pattern when both given. */
+  filter?: (object: Object3D) => boolean;
+  /** Prefix for generated target ids (default: the root object's name). */
+  idPrefix?: string;
+  /** Include the root object itself when it matches (default true). */
+  includeRoot?: boolean;
+}
+
+const _targetWorldPosition = new Vector3();
+
+/**
+ * Registers a single Object3D as a tracking target; the registry pulls its
+ * live world position at resolve time. Returns an unregister function.
+ */
+export function registerObjectTarget(
+  registry: TargetRegistry,
+  id: string,
+  object: Object3D,
+  name?: string
+): () => void {
+  return registry.register(
+    id,
+    () => {
+      object.getWorldPosition(_targetWorldPosition);
+      return {
+        x: _targetWorldPosition.x,
+        y: _targetWorldPosition.y,
+        z: _targetWorldPosition.z
+      };
+    },
+    name ?? (object.name || id)
+  );
+}
+
+/**
+ * Walks an object hierarchy (typically a loaded GLTF scene) and registers
+ * every matching named node as a tracking target. Ids are
+ * `<idPrefix>/<node.name>`; unnamed nodes are skipped. Returns one dispose
+ * function that unregisters everything it added.
+ */
+export function registerObjectTargets(
+  registry: TargetRegistry,
+  root: Object3D,
+  options: ObjectTargetsOptions = {}
+): () => void {
+  const idPrefix = options.idPrefix ?? root.name ?? "";
+  const includeRoot = options.includeRoot ?? true;
+  const disposers: Array<() => void> = [];
+
+  const matches = (object: Object3D): boolean => {
+    if (!object.name) return false;
+    if (options.names && !options.names.includes(object.name)) return false;
+    if (options.pattern && !options.pattern.test(object.name)) return false;
+    if (options.filter && !options.filter(object)) return false;
+    return true;
+  };
+
+  root.traverse((object) => {
+    if (object === root && !includeRoot) return;
+    if (!matches(object)) return;
+    const id = idPrefix ? `${idPrefix}/${object.name}` : object.name;
+    disposers.push(registerObjectTarget(registry, id, object, object.name));
+  });
+
+  return () => {
+    for (const dispose of disposers) dispose();
+  };
 }
 
 const _cartRight = new Vector3();
