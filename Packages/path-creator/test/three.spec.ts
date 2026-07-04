@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { PerspectiveCamera, Quaternion, Vector3 } from "three";
+import { Group, PerspectiveCamera, Quaternion, Vector3 } from "three";
 import { VertexPath, createPathCart, sampleCartFrame } from "../src/core";
 import {
   activateVirtualCameraBrain,
@@ -14,6 +14,9 @@ import {
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
   applyVirtualCameraNoise,
+  hideEditorHelpers,
+  markEditorHelpers,
+  showEditorHelpers,
   resolveVirtualCameraDefinition,
   resolveVirtualCameraTransition,
   retargetVirtualCameraBrain,
@@ -420,5 +423,25 @@ describe("dutch lens", () => {
     };
     const blended = blendVirtualCameraSnapshots(from, to, 0.5, { curve: "linear" });
     expect(blended.lens?.dutchDeg).toBeCloseTo(10);
+  });
+});
+
+describe("editor helper layers", () => {
+  it("moves a tree onto the helper layer and gates it per camera", () => {
+    const root = new Group();
+    const child = new Group();
+    root.add(child);
+    markEditorHelpers(root);
+
+    const playbackCamera = new PerspectiveCamera();
+    expect(playbackCamera.layers.test(root.layers)).toBe(false);
+    expect(playbackCamera.layers.test(child.layers)).toBe(false);
+
+    const editorCamera = new PerspectiveCamera();
+    showEditorHelpers(editorCamera);
+    expect(editorCamera.layers.test(root.layers)).toBe(true);
+
+    hideEditorHelpers(editorCamera);
+    expect(editorCamera.layers.test(root.layers)).toBe(false);
   });
 });

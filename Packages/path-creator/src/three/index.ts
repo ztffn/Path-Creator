@@ -78,6 +78,31 @@ interface LensCamera extends Camera {
   updateProjectionMatrix?: () => void;
 }
 
+/**
+ * Layer reserved for editor-only visuals (path lines, handles, vcam glyphs,
+ * frustum helpers). Content stays on layer 0. An editing camera enables this
+ * layer; playback/vcam/brain cameras never do — so edit vs play mode is a
+ * per-camera bit, not a scene change.
+ */
+export const EDITOR_HELPERS_LAYER = 30;
+
+/** Moves an object tree exclusively onto the editor-helpers layer. */
+export function markEditorHelpers(root: Object3D, layer = EDITOR_HELPERS_LAYER): void {
+  root.traverse((object) => {
+    object.layers.set(layer);
+  });
+}
+
+/** Lets a camera see editor helpers (an editing viewport). */
+export function showEditorHelpers(camera: Camera, layer = EDITOR_HELPERS_LAYER): void {
+  camera.layers.enable(layer);
+}
+
+/** Hides editor helpers from a camera (playback/vcam/brain cameras). */
+export function hideEditorHelpers(camera: Camera, layer = EDITOR_HELPERS_LAYER): void {
+  camera.layers.disable(layer);
+}
+
 export interface ObjectTargetsOptions {
   /** Only register descendants whose name is in this list. */
   names?: string[];

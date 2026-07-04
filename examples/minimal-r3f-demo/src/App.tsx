@@ -18,8 +18,10 @@ import {
   applyScreenComposerAim,
   createScreenComposerState,
   samplePathAtDistance,
+  EditorHelpers,
   usePathCart,
   usePathFollower,
+  useEditorHelpersVisible,
   useObjectTargets,
   useRegisteredTargets,
   useTrackingTarget
@@ -688,6 +690,7 @@ function Scene({
     speed,
     mode: followMode
   });
+  useEditorHelpersVisible();
   const vcamCart = usePathCart({ path: vertexPath, speed, mode: followMode });
   const vcamCartFrameRef = useRef<CartFrame | null>(null);
   const followerRef = useRef<Mesh>(null);
@@ -1030,6 +1033,7 @@ function Scene({
       <ambientLight intensity={0.6} />
       <directionalLight position={[2, 3, 4]} intensity={1.2} />
 
+      <EditorHelpers>
       <Line points={pathLinePoints} color="#101828" lineWidth={4} />
 
       <lineSegments>
@@ -1388,6 +1392,7 @@ function Scene({
         <sphereGeometry args={[0.0001, 4, 4]} />
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
+      </EditorHelpers>
 
       <mesh name="follower" ref={followerRef}>
         <sphereGeometry args={[0.13, 16, 16]} />
@@ -1399,6 +1404,7 @@ function Scene({
         <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
       </mesh>
 
+      <EditorHelpers>
       {virtualCameras.map((virtualCamera) => {
         const isSelected = virtualCamera.id === selectedVirtualCameraId;
         const isActive = virtualCamera.id === virtualCameraActivation?.to.id;
@@ -1471,6 +1477,8 @@ function Scene({
           </group>
         );
       })}
+      {debugFrustum ? <primitive object={frustumHelper} /> : null}
+      </EditorHelpers>
 
       {showCartRider ? (
         <CartRiderProp
@@ -1482,7 +1490,6 @@ function Scene({
 
       {showTargetRig ? <TargetRigProp targetRegistry={targetRegistry} /> : null}
 
-      {debugFrustum ? <primitive object={frustumHelper} /> : null}
       {debugPreview ? (
         <DollyCameraPip
           camera={pipCamera}
