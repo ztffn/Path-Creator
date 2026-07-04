@@ -448,7 +448,6 @@ function applyCameraAim(
   camera.lookAt(target.x, target.y, target.z);
 }
 
-const CART_RIDER_OFFSET = { x: 0.35, y: 0.12, z: 0 };
 const CART_RIDER_SPEED = 0.8;
 
 function CartRiderProp({ path, isClosed }: { path: VertexPath; isClosed: boolean }) {
@@ -456,9 +455,8 @@ function CartRiderProp({ path, isClosed }: { path: VertexPath; isClosed: boolean
   const { step } = usePathCart({
     path,
     speed: CART_RIDER_SPEED,
-    mode: isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Reverse,
-    orientationMode: "path-frame",
-    positionOffset: CART_RIDER_OFFSET
+    mode: isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop,
+    orientationMode: "path-frame"
   });
 
   useFrame((_, delta) => {

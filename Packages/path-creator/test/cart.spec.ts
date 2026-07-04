@@ -222,6 +222,33 @@ describe("rig document", () => {
   });
 });
 
+describe("closed-loop normal seam", () => {
+  const closedBezier = new BezierPath(
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 6, y: 2, z: 1 },
+      { x: 9, y: 0, z: 6 },
+      { x: 3, y: -1, z: 8 }
+    ],
+    { isClosed: true }
+  );
+  const closedPath = new VertexPath(closedBezier, { maxAngleError: 0.5 });
+
+  it("normals line up across the loop join", () => {
+    const first = closedPath.getNormal(0);
+    const last = closedPath.getNormal(closedPath.numPoints - 1);
+    expect(vec3.dot(first, last)).toBeGreaterThan(0.999);
+  });
+
+  it("cart frames are continuous across the loop join", () => {
+    const cart = createPathCart();
+    const before = sampleCartFrame(closedPath, cart, closedPath.length - 0.01);
+    const after = sampleCartFrame(closedPath, cart, 0.01);
+    expect(vec3.dot(before.up, after.up)).toBeGreaterThan(0.99);
+    expect(vec3.dot(before.forward, after.forward)).toBeGreaterThan(0.99);
+  });
+});
+
 describe("applyCartFrameToObject", () => {
   it("places the object at the frame position with forward as +Z", () => {
     const cart = createPathCart({ distance: 5, positionOffset: { x: 0, y: 1, z: 0 } });

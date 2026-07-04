@@ -46,7 +46,7 @@ export class VertexPath {
       this.isClosedLoop = false;
       this.localPoints = points;
       this.localTangents = buildTangentsFromPoints(points, false);
-      this.localNormals = buildNormals(points, this.localTangents, this.space, false, 0, []);
+      this.localNormals = buildNormals(points, this.localTangents, this.space, false, false, 0, []);
       this.cumulativeLengthAtEachVertex = cumulativeLength;
       this.length = cumulativeLength[cumulativeLength.length - 1] ?? 0;
       this.times = cumulativeLength.map((d) => (this.length > 0 ? d / this.length : 0));
@@ -79,6 +79,7 @@ export class VertexPath {
       this.localPoints,
       this.localTangents,
       this.space,
+      bezierPath.isClosed,
       bezierPath.flipNormals,
       bezierPath.globalNormalsAngle,
       buildAnchorNormalAngles(bezierPath, splitData)
@@ -309,6 +310,7 @@ function buildNormals(
   points: Vec3[],
   tangents: Vec3[],
   space: PathSpace,
+  isClosedLoop: boolean,
   flipNormals: boolean,
   globalNormalsAngle: number,
   anchorAngles: Array<{ startIndex: number; endIndex: number; startAngle: number; endAngle: number }>
@@ -359,6 +361,19 @@ function buildNormals(
     lastRotationAxis = finalRot;
   }
 
+  // Parallel transport does not guarantee the last normal lines up with the
+  // first when the path is a closed loop; distribute the angular error across
+  // the whole path so the seam is continuous (ported from Unity VertexPath).
+  if (isClosedLoop && normals.length > 1) {
+    const angleError = signedAngleAroundAxis(normals[normals.length - 1], normals[0], tangents[0]);
+    if (Math.abs(angleError) > (0.1 * Math.PI) / 180) {
+      for (let i = 1; i < normals.length; i += 1) {
+        const t = i / (normals.length - 1);
+        normals[i] = vec3.normalize(rotateAroundAxis(normals[i], tangents[i], angleError * t));
+      }
+    }
+  }
+
   for (const map of anchorAngles) {
     const count = Math.max(1, map.endIndex - map.startIndex);
     for (let i = 0; i <= count; i += 1) {
@@ -376,6 +391,12 @@ function buildNormals(
   }
 
   return normals;
+}
+
+function signedAngleAroundAxis(from: Vec3, to: Vec3, axis: Vec3): number {
+  const cross = vec3.cross(from, to);
+  const unsigned = Math.atan2(vec3.magnitude(cross), vec3.dot(from, to));
+  return vec3.dot(axis, cross) < 0 ? -unsigned : unsigned;
 }
 
 function buildAnchorNormalAngles(
