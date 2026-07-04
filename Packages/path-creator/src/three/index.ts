@@ -1,6 +1,9 @@
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
 import {
   PathSpace,
+  evaluateVirtualCameraBlendCurve,
+  offsetAlongBasis,
+  orthonormalBasis,
   type CartFrame,
   type QuaternionLike,
   type TargetRegistry,
@@ -15,6 +18,7 @@ import {
   vec3
 } from "../core";
 
+export { evaluateVirtualCameraBlendCurve } from "../core";
 export type {
   QuaternionLike,
   VirtualCameraAimDefinition,
@@ -86,10 +90,16 @@ interface LensCamera extends Camera {
  */
 export const EDITOR_HELPERS_LAYER = 30;
 
-/** Moves an object tree exclusively onto the editor-helpers layer. */
+/**
+ * Moves an object tree exclusively onto the editor-helpers layer. Cheap to
+ * call per frame: already-marked objects are skipped, so hosts can re-assert
+ * over subtrees whose children materialize asynchronously (troika text,
+ * gizmo internals).
+ */
 export function markEditorHelpers(root: Object3D, layer = EDITOR_HELPERS_LAYER): void {
+  const mask = (1 << layer) >>> 0;
   root.traverse((object) => {
-    object.layers.set(layer);
+    if (object.layers.mask !== mask) object.layers.mask = mask;
   });
 }
 
@@ -352,18 +362,14 @@ const _bodyQuaternion = new Quaternion();
 /**
  * Camera-convention orientation: the camera looks along `forward` (local -Z)
  * with `up` as the up hint. Counterpart of applyCartFrameToObject's +Z prop
- * convention.
+ * convention; built on the same orthonormalBasis as cart frames so the
+ * degenerate-up fallback policy is shared.
  */
 export function cameraQuaternionFromFrame(forward: Vec3, up: Vec3): QuaternionLike {
-  _bodyBack.set(-forward.x, -forward.y, -forward.z).normalize();
-  _bodyUp.set(up.x, up.y, up.z);
-  _bodyRight.crossVectors(_bodyUp, _bodyBack);
-  if (_bodyRight.lengthSq() < 1e-12) {
-    _bodyUp.set(Math.abs(_bodyBack.y) < 0.99 ? 0 : 1, Math.abs(_bodyBack.y) < 0.99 ? 1 : 0, 0);
-    _bodyRight.crossVectors(_bodyUp, _bodyBack);
-  }
-  _bodyRight.normalize();
-  _bodyUp.crossVectors(_bodyBack, _bodyRight).normalize();
+  const basis = orthonormalBasis(vec3.scale(forward, -1), up);
+  _bodyRight.set(basis.right.x, basis.right.y, basis.right.z);
+  _bodyUp.set(basis.up.x, basis.up.y, basis.up.z);
+  _bodyBack.set(basis.forward.x, basis.forward.y, basis.forward.z);
   _bodyMatrix.makeBasis(_bodyRight, _bodyUp, _bodyBack);
   _bodyQuaternion.setFromRotationMatrix(_bodyMatrix);
   return {
@@ -399,13 +405,10 @@ export function resolveVirtualCameraDefinition(
     const frame = context.getCartFrame?.(definition.body.cartId) ?? null;
     if (!frame) return null;
 
-    const offset = definition.body.positionOffset ?? vec3.create();
-    position = vec3.add(
+    position = offsetAlongBasis(
       frame.position,
-      vec3.add(
-        vec3.add(vec3.scale(frame.right, offset.x), vec3.scale(frame.up, offset.y)),
-        vec3.scale(frame.forward, offset.z)
-      )
+      frame,
+      definition.body.positionOffset ?? vec3.create()
     );
     quaternion = cameraQuaternionFromFrame(frame.forward, frame.up);
     bodyUp = frame.up;
@@ -445,6 +448,9 @@ const _noisePosition = new Vector3();
 const _noiseQuaternion = new Quaternion();
 const _noiseEuler = new Vector3();
 const _noiseRotation = new Quaternion();
+const X_AXIS = new Vector3(1, 0, 0);
+const Y_AXIS = new Vector3(0, 1, 0);
+const Z_AXIS = new Vector3(0, 0, 1);
 const DEG_TO_RAD = Math.PI / 180;
 
 function noiseHash(seed: number, index: number): number {
@@ -514,17 +520,9 @@ export function applyVirtualCameraNoise(
     const axisSeed = seed + (axis === "x" ? 51_31 : axis === "y" ? 71_23 : 91_11);
     _noiseEuler[axis] = valueNoise1D(axisSeed, timeSeconds * frequency) * amplitude * DEG_TO_RAD;
   }
-  _noiseRotation.set(
-    Math.sin(_noiseEuler.x / 2),
-    0,
-    0,
-    Math.cos(_noiseEuler.x / 2)
-  );
-  _noiseQuaternion.multiply(_noiseRotation);
-  _noiseRotation.set(0, Math.sin(_noiseEuler.y / 2), 0, Math.cos(_noiseEuler.y / 2));
-  _noiseQuaternion.multiply(_noiseRotation);
-  _noiseRotation.set(0, 0, Math.sin(_noiseEuler.z / 2), Math.cos(_noiseEuler.z / 2));
-  _noiseQuaternion.multiply(_noiseRotation);
+  _noiseQuaternion.multiply(_noiseRotation.setFromAxisAngle(X_AXIS, _noiseEuler.x));
+  _noiseQuaternion.multiply(_noiseRotation.setFromAxisAngle(Y_AXIS, _noiseEuler.y));
+  _noiseQuaternion.multiply(_noiseRotation.setFromAxisAngle(Z_AXIS, _noiseEuler.z));
 
   return {
     ...snapshot,
@@ -596,9 +594,9 @@ export function applyVirtualCameraSnapshot(camera: Camera, snapshot: VirtualCame
 
   if (snapshot.lens) {
     if (snapshot.lens.dutchDeg) {
-      const half = (-snapshot.lens.dutchDeg * DEG_TO_RAD) / 2;
-      _noiseRotation.set(0, 0, Math.sin(half), Math.cos(half));
-      camera.quaternion.multiply(_noiseRotation);
+      camera.quaternion.multiply(
+        _noiseRotation.setFromAxisAngle(Z_AXIS, -snapshot.lens.dutchDeg * DEG_TO_RAD)
+      );
     }
     applyVirtualCameraLens(camera, snapshot.lens);
   }
@@ -769,34 +767,29 @@ export function applyVirtualCameraBrain(
   return snapshot;
 }
 
+/**
+ * The per-frame protocol for a live vcam definition: re-resolve it (cart
+ * bodies, tracked targets, and noise all vary with time), keep the brain's
+ * blend chasing the fresh pose, then step and apply. Hosts call this each
+ * frame after activating the brain onto the shot.
+ */
+export function driveVirtualCameraBrain(
+  camera: Camera,
+  state: VirtualCameraBrainState,
+  definition: VirtualCameraDefinition,
+  context: VirtualCameraResolveContext,
+  deltaSeconds: number
+): VirtualCameraSnapshot | undefined {
+  const resolved = resolveVirtualCameraDefinition(definition, context);
+  if (resolved) {
+    retargetVirtualCameraBrain(state, { target: resolved });
+  }
+  return applyVirtualCameraBrain(camera, state, deltaSeconds);
+}
+
 export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): number {
   if (!state.isBlending || state.durationSeconds <= 0) return 1;
   return Math.min(1, Math.max(0, state.elapsedSeconds / state.durationSeconds));
-}
-
-export function evaluateVirtualCameraBlendCurve(
-  t: number,
-  curve: VirtualCameraBlendCurve = "easeInOut"
-): number {
-  const alpha = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0));
-
-  switch (curve) {
-    case "cut":
-      return 1;
-    case "linear":
-      return alpha;
-    case "easeIn":
-      return alpha * alpha;
-    case "easeOut":
-      return 1 - (1 - alpha) * (1 - alpha);
-    case "hardIn":
-      return alpha * alpha * alpha;
-    case "hardOut":
-      return 1 - (1 - alpha) * (1 - alpha) * (1 - alpha);
-    case "easeInOut":
-    default:
-      return alpha * alpha * (3 - 2 * alpha);
-  }
 }
 
 function setVertex(buffer: number[], index: number, v: Vec3): void {
@@ -891,14 +884,16 @@ function blendVirtualCameraLens(
   const near = blendOptionalNumber(from?.near, to?.near, alpha);
   const far = blendOptionalNumber(from?.far, to?.far, alpha);
   const orthographicSize = blendOptionalNumber(from?.orthographicSize, to?.orthographicSize, alpha);
-  const dutchDeg = blendOptionalNumber(from?.dutchDeg ?? 0, to?.dutchDeg ?? 0, alpha);
+  // Absent dutch blends as zero so a dutched shot unwinds instead of holding.
+  const fromDutch = from?.dutchDeg ?? 0;
+  const dutchDeg = fromDutch + ((to?.dutchDeg ?? 0) - fromDutch) * alpha;
 
   if (fov !== undefined) lens.fov = fov;
   if (zoom !== undefined) lens.zoom = zoom;
   if (near !== undefined) lens.near = near;
   if (far !== undefined) lens.far = far;
   if (orthographicSize !== undefined) lens.orthographicSize = orthographicSize;
-  if (dutchDeg !== undefined && dutchDeg !== 0) lens.dutchDeg = dutchDeg;
+  if (dutchDeg !== 0) lens.dutchDeg = dutchDeg;
 
   return Object.keys(lens).length > 0 ? lens : undefined;
 }

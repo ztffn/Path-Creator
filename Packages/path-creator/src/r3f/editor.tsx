@@ -4,9 +4,9 @@
 // covered), and useEditorHelpersVisible flags the default camera as an
 // editing viewport. Playback/vcam cameras stay on layer 0 and see content only.
 import { useFrame, useThree } from "@react-three/fiber";
-import { useEffect, useMemo, useRef, type ReactNode } from "react";
-import { Layers, type Group } from "three";
-import { EDITOR_HELPERS_LAYER } from "../three";
+import { useEffect, useRef, type ReactNode } from "react";
+import type { Group } from "three";
+import { EDITOR_HELPERS_LAYER, markEditorHelpers } from "../three";
 
 /**
  * Wraps editor-only visuals. Everything inside renders exclusively on the
@@ -22,18 +22,9 @@ export function EditorHelpers({
   children?: ReactNode;
 }) {
   const groupRef = useRef<Group>(null);
-  const mask = useMemo(() => {
-    const layers = new Layers();
-    layers.set(layer);
-    return layers.mask;
-  }, [layer]);
 
   useFrame(() => {
-    const root = groupRef.current;
-    if (!root) return;
-    root.traverse((object) => {
-      if (object.layers.mask !== mask) object.layers.mask = mask;
-    });
+    if (groupRef.current) markEditorHelpers(groupRef.current, layer);
   });
 
   return <group ref={groupRef}>{children}</group>;

@@ -78,15 +78,7 @@ export function sampleCartFrame(
 
   const railPosition = path.getPointAtDistance(distance, cart.endOfPathInstruction);
   const basis = resolveOrientationBasis(path, cart, distance);
-
-  const offset = cart.positionOffset;
-  const position = vec3.add(
-    railPosition,
-    vec3.add(
-      vec3.add(vec3.scale(basis.right, offset.x), vec3.scale(basis.up, offset.y)),
-      vec3.scale(basis.forward, offset.z)
-    )
-  );
+  const position = offsetAlongBasis(railPosition, basis, cart.positionOffset);
 
   return {
     position,
@@ -102,6 +94,26 @@ export function sampleCartFrame(
 /** Sample by normalized path time (0..1) instead of distance. */
 export function sampleCartFrameAtTime(path: VertexPath, cart: PathCart, t: number): CartFrame {
   return sampleCartFrame(path, cart, t * path.length);
+}
+
+/**
+ * Applies a rail-local offset (x along right, y along up, z along forward)
+ * to a base position. The single definition of the offset convention shared
+ * by cart sampling and vcam cart bodies — the two offsets compose: the cart's
+ * own offset places the rail frame, a body's offset trims the shot from it.
+ */
+export function offsetAlongBasis(
+  base: Vec3,
+  basis: { right: Vec3; up: Vec3; forward: Vec3 },
+  offset: Vec3
+): Vec3 {
+  return vec3.add(
+    base,
+    vec3.add(
+      vec3.add(vec3.scale(basis.right, offset.x), vec3.scale(basis.up, offset.y)),
+      vec3.scale(basis.forward, offset.z)
+    )
+  );
 }
 
 export function serializePathCart(cart: PathCart, pathId: string): SerializedPathCart {
@@ -151,9 +163,11 @@ function resolveOrientationBasis(
 
 /**
  * Right-handed basis with forward as +Z, up as +Y, right as +X:
- * right = up x forward, up recomputed as forward x right.
+ * right = up x forward, up recomputed as forward x right. Shared by cart
+ * orientation and camera-convention quaternions so degenerate-up fallbacks
+ * cannot diverge.
  */
-function orthonormalBasis(forwardRaw: Vec3, upRaw: Vec3): { forward: Vec3; up: Vec3; right: Vec3 } {
+export function orthonormalBasis(forwardRaw: Vec3, upRaw: Vec3): { forward: Vec3; up: Vec3; right: Vec3 } {
   const forward = vec3.normalize(forwardRaw);
   let right = vec3.cross(upRaw, forward);
   if (vec3.sqrMagnitude(right) < EPSILON) {

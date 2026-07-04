@@ -11,6 +11,7 @@ import {
   buildTubeMeshBuffers,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
+  driveVirtualCameraBrain,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
   applyVirtualCameraNoise,
@@ -443,5 +444,45 @@ describe("editor helper layers", () => {
 
     hideEditorHelpers(editorCamera);
     expect(editorCamera.layers.test(root.layers)).toBe(false);
+  });
+});
+
+describe("driveVirtualCameraBrain", () => {
+  it("re-resolves the definition each frame so blends chase moving bodies", () => {
+    const path = new VertexPath(
+      [
+        { x: 0, y: 0, z: 0 },
+        { x: 100, y: 0, z: 0 }
+      ],
+      [0, 100]
+    );
+    const cart = createPathCart({ distance: 0 });
+    const definition = {
+      id: "rail-cam",
+      body: { type: "cart" as const, cartId: "dolly" }
+    };
+    const context = {
+      getCartFrame: (id: string) => (id === "dolly" ? sampleCartFrame(path, cart) : null)
+    };
+
+    const brain = createVirtualCameraBrainState({
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    });
+    activateVirtualCameraBrain(brain, resolveVirtualCameraDefinition(definition, context)!, {
+      durationSeconds: 2,
+      curve: "linear"
+    });
+
+    const camera = new PerspectiveCamera();
+    cart.distance = 10;
+    driveVirtualCameraBrain(camera, brain, definition, context, 1);
+    // Halfway through the blend toward the cart now at x=10.
+    expect(camera.position.x).toBeCloseTo(5);
+
+    cart.distance = 20;
+    driveVirtualCameraBrain(camera, brain, definition, context, 1);
+    expect(camera.position.x).toBeCloseTo(20);
+    expect(brain.isBlending).toBe(false);
   });
 });

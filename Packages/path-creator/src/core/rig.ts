@@ -6,7 +6,7 @@
 import { BezierPath, type SerializedBezierPath } from "./bezier-path";
 import { deserializePathCart, serializePathCart, type PathCart, type SerializedPathCart } from "./cart";
 import type { TrackingTargetDefinition } from "./targets";
-import type { Timeline } from "./timeline";
+import { sortTimelineTracks, type Timeline } from "./timeline";
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
 
@@ -148,7 +148,9 @@ export function buildRigRuntime(document: RigDocument): RigRuntime {
         );
       }
     }
-    timelines.set(timeline.id, timeline);
+    // Establishes the sorted-tracks invariant the evaluator relies on, since
+    // documents arrive from JSON in author order.
+    timelines.set(timeline.id, { ...timeline, tracks: sortTimelineTracks(timeline.tracks) });
   }
 
   return { paths, carts, cartPaths, vcams, targets, timelines };

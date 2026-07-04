@@ -22,6 +22,32 @@ export type VirtualCameraBlendCurve =
   | "hardIn"
   | "hardOut";
 
+/** Shapes a 0..1 progress value; the shared easing vocabulary for camera blends and cart keyframes. */
+export function evaluateVirtualCameraBlendCurve(
+  t: number,
+  curve: VirtualCameraBlendCurve = "easeInOut"
+): number {
+  const alpha = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0));
+
+  switch (curve) {
+    case "cut":
+      return 1;
+    case "linear":
+      return alpha;
+    case "easeIn":
+      return alpha * alpha;
+    case "easeOut":
+      return 1 - (1 - alpha) * (1 - alpha);
+    case "hardIn":
+      return alpha * alpha * alpha;
+    case "hardOut":
+      return 1 - (1 - alpha) * (1 - alpha) * (1 - alpha);
+    case "easeInOut":
+    default:
+      return alpha * alpha * (3 - 2 * alpha);
+  }
+}
+
 export interface VirtualCameraLens {
   fov?: number;
   zoom?: number;

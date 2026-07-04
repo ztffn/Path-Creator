@@ -6,6 +6,8 @@
 // with both shots resolved live, mirroring the brain's behavior.
 import {
   TIMELINE_SCHEMA_VERSION,
+  evaluateVirtualCameraBlendCurve,
+  lerp,
   sampleCartFrame,
   type CameraBlock,
   type CameraTrack,
@@ -19,7 +21,7 @@ import {
   type VirtualCameraDefinition,
   type VirtualCameraSnapshot
 } from "../core";
-import { blendVirtualCameraSnapshots, evaluateVirtualCameraBlendCurve, resolveVirtualCameraDefinition } from "../three";
+import { blendVirtualCameraSnapshots, resolveVirtualCameraDefinition } from "../three";
 
 export type {
   CameraBlock,
@@ -172,7 +174,9 @@ function evaluateCameraTrack(
   t: number,
   resolveBlock: (block: CameraBlock) => VirtualCameraSnapshot | null
 ): { snapshot: VirtualCameraSnapshot; block: CameraBlock; blendProgress: number } | null {
-  const blocks = [...track.blocks].sort((a, b) => a.start - b.start);
+  // Sorted-by-start is a construction invariant (sortTimelineTracks) so this
+  // per-frame path never copies or sorts.
+  const blocks = track.blocks;
 
   let activeIndex = -1;
   for (let i = 0; i < blocks.length; i += 1) {
@@ -232,7 +236,7 @@ function evaluateCartFrames(
 }
 
 function evaluateCartKeys(track: CartTrack, cart: PathCart, t: number): number {
-  const keys = [...track.keys].sort((a, b) => a.time - b.time);
+  const keys = track.keys;
   if (keys.length === 0) return cart.distance;
   if (t <= keys[0].time) return keys[0].distance;
 
@@ -242,8 +246,7 @@ function evaluateCartKeys(track: CartTrack, cart: PathCart, t: number): number {
     if (t > b.time) continue;
     const span = b.time - a.time;
     const raw = span > 0 ? (t - a.time) / span : 1;
-    const alpha = evaluateVirtualCameraBlendCurve(raw, a.easing ?? "linear");
-    return a.distance + (b.distance - a.distance) * alpha;
+    return lerp(a.distance, b.distance, evaluateVirtualCameraBlendCurve(raw, a.easing ?? "linear"));
   }
 
   return keys[keys.length - 1].distance;

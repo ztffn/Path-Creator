@@ -334,3 +334,45 @@ describe("events and player", () => {
     expect(player.playing).toBe(true);
   });
 });
+
+describe("timeline construction invariants", () => {
+  it("createTimeline sorts blocks, keys, and events by time", () => {
+    const timeline = createTimeline({
+      duration: 10,
+      tracks: [
+        {
+          type: "camera",
+          id: "cam",
+          blocks: [
+            { id: "late", vcamId: "a", start: 5, end: 8 },
+            { id: "early", vcamId: "a", start: 0, end: 3 }
+          ]
+        },
+        {
+          type: "cart",
+          id: "ct",
+          cartId: "dolly",
+          keys: [
+            { time: 6, distance: 60 },
+            { time: 1, distance: 10 }
+          ]
+        },
+        {
+          type: "event",
+          id: "ev",
+          events: [
+            { id: "b", time: 7, kind: "x" },
+            { id: "a", time: 2, kind: "x" }
+          ]
+        }
+      ]
+    });
+
+    const camera = timeline.tracks[0];
+    const cart = timeline.tracks[1];
+    const events = timeline.tracks[2];
+    expect(camera.type === "camera" && camera.blocks.map((b) => b.id)).toEqual(["early", "late"]);
+    expect(cart.type === "cart" && cart.keys.map((k) => k.time)).toEqual([1, 6]);
+    expect(events.type === "event" && events.events.map((e) => e.id)).toEqual(["a", "b"]);
+  });
+});

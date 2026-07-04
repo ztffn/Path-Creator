@@ -75,6 +75,24 @@ export function createTimeline(init: Partial<Omit<Timeline, "schemaVersion">> = 
   return {
     schemaVersion: TIMELINE_SCHEMA_VERSION,
     duration: init.duration ?? 0,
-    tracks: init.tracks ?? []
+    tracks: sortTimelineTracks(init.tracks ?? [])
   };
+}
+
+/**
+ * Returns tracks with blocks/keys/events sorted by time. Evaluation relies on
+ * this order as an invariant so the per-frame hot path never sorts; construct
+ * timelines via createTimeline (or run documents through buildRigRuntime),
+ * and re-sort after editing block times.
+ */
+export function sortTimelineTracks(tracks: TimelineTrack[]): TimelineTrack[] {
+  return tracks.map((track) => {
+    if (track.type === "camera") {
+      return { ...track, blocks: [...track.blocks].sort((a, b) => a.start - b.start) };
+    }
+    if (track.type === "cart") {
+      return { ...track, keys: [...track.keys].sort((a, b) => a.time - b.time) };
+    }
+    return { ...track, events: [...track.events].sort((a, b) => a.time - b.time) };
+  });
 }
