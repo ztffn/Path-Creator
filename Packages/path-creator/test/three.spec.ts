@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { PerspectiveCamera, Quaternion, Vector3 } from "three";
-import { VertexPath } from "../src/core";
+import { VertexPath, createPathCart, sampleCartFrame } from "../src/core";
 import {
   activateVirtualCameraBrain,
   applyVirtualCameraBrain,
@@ -13,7 +13,9 @@ import {
   createVirtualCameraBrainState,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
+  resolveVirtualCameraDefinition,
   resolveVirtualCameraTransition,
+  retargetVirtualCameraBrain,
   type VirtualCameraSnapshot
 } from "../src/three";
 
@@ -218,3 +220,119 @@ function updateToCompletion(
 ): VirtualCameraSnapshot | undefined {
   return applyVirtualCameraBrain(new PerspectiveCamera(), brain, deltaSeconds);
 }
+
+describe("virtual camera bodies", () => {
+  const straightPath = new VertexPath(
+    [
+      { x: 0, y: 0, z: 0 },
+      { x: 10, y: 0, z: 0 }
+    ],
+    [0, 10]
+  );
+  const cart = createPathCart({ distance: 5 });
+  const getCartFrame = (cartId: string) =>
+    cartId === "cart-1" ? sampleCartFrame(straightPath, cart) : null;
+
+  it("resolves a static body to its pose", () => {
+    const snapshot = resolveVirtualCameraDefinition({
+      id: "vcam-static",
+      body: {
+        type: "static",
+        position: { x: 1, y: 2, z: 3 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 }
+      },
+      lens: { fov: 30 }
+    });
+
+    expect(snapshot).not.toBeNull();
+    expect(snapshot?.position).toEqual({ x: 1, y: 2, z: 3 });
+    expect(snapshot?.lens?.fov).toBe(30);
+  });
+
+  it("resolves a cart body looking along the cart forward", () => {
+    const snapshot = resolveVirtualCameraDefinition(
+      { id: "vcam-cart", body: { type: "cart", cartId: "cart-1" } },
+      { getCartFrame }
+    );
+
+    expect(snapshot).not.toBeNull();
+    const frame = sampleCartFrame(straightPath, cart);
+    expect(snapshot?.position.x).toBeCloseTo(frame.position.x);
+
+    const q = snapshot!.quaternion;
+    const look = new Vector3(0, 0, -1).applyQuaternion(new Quaternion(q.x, q.y, q.z, q.w));
+    expect(look.x).toBeCloseTo(frame.forward.x);
+    expect(look.y).toBeCloseTo(frame.forward.y);
+    expect(look.z).toBeCloseTo(frame.forward.z);
+  });
+
+  it("re-resolves as the cart moves", () => {
+    const moving = createPathCart({ distance: 2 });
+    const resolveAt = () =>
+      resolveVirtualCameraDefinition(
+        { id: "v", body: { type: "cart", cartId: "c" } },
+        { getCartFrame: () => sampleCartFrame(straightPath, moving) }
+      );
+
+    const a = resolveAt();
+    moving.distance = 7;
+    const b = resolveAt();
+    expect(a?.position.x).toBeCloseTo(2);
+    expect(b?.position.x).toBeCloseTo(7);
+  });
+
+  it("look-at aim orients toward the target", () => {
+    const snapshot = resolveVirtualCameraDefinition({
+      id: "vcam-aim",
+      body: {
+        type: "static",
+        position: { x: 0, y: 0, z: 0 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 }
+      },
+      aim: { type: "look-at", target: { x: 10, y: 0, z: 0 } }
+    });
+
+    const q = snapshot!.quaternion;
+    const look = new Vector3(0, 0, -1).applyQuaternion(new Quaternion(q.x, q.y, q.z, q.w));
+    expect(look.x).toBeCloseTo(1);
+    expect(look.y).toBeCloseTo(0);
+    expect(look.z).toBeCloseTo(0);
+  });
+
+  it("returns null when the referenced cart is unavailable", () => {
+    const snapshot = resolveVirtualCameraDefinition(
+      { id: "vcam-missing", body: { type: "cart", cartId: "nope" } },
+      { getCartFrame }
+    );
+    expect(snapshot).toBeNull();
+  });
+});
+
+describe("retargetVirtualCameraBrain", () => {
+  const poseAt = (x: number): VirtualCameraSnapshot => ({
+    position: { x, y: 0, z: 0 },
+    quaternion: { x: 0, y: 0, z: 0, w: 1 }
+  });
+
+  it("keeps a blend chasing a moving target", () => {
+    const brain = createVirtualCameraBrainState(poseAt(0));
+    activateVirtualCameraBrain(brain, poseAt(10), { durationSeconds: 2, curve: "linear" });
+
+    updateToCompletion(brain, 1);
+    expect(brain.live?.position.x).toBeCloseTo(5);
+
+    retargetVirtualCameraBrain(brain, { target: poseAt(20) });
+    updateToCompletion(brain, 1);
+    expect(brain.live?.position.x).toBeCloseTo(20);
+    expect(brain.isBlending).toBe(false);
+  });
+
+  it("updates the outgoing pose too", () => {
+    const brain = createVirtualCameraBrainState(poseAt(0));
+    activateVirtualCameraBrain(brain, poseAt(10), { durationSeconds: 2, curve: "linear" });
+
+    retargetVirtualCameraBrain(brain, { previous: poseAt(4) });
+    updateToCompletion(brain, 1);
+    expect(brain.live?.position.x).toBeCloseTo(7);
+  });
+});

@@ -6,6 +6,7 @@ import {
   EndOfPathInstruction,
   PathSpace,
   VertexPath,
+  type CartFrame,
   type SerializedBezierPath,
   type Vec3
 } from "@huma/path-creator/core";
@@ -21,9 +22,12 @@ import {
   activateVirtualCameraBrain,
   applyCartFrameToObject,
   applyVirtualCameraBrain,
+  cameraQuaternionFromFrame,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
   getVirtualCameraBrainProgress,
+  resolveVirtualCameraDefinition,
+  retargetVirtualCameraBrain,
   type VirtualCameraBlendCurve,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
@@ -73,6 +77,7 @@ type ComposerSettings = {
 type DemoVirtualCamera = {
   id: string;
   name: string;
+  bodyType: "static" | "cart";
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
@@ -557,6 +562,22 @@ function Scene({
     speed,
     mode: followMode
   });
+  const vcamCart = usePathCart({ path: vertexPath, speed, mode: followMode });
+  const vcamCartFrameRef = useRef<CartFrame | null>(null);
+  const resolveDemoVirtualCamera = (vcam: DemoVirtualCamera): VirtualCameraSnapshot => {
+    if (vcam.bodyType !== "cart") return vcam.snapshot;
+    const resolved = resolveVirtualCameraDefinition(
+      {
+        id: vcam.id,
+        name: vcam.name,
+        body: { type: "cart", cartId: "demo-rail" },
+        ...(vcam.snapshot.lens && { lens: vcam.snapshot.lens }),
+        ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
+      },
+      { getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null) }
+    );
+    return resolved ?? vcam.snapshot;
+  };
   const composerState = useRef(createScreenComposerState());
   const previewComposerState = useRef(createScreenComposerState());
   const cameraPositionTarget = useMemo(() => new Vector3(), []);
@@ -683,6 +704,7 @@ function Scene({
   }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
   useFrame(({ camera, scene }, delta) => {
+    vcamCartFrameRef.current = vcamCart.step(delta);
     const mainCamera = camera as PerspectiveCamera;
     const followerObject = scene.getObjectByName("follower") as Mesh | null;
     const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
@@ -785,12 +807,16 @@ function Scene({
         composerState.current = createScreenComposerState();
         activateVirtualCameraBrain(
           virtualCameraBrainRef.current,
-          virtualCameraActivation.to.snapshot,
+          resolveDemoVirtualCamera(virtualCameraActivation.to),
           {
             durationSeconds: virtualCameraActivation.durationSeconds,
             curve: virtualCameraActivation.curve
           }
         );
+      } else if (virtualCameraActivation.to.bodyType === "cart") {
+        retargetVirtualCameraBrain(virtualCameraBrainRef.current, {
+          target: resolveDemoVirtualCamera(virtualCameraActivation.to)
+        });
       }
 
       const resolvedSnapshot = applyVirtualCameraBrain(
@@ -815,7 +841,9 @@ function Scene({
     } else if (selectedVirtualCamera) {
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
-      virtualCameraBrainRef.current = createVirtualCameraBrainState(selectedVirtualCamera.snapshot);
+      virtualCameraBrainRef.current = createVirtualCameraBrainState(
+        resolveDemoVirtualCamera(selectedVirtualCamera)
+      );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
     } else if (driveMainCamera && !isTransforming) {
       activeVirtualCameraKeyRef.current = null;
@@ -1218,6 +1246,19 @@ function Scene({
         const isActive = virtualCamera.id === virtualCameraActivation?.to.id;
         const snapshot = virtualCamera.snapshot;
 
+        if (virtualCamera.bodyType === "cart") {
+          return (
+            <CartVcamGlyphRig key={virtualCamera.id} frameRef={vcamCartFrameRef}>
+              <VirtualCameraGlyph
+                name={virtualCamera.name}
+                selected={isSelected}
+                active={isActive}
+                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
+              />
+            </CartVcamGlyphRig>
+          );
+        }
+
         if (isSelected) {
           return (
             <PivotControls
@@ -1321,6 +1362,27 @@ function DollyCameraPip({
   }, 1);
 
   return null;
+}
+
+function CartVcamGlyphRig({
+  frameRef,
+  children
+}: {
+  frameRef: { current: CartFrame | null };
+  children: ReactNode;
+}) {
+  const groupRef = useRef<Group>(null);
+
+  useFrame(() => {
+    const frame = frameRef.current;
+    const group = groupRef.current;
+    if (!frame || !group) return;
+    group.position.set(frame.position.x, frame.position.y, frame.position.z);
+    const q = cameraQuaternionFromFrame(frame.forward, frame.up);
+    group.quaternion.set(q.x, q.y, q.z, q.w);
+  });
+
+  return <group ref={groupRef}>{children}</group>;
 }
 
 function VirtualCameraGlyph({
@@ -1945,6 +2007,7 @@ function VirtualCameraPanel({
   onBlendCurveChange,
   onBlendDurationChange,
   onCapture,
+  onAddCart,
   onSelect,
   onActivate,
   onDelete,
@@ -1961,6 +2024,7 @@ function VirtualCameraPanel({
   onBlendCurveChange: (curve: VirtualCameraBlendCurve) => void;
   onBlendDurationChange: (duration: number) => void;
   onCapture: () => void;
+  onAddCart: () => void;
   onSelect: (id: string) => void;
   onActivate: (id: string) => void;
   onDelete: (id: string) => void;
@@ -2003,7 +2067,10 @@ function VirtualCameraPanel({
             <option value="viewport">Main Viewport</option>
           </select>
         </label>
-        <button onClick={onCapture}>Add VCam</button>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onCapture}>Add VCam</button>
+          <button onClick={onAddCart}>Add Cart VCam</button>
+        </div>
       </SettingsSection>
 
       <SettingsSection title="Blend">
@@ -2290,6 +2357,7 @@ export function App() {
         {
           id,
           name,
+          bodyType: "static" as const,
           snapshot: {
             ...snapshot,
             name,
@@ -2301,6 +2369,30 @@ export function App() {
         }
       ];
     });
+  }
+
+  function addCartVirtualCamera(): void {
+    const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
+    const name = `Cart VCam ${virtualCameras.length + 1}`;
+    setSelectedVirtualCameraId(id);
+    setVirtualCameras((current) => [
+      ...current,
+      {
+        id,
+        name,
+        bodyType: "cart" as const,
+        snapshot: {
+          name,
+          position: { x: 0, y: 0, z: 0 },
+          quaternion: { x: 0, y: 0, z: 0, w: 1 },
+          lens: { fov: 45 },
+          settings: composerSettingsToVirtualCameraSettings(composerSettings)
+        },
+        poseSource,
+        aimMode,
+        composerSettings
+      }
+    ]);
   }
 
   function activateVirtualCamera(id: string): void {
@@ -2583,6 +2675,7 @@ export function App() {
           onBlendCurveChange={setVirtualCameraBlendCurve}
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
+          onAddCart={addCartVirtualCamera}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}

@@ -1,6 +1,27 @@
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
 import { PathSpace, type CartFrame, type Vec3, type VertexPath, vec3 } from "../core";
 
+export type VirtualCameraBodyDefinition =
+  | { type: "static"; position: Vec3; quaternion: QuaternionLike }
+  | { type: "cart"; cartId: string; positionOffset?: Vec3 };
+
+export type VirtualCameraAimDefinition =
+  | { type: "body" }
+  | { type: "look-at"; target: Vec3 };
+
+export interface VirtualCameraDefinition {
+  id: string;
+  name?: string;
+  body: VirtualCameraBodyDefinition;
+  aim?: VirtualCameraAimDefinition;
+  lens?: VirtualCameraLens;
+  settings?: Record<string, number>;
+}
+
+export interface VirtualCameraResolveContext {
+  getCartFrame?: (cartId: string) => CartFrame | null;
+}
+
 export interface MeshBuffers {
   positions: number[];
   indices: number[];
@@ -247,6 +268,113 @@ export function buildTubeMeshBuffers(path: VertexPath, options: TubeMeshOptions 
   }
 
   return { positions, normals, uvs, indices };
+}
+
+const _bodyForward = new Vector3();
+const _bodyUp = new Vector3();
+const _bodyRight = new Vector3();
+const _bodyBack = new Vector3();
+const _bodyMatrix = new Matrix4();
+const _bodyQuaternion = new Quaternion();
+
+/**
+ * Camera-convention orientation: the camera looks along `forward` (local -Z)
+ * with `up` as the up hint. Counterpart of applyCartFrameToObject's +Z prop
+ * convention.
+ */
+export function cameraQuaternionFromFrame(forward: Vec3, up: Vec3): QuaternionLike {
+  _bodyBack.set(-forward.x, -forward.y, -forward.z).normalize();
+  _bodyUp.set(up.x, up.y, up.z);
+  _bodyRight.crossVectors(_bodyUp, _bodyBack);
+  if (_bodyRight.lengthSq() < 1e-12) {
+    _bodyUp.set(Math.abs(_bodyBack.y) < 0.99 ? 0 : 1, Math.abs(_bodyBack.y) < 0.99 ? 1 : 0, 0);
+    _bodyRight.crossVectors(_bodyUp, _bodyBack);
+  }
+  _bodyRight.normalize();
+  _bodyUp.crossVectors(_bodyBack, _bodyRight).normalize();
+  _bodyMatrix.makeBasis(_bodyRight, _bodyUp, _bodyBack);
+  _bodyQuaternion.setFromRotationMatrix(_bodyMatrix);
+  return {
+    x: _bodyQuaternion.x,
+    y: _bodyQuaternion.y,
+    z: _bodyQuaternion.z,
+    w: _bodyQuaternion.w
+  };
+}
+
+/**
+ * Resolves a virtual camera definition to a snapshot: body pose (static or
+ * cart frame), then aim, then lens/settings. Pure per-frame — a cart-bodied
+ * vcam resolves to a new snapshot as its cart moves. Returns null when a
+ * referenced cart is unavailable.
+ */
+export function resolveVirtualCameraDefinition(
+  definition: VirtualCameraDefinition,
+  context: VirtualCameraResolveContext = {}
+): VirtualCameraSnapshot | null {
+  let position: Vec3;
+  let quaternion: QuaternionLike;
+  let bodyUp: Vec3;
+
+  if (definition.body.type === "static") {
+    position = { ...definition.body.position };
+    quaternion = { ...definition.body.quaternion };
+    _bodyUp.set(0, 1, 0).applyQuaternion(
+      _bodyQuaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w)
+    );
+    bodyUp = { x: _bodyUp.x, y: _bodyUp.y, z: _bodyUp.z };
+  } else {
+    const frame = context.getCartFrame?.(definition.body.cartId) ?? null;
+    if (!frame) return null;
+
+    const offset = definition.body.positionOffset ?? vec3.create();
+    position = vec3.add(
+      frame.position,
+      vec3.add(
+        vec3.add(vec3.scale(frame.right, offset.x), vec3.scale(frame.up, offset.y)),
+        vec3.scale(frame.forward, offset.z)
+      )
+    );
+    quaternion = cameraQuaternionFromFrame(frame.forward, frame.up);
+    bodyUp = frame.up;
+  }
+
+  if (definition.aim?.type === "look-at") {
+    _bodyForward.set(
+      definition.aim.target.x - position.x,
+      definition.aim.target.y - position.y,
+      definition.aim.target.z - position.z
+    );
+    if (_bodyForward.lengthSq() > 1e-12) {
+      quaternion = cameraQuaternionFromFrame(
+        { x: _bodyForward.x, y: _bodyForward.y, z: _bodyForward.z },
+        bodyUp
+      );
+    }
+  }
+
+  const snapshot: VirtualCameraSnapshot = { position, quaternion };
+  if (definition.name !== undefined) snapshot.name = definition.name;
+  if (definition.lens) snapshot.lens = { ...definition.lens };
+  if (definition.settings) snapshot.settings = { ...definition.settings };
+  return snapshot;
+}
+
+/**
+ * Replaces the brain's blend endpoints without restarting the blend, so a
+ * moving vcam (cart body) keeps its blend chasing the live pose — matching
+ * Cinemachine, where both cameras stay live during a blend.
+ */
+export function retargetVirtualCameraBrain(
+  state: VirtualCameraBrainState,
+  sources: { previous?: VirtualCameraSnapshot; target?: VirtualCameraSnapshot }
+): void {
+  if (sources.previous && state.previous) {
+    state.previous = cloneVirtualCameraSnapshot(sources.previous);
+  }
+  if (sources.target && state.target) {
+    state.target = cloneVirtualCameraSnapshot(sources.target);
+  }
 }
 
 export function captureVirtualCameraSnapshot(
