@@ -73,11 +73,12 @@ const STORAGE_KEY = "path-creator:minimal-demo:path";
 const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
-const DEMO_RAIL_PATH_ID = "rail";
 // A production can run several dollies, all riding the demo's one rail;
 // cameras mount a dolly via their cart body's cartId.
-type DemoDolly = { id: string; name: string; endOfPath: EndOfPathInstruction };
-const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1", endOfPath: EndOfPathInstruction.Loop };
+type DemoPath = { id: string; name: string; bezier: SerializedBezierPath };
+type DemoDolly = { id: string; name: string; endOfPath: EndOfPathInstruction; pathId: string };
+const FALLBACK_PATH_ID = "path-1";
+const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1", endOfPath: EndOfPathInstruction.Loop, pathId: FALLBACK_PATH_ID };
 const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
@@ -692,6 +693,7 @@ function Scene({
   onUpdateCartOffset,
   targetRegistry,
   dollies,
+  vertexPaths,
   activeTimeline,
   timelinePlayerRef
 }: {
@@ -734,6 +736,7 @@ function Scene({
   onUpdateCartOffset: (id: string, offset: Vec3) => void;
   targetRegistry: TargetRegistry;
   dollies: DemoDolly[];
+  vertexPaths: Map<string, VertexPath>;
   /** Non-null while the timeline owns the PiP. */
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
@@ -773,14 +776,14 @@ function Scene({
   const timelineContext = useMemo<TimelineRigContext>(
     () => ({
       rig: {
-        paths: new Map([[DEMO_RAIL_PATH_ID, vertexPath]]),
+        paths: vertexPaths,
         carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPath })])),
-        cartPaths: new Map(dollies.map((dolly) => [dolly.id, DEMO_RAIL_PATH_ID]))
+        cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
       },
       vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
       getTargetPosition: (id) => targetRegistry.resolve(id)
     }),
-    [speed, targetRegistry, vertexPath, virtualCameras]
+    [speed, targetRegistry, vertexPaths, virtualCameras, dollies]
   );
   const composerState = useRef(createScreenComposerState());
   const previewComposerState = useRef(createScreenComposerState());
@@ -918,10 +921,13 @@ function Scene({
   }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
   useFrame(({ camera, scene }, delta) => {
-    for (const [dollyId, cart] of liveDollies) {
+    for (const dolly of dollies) {
+      const cart = liveDollies.get(dolly.id);
+      const dollyPath = vertexPaths.get(dolly.pathId) ?? vertexPath;
+      if (!cart) continue;
       cart.speed = speed;
-      cart.distance = advanceCartDistance(vertexPath, cart, delta);
-      dollyFramesRef.current.set(dollyId, sampleCartFrame(vertexPath, cart));
+      cart.distance = advanceCartDistance(dollyPath, cart, delta);
+      dollyFramesRef.current.set(dolly.id, sampleCartFrame(dollyPath, cart));
     }
     const mainCamera = camera as PerspectiveCamera;
     const followerObject = scene.getObjectByName("follower") as Mesh | null;
@@ -1114,6 +1120,19 @@ function Scene({
 
       <EditorHelpers>
       <Line points={pathLinePoints} color="#101828" lineWidth={4} />
+      {[...vertexPaths.entries()]
+        .filter(([, path]) => path !== vertexPath)
+        .map(([pathId, path]) => (
+          <Line
+            key={pathId}
+            points={buildPathLinePoints(path)}
+            color="#475569"
+            lineWidth={2}
+            dashed
+            dashSize={0.08}
+            gapSize={0.05}
+          />
+        ))}
 
       <lineSegments>
         <bufferGeometry>
@@ -2321,7 +2340,12 @@ function VirtualCameraPanel({
   dollies,
   onAddDolly,
   onDeleteDolly,
-  onUpdateDolly
+  onUpdateDolly,
+  paths,
+  activePathId,
+  onSwitchPath,
+  onAddPath,
+  onDeletePath
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2346,6 +2370,11 @@ function VirtualCameraPanel({
   onAddDolly: () => void;
   onDeleteDolly: (id: string) => void;
   onUpdateDolly: (id: string, patch: Partial<DemoDolly>) => void;
+  paths: { id: string; name: string }[];
+  activePathId: string;
+  onSwitchPath: (id: string) => void;
+  onAddPath: () => void;
+  onDeletePath: (id: string) => void;
 }) {
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
@@ -2400,6 +2429,17 @@ function VirtualCameraPanel({
             >
               <span style={{ flex: 1 }}>{dolly.name}</span>
               <select
+                title="Which path this dolly rides"
+                value={dolly.pathId}
+                onChange={(event) => onUpdateDolly(dolly.id, { pathId: event.target.value })}
+              >
+                {paths.map((path) => (
+                  <option key={path.id} value={path.id}>
+                    {path.name}
+                  </option>
+                ))}
+              </select>
+              <select
                 title="End-of-rail behavior for this dolly"
                 value={dolly.endOfPath}
                 onChange={(event) =>
@@ -2422,6 +2462,42 @@ function VirtualCameraPanel({
             </div>
           ))}
           <button onClick={onAddDolly}>Add Dolly</button>
+        </div>
+      </SettingsSection>
+
+      <SettingsSection title="Paths">
+        <div style={{ display: "grid", gap: 4 }}>
+          {paths.map((path) => (
+            <div
+              key={path.id}
+              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+            >
+              <label style={{ flex: 1 }}>
+                <input
+                  type="radio"
+                  name="active-path"
+                  checked={path.id === activePathId}
+                  onChange={() => onSwitchPath(path.id)}
+                />
+                <span style={{ marginLeft: 6 }}>{path.name}</span>
+              </label>
+              <button
+                disabled={paths.length <= 1 || path.id === activePathId}
+                title={
+                  path.id === activePathId
+                    ? "Switch to another path before deleting this one"
+                    : undefined
+                }
+                onClick={() => onDeletePath(path.id)}
+              >
+                Del
+              </button>
+            </div>
+          ))}
+          <button onClick={onAddPath}>Add Path</button>
+          <div style={{ fontSize: 11, color: "#94a3b8" }}>
+            The selected path is editable in the viewport; others render dashed.
+          </div>
         </div>
       </SettingsSection>
 
@@ -2657,6 +2733,21 @@ function VirtualCameraPanel({
 
 export function App() {
   const [bezierPath, setBezierPath] = useState<BezierPath>(() => {
+    try {
+      const rawShow = localStorage.getItem(SHOW_STORAGE_KEY);
+      if (rawShow) {
+        const parsedShow = JSON.parse(rawShow) as {
+          paths?: DemoPath[];
+          activePathId?: string;
+        };
+        const active =
+          parsedShow.paths?.find((path) => path.id === parsedShow.activePathId) ??
+          parsedShow.paths?.[0];
+        if (active) return BezierPath.fromJSON(active.bezier);
+      }
+    } catch {
+      // fall through to the legacy single-path key
+    }
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return createDefaultBezier();
 
@@ -2690,7 +2781,12 @@ export function App() {
       if (!raw) return null;
       const parsed = JSON.parse(raw) as
         | Partial<DemoVirtualCamera>[]
-        | { dollies?: DemoDolly[]; vcams?: Partial<DemoVirtualCamera>[] };
+        | {
+            dollies?: Partial<DemoDolly>[];
+            vcams?: Partial<DemoVirtualCamera>[];
+            paths?: DemoPath[];
+            activePathId?: string;
+          };
       return Array.isArray(parsed) ? { vcams: parsed } : parsed;
     } catch {
       return null;
@@ -2698,14 +2794,61 @@ export function App() {
   }, []);
   const [dollies, setDollies] = useState<DemoDolly[]>(() =>
     (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => ({
+      ...FALLBACK_DOLLY,
       ...dolly,
-      endOfPath: dolly.endOfPath ?? EndOfPathInstruction.Loop
+      endOfPath: dolly.endOfPath ?? EndOfPathInstruction.Loop,
+      pathId: dolly.pathId ?? storedShow?.paths?.[0]?.id ?? FALLBACK_PATH_ID
     }))
   );
 
   function updateDolly(id: string, patch: Partial<DemoDolly>): void {
     setDollies((current) =>
       current.map((dolly) => (dolly.id === id ? { ...dolly, ...patch } : dolly))
+    );
+  }
+
+  const [paths, setPaths] = useState<DemoPath[]>(
+    () =>
+      storedShow?.paths ?? [{ id: FALLBACK_PATH_ID, name: "Path 1", bezier: bezierPath.toJSON() }]
+  );
+  const [activePathId, setActivePathId] = useState<string>(
+    () => storedShow?.activePathId ?? paths[0]?.id ?? FALLBACK_PATH_ID
+  );
+  // Keep the active path's serialization current so switching/saving is lossless.
+  useEffect(() => {
+    setPaths((current) =>
+      current.map((path) =>
+        path.id === activePathId ? { ...path, bezier: bezierPath.toJSON() } : path
+      )
+    );
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [bezierPath, pathVersion]);
+
+  function switchPath(id: string): void {
+    const target = paths.find((path) => path.id === id);
+    if (!target || id === activePathId) return;
+    setActivePathId(id);
+    setBezierPath(BezierPath.fromJSON(target.bezier));
+    setSelectedHandleIndex(null);
+    setSelectedMidpointIndex(null);
+    setPathVersion((version) => version + 1);
+  }
+
+  function addPath(): void {
+    const id = `path-${Date.now()}`;
+    setPaths((current) => [
+      ...current,
+      { id, name: `Path ${current.length + 1}`, bezier: createDefaultBezier().toJSON() }
+    ]);
+  }
+
+  function deletePath(id: string): void {
+    if (paths.length <= 1 || id === activePathId) return;
+    setPaths((current) => current.filter((path) => path.id !== id));
+    setDollies((current) =>
+      current.map((dolly) =>
+        dolly.pathId === id ? { ...dolly, pathId: activePathId } : dolly
+      )
     );
   }
   const defaultDollyId = dollies[0]?.id ?? FALLBACK_DOLLY.id;
@@ -2724,12 +2867,15 @@ export function App() {
     })) as DemoVirtualCamera[]
   );
   useEffect(() => {
-    localStorage.setItem(SHOW_STORAGE_KEY, JSON.stringify({ dollies, vcams: virtualCameras }));
-  }, [dollies, virtualCameras]);
+        localStorage.setItem(
+      SHOW_STORAGE_KEY,
+      JSON.stringify({ dollies, vcams: virtualCameras, paths, activePathId })
+    );
+  }, [dollies, virtualCameras, paths, activePathId]);
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
-    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop }]);
+    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop, pathId: activePathId }]);
   }
 
   function deleteDolly(id: string): void {
@@ -2768,6 +2914,18 @@ export function App() {
   const vertexPath = useMemo(
     () => new VertexPath(bezierPath, { spacing: 0.03 }),
     [bezierPath, pathVersion]
+  );
+  const vertexPaths = useMemo(
+    () =>
+      new Map(
+        paths.map((path) => [
+          path.id,
+          path.id === activePathId
+            ? vertexPath
+            : new VertexPath(BezierPath.fromJSON(path.bezier), { spacing: 0.05 })
+        ])
+      ),
+    [paths, activePathId, vertexPath]
   );
   const selectedAnchorScaleForUi =
     selectedHandleIndex !== null && selectedHandleIndex % 3 === 0
@@ -3295,6 +3453,11 @@ export function App() {
           onAddDolly={addDolly}
           onDeleteDolly={deleteDolly}
           onUpdateDolly={updateDolly}
+          paths={paths}
+          activePathId={activePathId}
+          onSwitchPath={switchPath}
+          onAddPath={addPath}
+          onDeletePath={deletePath}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
@@ -3363,6 +3526,7 @@ export function App() {
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
           dollies={dollies}
+          vertexPaths={vertexPaths}
           activeTimeline={timelineActive ? demoTimeline : null}
           timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}
