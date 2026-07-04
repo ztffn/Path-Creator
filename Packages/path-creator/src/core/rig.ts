@@ -1,13 +1,16 @@
 // Rig document: the versioned, persistable description of a motion rig —
-// named bezier paths plus the carts that ride them, referenced by id. This is
-// the serialization contract shared by editors (demo, twin authoring, elastiq)
-// and runtimes (timeline playback); virtual camera definitions attach to carts
-// by id in a later schema revision. Purely data; no engine dependencies.
+// bezier paths, the carts that ride them, virtual camera definitions,
+// declared tracking targets, and timelines, all referenced by id. This is
+// the serialization contract shared by editors (demo, twin authoring,
+// elastiq) and runtimes (timeline playback). Purely data; no engine deps.
 import { BezierPath, type SerializedBezierPath } from "./bezier-path";
 import { deserializePathCart, serializePathCart, type PathCart, type SerializedPathCart } from "./cart";
+import type { TrackingTargetDefinition } from "./targets";
+import type { Timeline } from "./timeline";
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
+import type { VirtualCameraDefinition } from "./virtual-camera";
 
-export const RIG_SCHEMA_VERSION = 1;
+export const RIG_SCHEMA_VERSION = 2;
 
 export interface RigPathDefinition {
   id: string;
@@ -21,10 +24,21 @@ export interface RigCartDefinition extends SerializedPathCart {
   name?: string;
 }
 
+export interface RigTimelineDefinition extends Timeline {
+  id: string;
+  name?: string;
+}
+
 export interface RigDocument {
-  schemaVersion: typeof RIG_SCHEMA_VERSION;
+  schemaVersion: number;
   paths: RigPathDefinition[];
   carts: RigCartDefinition[];
+  /** v2: virtual camera definitions referenced by timeline blocks. */
+  vcams?: VirtualCameraDefinition[];
+  /** v2: declared targets (points, carts, groups); object targets register at runtime. */
+  targets?: TrackingTargetDefinition[];
+  /** v2: timelines referencing vcams/carts/targets by id. */
+  timelines?: RigTimelineDefinition[];
 }
 
 /** Runtime instances built from a rig document, keyed by id. */
@@ -33,6 +47,9 @@ export interface RigRuntime {
   carts: Map<string, PathCart>;
   /** Cart id -> path id, for resolving which path a cart samples. */
   cartPaths: Map<string, string>;
+  vcams: Map<string, VirtualCameraDefinition>;
+  targets: Map<string, TrackingTargetDefinition>;
+  timelines: Map<string, RigTimelineDefinition>;
 }
 
 export function createRigDocument(
@@ -41,7 +58,10 @@ export function createRigDocument(
   return {
     schemaVersion: RIG_SCHEMA_VERSION,
     paths: init.paths ?? [],
-    carts: init.carts ?? []
+    carts: init.carts ?? [],
+    ...(init.vcams && { vcams: init.vcams }),
+    ...(init.targets && { targets: init.targets }),
+    ...(init.timelines && { timelines: init.timelines })
   };
 }
 
@@ -68,14 +88,14 @@ export function serializeRigCart(
 }
 
 /**
- * Instantiates VertexPaths and PathCarts from a document. Throws on unknown
- * schema versions and on carts referencing missing paths — a rig document
- * with dangling references is authored-data corruption, not a runtime state.
+ * Instantiates runtime instances from a document. Accepts v1 (paths + carts
+ * only) and v2 documents; throws on newer versions and on dangling id
+ * references — a corrupt authored document is not a recoverable state.
  */
 export function buildRigRuntime(document: RigDocument): RigRuntime {
-  if (document.schemaVersion !== RIG_SCHEMA_VERSION) {
+  if (document.schemaVersion < 1 || document.schemaVersion > RIG_SCHEMA_VERSION) {
     throw new Error(
-      `Unsupported rig schema version ${String(document.schemaVersion)}; expected ${RIG_SCHEMA_VERSION}`
+      `Unsupported rig schema version ${String(document.schemaVersion)}; expected 1..${RIG_SCHEMA_VERSION}`
     );
   }
 
@@ -95,5 +115,41 @@ export function buildRigRuntime(document: RigDocument): RigRuntime {
     cartPaths.set(cartDef.id, cartDef.pathId);
   }
 
-  return { paths, carts, cartPaths };
+  const vcams = new Map<string, VirtualCameraDefinition>();
+  for (const vcam of document.vcams ?? []) {
+    if (vcam.body.type === "cart" && !carts.has(vcam.body.cartId)) {
+      throw new Error(`Rig vcam "${vcam.id}" references unknown cart "${vcam.body.cartId}"`);
+    }
+    vcams.set(vcam.id, vcam);
+  }
+
+  const targets = new Map<string, TrackingTargetDefinition>();
+  for (const target of document.targets ?? []) {
+    if (target.type === "cart" && !carts.has(target.cartId)) {
+      throw new Error(`Rig target "${target.id}" references unknown cart "${target.cartId}"`);
+    }
+    targets.set(target.id, target);
+  }
+
+  const timelines = new Map<string, RigTimelineDefinition>();
+  for (const timeline of document.timelines ?? []) {
+    for (const track of timeline.tracks) {
+      if (track.type === "camera") {
+        for (const block of track.blocks) {
+          if (!vcams.has(block.vcamId)) {
+            throw new Error(
+              `Timeline "${timeline.id}" block "${block.id}" references unknown vcam "${block.vcamId}"`
+            );
+          }
+        }
+      } else if (track.type === "cart" && !carts.has(track.cartId)) {
+        throw new Error(
+          `Timeline "${timeline.id}" cart track "${track.id}" references unknown cart "${track.cartId}"`
+        );
+      }
+    }
+    timelines.set(timeline.id, timeline);
+  }
+
+  return { paths, carts, cartPaths, vcams, targets, timelines };
 }

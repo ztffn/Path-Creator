@@ -35,7 +35,7 @@ export type {
 export { TIMELINE_SCHEMA_VERSION, createTimeline } from "../core";
 
 export interface TimelineRigContext {
-  rig: RigRuntime;
+  rig: Pick<RigRuntime, "paths" | "carts" | "cartPaths">;
   vcams: Map<string, VirtualCameraDefinition>;
   getTargetPosition?: (targetId: string) => Vec3 | null;
 }

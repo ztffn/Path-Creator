@@ -5,11 +5,15 @@
 // These semantics are the contract the twin's tours and elastiq build on.
 import { describe, expect, it } from "vitest";
 import {
+  BezierPath,
   TargetRegistry,
   VertexPath,
+  buildRigRuntime,
   createPathCart,
+  createRigDocument,
   createTimeline,
-  type RigRuntime,
+  serializeRigCart,
+  serializeRigPath,
   type VirtualCameraDefinition
 } from "../src/core";
 import {
@@ -30,7 +34,7 @@ const path = new VertexPath(
 );
 
 function buildContext(): TimelineRigContext {
-  const rig: RigRuntime = {
+  const rig: TimelineRigContext["rig"] = {
     paths: new Map([["rail", path]]),
     carts: new Map([["dolly", createPathCart({ speed: 10 })]]),
     cartPaths: new Map([["dolly", "rail"]])
@@ -211,6 +215,87 @@ describe("cart tracks", () => {
     const context = buildContext();
     const empty = createTimeline({ duration: 10 });
     expect(evaluateTimeline(empty, context, 3).cartFrames.get("dolly")?.distance).toBeCloseTo(30);
+  });
+});
+
+describe("rig document v2 end-to-end", () => {
+  const bezier = new BezierPath([
+    { x: 0, y: 0, z: 0 },
+    { x: 50, y: 0, z: 0 },
+    { x: 100, y: 0, z: 0 }
+  ]);
+
+  it("round-trips a full show through JSON into a playable runtime", () => {
+    const document = createRigDocument({
+      paths: [serializeRigPath("rail", bezier)],
+      carts: [serializeRigCart("dolly", createPathCart({ speed: 5 }), "rail")],
+      vcams: [{ id: "rail-cam", body: { type: "cart", cartId: "dolly" } }],
+      timelines: [
+        {
+          id: "show",
+          ...createTimeline({
+            duration: 10,
+            tracks: [
+              {
+                type: "camera",
+                id: "cam",
+                blocks: [{ id: "b", vcamId: "rail-cam", start: 0, end: 10 }]
+              }
+            ]
+          })
+        }
+      ]
+    });
+
+    const runtime = buildRigRuntime(JSON.parse(JSON.stringify(document)) as typeof document);
+    const show = runtime.timelines.get("show");
+    expect(show).toBeDefined();
+
+    const sample = evaluateTimeline(show!, { rig: runtime, vcams: runtime.vcams }, 4);
+    expect(sample.camera?.position.x).toBeCloseTo(20, 0);
+  });
+
+  it("accepts v1 documents (paths + carts only)", () => {
+    const v1 = {
+      schemaVersion: 1,
+      paths: [serializeRigPath("rail", bezier)],
+      carts: [serializeRigCart("dolly", createPathCart(), "rail")]
+    };
+    const runtime = buildRigRuntime(v1);
+    expect(runtime.vcams.size).toBe(0);
+    expect(runtime.carts.size).toBe(1);
+  });
+
+  it("rejects dangling vcam and timeline references", () => {
+    expect(() =>
+      buildRigRuntime(
+        createRigDocument({
+          vcams: [{ id: "v", body: { type: "cart", cartId: "missing" } }]
+        })
+      )
+    ).toThrow(/unknown cart/);
+
+    expect(() =>
+      buildRigRuntime(
+        createRigDocument({
+          timelines: [
+            {
+              id: "show",
+              ...createTimeline({
+                duration: 1,
+                tracks: [
+                  {
+                    type: "camera",
+                    id: "cam",
+                    blocks: [{ id: "b", vcamId: "ghost", start: 0, end: 1 }]
+                  }
+                ]
+              })
+            }
+          ]
+        })
+      )
+    ).toThrow(/unknown vcam/);
   });
 });
 
