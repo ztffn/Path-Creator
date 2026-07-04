@@ -8,3 +8,4 @@ export * from "./cart";
 export * from "./rig";
 export * from "./targets";
 export * from "./virtual-camera";
+export * from "./timeline";

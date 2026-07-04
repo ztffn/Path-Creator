@@ -23,6 +23,10 @@
     "./r3f": {
       "types": "./dist/r3f/index.d.ts",
       "import": "./dist/r3f/index.js"
+    },
+    "./timeline": {
+      "types": "./dist/timeline/index.d.ts",
+      "import": "./dist/timeline/index.js"
     }
   },
   "files": [
