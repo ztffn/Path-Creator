@@ -2289,7 +2289,9 @@ function VirtualCameraPanel({
 
       <SettingsSection title="Shots">
         {cameras.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#94a3b8" }}>Capture a rig or viewport camera.</div>
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>
+            Capture a rig/viewport camera, or add a cart vcam.
+          </div>
         ) : (
           <div style={{ display: "grid", gap: 8 }}>
             {cameras.map((camera) => {
@@ -2324,7 +2326,9 @@ function VirtualCameraPanel({
                   <div style={{ minWidth: 0 }}>
                     <div style={{ fontSize: 12, fontWeight: 800 }}>{camera.name}</div>
                     <div style={{ fontSize: 11, color: "#94a3b8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {getSnapshotLabel(camera.snapshot)}
+                      {camera.bodyType === "cart"
+                        ? "rides the rail cart"
+                        : getSnapshotLabel(camera.snapshot)}
                     </div>
                   </div>
                   <button
@@ -2517,7 +2521,7 @@ function TimelinePanel({
 
       {timeline == null ? (
         <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
-          Add vcams to build the show (5s per shot, 1.5s blends).
+          Add vcams to build the show; set duration and blend per shot in its row.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
