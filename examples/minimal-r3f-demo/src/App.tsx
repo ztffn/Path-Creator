@@ -768,7 +768,6 @@ function Scene({
     camera.updateProjectionMatrix();
     return camera;
   }, []);
-  const frustumHelper = useMemo(() => new CameraHelper(previewCamera), [previewCamera]);
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
@@ -776,6 +775,9 @@ function Scene({
     activeTimeline || virtualCameraActivation || selectedVirtualCamera
       ? brainCamera
       : previewCamera;
+  // The frustum visualizes whichever camera feeds the PiP (rig, shot brain,
+  // or timeline), not just the rig preview.
+  const frustumHelper = useMemo(() => new CameraHelper(pipCamera), [pipCamera]);
 
   const pathLinePoints = useMemo(
     () => buildPathLinePoints(vertexPath),
