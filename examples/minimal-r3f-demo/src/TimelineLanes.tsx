@@ -10,8 +10,8 @@ import {
 } from "@xzdarcy/react-timeline-editor";
 import type { TimelineRow } from "@xzdarcy/timeline-engine";
 import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
-import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
-import type { TimelinePlayer } from "@huma/path-creator/timeline";
+import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { seekTimelinePlayer, type TimelinePlayer } from "@huma/path-creator/timeline";
 
 const SHOT_EFFECTS = { shot: { id: "shot", name: "Shot" } };
 const SNAP_SECONDS = 0.25;
@@ -50,18 +50,26 @@ export function TimelineLanes({
   shots,
   selectedShotId,
   playerRef,
+  duration,
+  driving,
   onShotTiming,
   onSelectShot,
-  onSeek
+  onSeek,
+  onTransport
 }: {
   shots: LaneShot[];
   selectedShotId: string | null;
   playerRef: { current: TimelinePlayer };
+  duration: number;
+  driving: boolean;
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
+  onTransport: () => void;
 }) {
   const laneStateRef = useRef<TimelineState>(null);
+  const [playing, setPlaying] = useState(false);
+  const timeLabelRef = useRef<HTMLSpanElement>(null);
 
   const timingKey = shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|");
   const editorData = useMemo<TimelineRow[]>(
@@ -113,19 +121,24 @@ export function TimelineLanes({
           (other.start <= start && other.end >= end))
     );
 
-  // Slave the lane cursor to our player clock; their engine never runs.
-  // setTime forceUpdates their tree, so only call it when the cursor
-  // actually moved.
+  // One rAF loop slaves the lane cursor to our player clock (setTime
+  // forceUpdates their tree, so only when the cursor actually moved) and
+  // keeps the transport header's time/playing state fresh.
   useEffect(() => {
     let raf = 0;
     const sync = () => {
+      const player = playerRef.current;
       const laneState = laneStateRef.current;
       if (laneState) {
-        const time = Math.max(0, playerRef.current.time);
+        const time = Math.max(0, player.time);
         if (Math.abs(laneState.getTime() - time) > 0.0005) {
           laneState.setTime(time);
         }
       }
+      if (timeLabelRef.current) {
+        timeLabelRef.current.textContent = `${player.time.toFixed(1)}s`;
+      }
+      setPlaying(player.playing);
       raf = requestAnimationFrame(sync);
     };
     raf = requestAnimationFrame(sync);
@@ -136,8 +149,89 @@ export function TimelineLanes({
 
   return (
     <LaneErrorBoundary>
-      <div style={{ width: "100%", borderRadius: 8, overflow: "hidden" }}>
-        <TimelineLaneEditor
+      <div
+        style={{
+          width: "100%",
+          boxSizing: "border-box",
+          padding: 10,
+          borderRadius: 8,
+          background: "rgba(9, 14, 24, 0.9)",
+          color: "#f8fafc",
+          fontFamily: "ui-sans-serif, system-ui, sans-serif",
+          border: "1px solid rgba(148, 163, 184, 0.24)"
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 8,
+            fontSize: 12,
+            marginBottom: shots.length > 0 ? 8 : 0
+          }}
+        >
+          <span style={{ fontSize: 13, fontWeight: 800 }}>Timeline</span>
+          {shots.length > 0 ? (
+            <>
+              <button
+                onClick={() => {
+                  const player = playerRef.current;
+                  if (!player.playing && player.time >= duration) {
+                    seekTimelinePlayer(player, 0);
+                  }
+                  player.playing = !player.playing;
+                  onTransport();
+                }}
+              >
+                {playing ? "Pause" : "Play"}
+              </button>
+              <label>
+                <input
+                  type="checkbox"
+                  defaultChecked={playerRef.current.loop}
+                  onChange={(event) => {
+                    playerRef.current.loop = event.target.checked;
+                  }}
+                />
+                <span style={{ marginLeft: 4 }}>Loop</span>
+              </label>
+              <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
+                0.0s
+              </span>
+              <span style={{ color: "#64748b" }}>/ {duration.toFixed(0)}s</span>
+              <span style={{ fontSize: 11, color: driving ? "#22c55e" : "#64748b" }}>
+                {driving ? "● PiP" : "○ PiP"}
+              </span>
+            </>
+          ) : (
+            <span style={{ marginLeft: "auto", fontSize: 11, color: "#94a3b8" }}>
+              Add vcams to build the show
+            </span>
+          )}
+        </div>
+
+        {shots.length === 0 ? (
+          <div style={{ fontSize: 12, color: "#94a3b8" }}>
+            Clips land on one shot track — overlap two clips to crossfade, touch for a
+            cut, drag in empty track space to scrub.
+          </div>
+        ) : (
+          <div style={{ display: "flex", alignItems: "stretch", gap: 4 }}>
+            <div
+              style={{
+                width: 22,
+                display: "flex",
+                alignItems: "flex-end",
+                justifyContent: "center",
+                paddingBottom: 8,
+                fontSize: 14
+              }}
+              title="Shot track"
+            >
+              🎥
+            </div>
+            <div style={{ flex: 1, minWidth: 0, borderRadius: 6, overflow: "hidden" }}>
+              <TimelineLaneEditor
           ref={laneStateRef}
           editorData={editorData}
           effects={SHOT_EFFECTS}
@@ -215,7 +309,10 @@ export function TimelineLanes({
               </div>
             );
           }}
-        />
+              />
+            </div>
+          </div>
+        )}
       </div>
     </LaneErrorBoundary>
   );

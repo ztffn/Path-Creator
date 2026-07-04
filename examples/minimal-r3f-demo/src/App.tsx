@@ -2242,7 +2242,8 @@ function VirtualCameraPanel({
   onDelete,
   onRelease,
   trackTargets,
-  onUpdateShot
+  onUpdateShot,
+  onUpdateComposer
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2262,7 +2263,9 @@ function VirtualCameraPanel({
   onRelease: () => void;
   trackTargets: RegisteredTarget[];
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
+  onUpdateComposer: (id: string, settings: ComposerSettings) => void;
 }) {
+  const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
     <div
       style={{
@@ -2458,116 +2461,33 @@ function VirtualCameraPanel({
                       }
                     />
                   </label>
+                  <div
+                    onClick={(event) => event.stopPropagation()}
+                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6 }}
+                  >
+                    <button
+                      style={{ fontSize: 11, textAlign: "left" }}
+                      onClick={() =>
+                        setComposerOpenId(composerOpenId === camera.id ? null : camera.id)
+                      }
+                    >
+                      {composerOpenId === camera.id ? "▾ Composer settings" : "▸ Composer settings"}
+                    </button>
+                    {composerOpenId === camera.id ? (
+                      <RigSettingsPanel
+                        settings={camera.composerSettings}
+                        onChange={(settings) => onUpdateComposer(camera.id, settings)}
+                        onClose={() => setComposerOpenId(null)}
+                        onReset={() => onUpdateComposer(camera.id, DEFAULT_COMPOSER_SETTINGS)}
+                      />
+                    ) : null}
+                  </div>
                 </div>
               );
             })}
           </div>
         )}
       </SettingsSection>
-    </div>
-  );
-}
-
-function TimelinePanel({
-  timeline,
-  playerRef,
-  driving,
-  onTransport
-}: {
-  timeline: Timeline | null;
-  playerRef: { current: TimelinePlayer };
-  driving: boolean;
-  onTransport: () => void;
-}) {
-  const [playing, setPlaying] = useState(false);
-  const rangeRef = useRef<HTMLInputElement>(null);
-  const timeLabelRef = useRef<HTMLSpanElement>(null);
-
-  useEffect(() => {
-    if (timeline == null) return;
-    let raf = 0;
-    const sync = () => {
-      const player = playerRef.current;
-      if (rangeRef.current) rangeRef.current.value = String(player.time);
-      if (timeLabelRef.current) {
-        timeLabelRef.current.textContent = `${player.time.toFixed(1)}s`;
-      }
-      setPlaying(player.playing);
-      raf = requestAnimationFrame(sync);
-    };
-    raf = requestAnimationFrame(sync);
-    return () => cancelAnimationFrame(raf);
-  }, [playerRef, timeline]);
-
-  return (
-    <div
-      style={{
-        width: "100%",
-        boxSizing: "border-box",
-        padding: 12,
-        borderRadius: 8,
-        background: "rgba(9, 14, 24, 0.9)",
-        color: "#f8fafc",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        border: "1px solid rgba(148, 163, 184, 0.24)"
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
-        <div style={{ fontSize: 13, fontWeight: 800 }}>Timeline</div>
-        <span style={{ fontSize: 11, color: driving ? "#22c55e" : "#64748b" }}>
-          {driving ? "driving PiP" : "play or scrub to drive PiP"}
-        </span>
-      </div>
-
-      {timeline == null ? (
-        <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
-          Add vcams to build the show; arrange clips on the shot track below — overlap
-          two clips to crossfade, touch for a cut.
-        </div>
-      ) : (
-        <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
-          <div style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
-            <button
-              onClick={() => {
-                const player = playerRef.current;
-                if (!player.playing && player.time >= timeline.duration) {
-                  seekTimelinePlayer(player, 0);
-                }
-                player.playing = !player.playing;
-                onTransport();
-              }}
-            >
-              {playing ? "Pause" : "Play"}
-            </button>
-            <label>
-              <input
-                type="checkbox"
-                defaultChecked={playerRef.current.loop}
-                onChange={(event) => {
-                  playerRef.current.loop = event.target.checked;
-                }}
-              />
-              <span style={{ marginLeft: 4 }}>Loop</span>
-            </label>
-            <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
-              0.0s
-            </span>
-            <span style={{ color: "#64748b" }}>/ {timeline.duration.toFixed(0)}s</span>
-          </div>
-          <input
-            ref={rangeRef}
-            type="range"
-            min={0}
-            max={timeline.duration}
-            step={0.01}
-            defaultValue={0}
-            onChange={(event) => {
-              seekTimelinePlayer(playerRef.current, Number(event.target.value));
-              onTransport();
-            }}
-          />
-        </div>
-      )}
     </div>
   );
 }
@@ -2598,7 +2518,6 @@ export function App() {
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
-  const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
   const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
@@ -2843,6 +2762,27 @@ export function App() {
     setVirtualCameras((current) =>
       current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
     );
+  }
+
+  function updateVirtualCameraComposer(id: string, settings: ComposerSettings): void {
+    setVirtualCameras((current) =>
+      current.map((camera) =>
+        camera.id === id
+          ? {
+              ...camera,
+              composerSettings: settings,
+              snapshot: {
+                ...camera.snapshot,
+                settings: composerSettingsToVirtualCameraSettings(settings)
+              }
+            }
+          : camera
+      )
+    );
+    // Keep the live rig in sync when the edited shot is the one on screen.
+    if (id === selectedVirtualCameraId || id === virtualCameraActivation?.toId) {
+      setComposerSettings(settings);
+    }
   }
 
   function deleteVirtualCamera(id: string): void {
@@ -3099,51 +3039,33 @@ export function App() {
           onAddCart={addCartVirtualCamera}
           trackTargets={registeredTargets}
           onUpdateShot={updateVirtualCameraShot}
+          onUpdateComposer={updateVirtualCameraComposer}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
           onRelease={releaseVirtualCamera}
         />
-        <TimelinePanel
-          timeline={demoTimeline}
+        <TimelineLanes
+          shots={virtualCameras.map((vcam) => ({
+            id: vcam.id,
+            name: vcam.name,
+            start: vcam.shotStart,
+            end: vcam.shotEnd
+          }))}
+          selectedShotId={selectedVirtualCameraId}
           playerRef={timelinePlayerRef}
+          duration={demoTimeline?.duration ?? 0}
           driving={timelineActive}
+          onShotTiming={(vcamId, shotStart, shotEnd) =>
+            updateVirtualCameraShot(vcamId, { shotStart, shotEnd })
+          }
+          onSelectShot={selectVirtualCamera}
+          onSeek={(time) => {
+            seekTimelinePlayer(timelinePlayerRef.current, time);
+            setPipDriver("timeline");
+          }}
           onTransport={() => setPipDriver("timeline")}
         />
-        {demoTimeline ? (
-          <TimelineLanes
-            shots={virtualCameras.map((vcam) => ({
-              id: vcam.id,
-              name: vcam.name,
-              start: vcam.shotStart,
-              end: vcam.shotEnd
-            }))}
-            selectedShotId={selectedVirtualCameraId}
-            playerRef={timelinePlayerRef}
-            onShotTiming={(vcamId, shotStart, shotEnd) =>
-              updateVirtualCameraShot(vcamId, { shotStart, shotEnd })
-            }
-            onSelectShot={selectVirtualCamera}
-            onSeek={(time) => {
-              seekTimelinePlayer(timelinePlayerRef.current, time);
-              setPipDriver("timeline");
-            }}
-          />
-        ) : null}
-        <button
-          onClick={() => setSettingsOpen((open) => !open)}
-          style={{ width: "100%" }}
-        >
-          {settingsOpen ? "Hide Composer Settings" : "Open Composer Settings"}
-        </button>
-        {settingsOpen ? (
-          <RigSettingsPanel
-            settings={composerSettings}
-            onChange={setComposerSettings}
-            onClose={() => setSettingsOpen(false)}
-            onReset={() => setComposerSettings(DEFAULT_COMPOSER_SETTINGS)}
-          />
-        ) : null}
       </div>
       {debugPreview ? (
         <DollyPreviewChrome
