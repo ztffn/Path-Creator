@@ -2521,8 +2521,8 @@ function TimelinePanel({
 
       {timeline == null ? (
         <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
-          Add vcams to build the show; arrange blocks in the lanes below — overlap two
-          shots to crossfade.
+          Add vcams to build the show; arrange clips on the shot track below — overlap
+          two clips to crossfade, touch for a cut.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
