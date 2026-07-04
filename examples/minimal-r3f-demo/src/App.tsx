@@ -2337,15 +2337,7 @@ function VirtualCameraPanel({
   trackTargets,
   onUpdateShot,
   onUpdateComposer,
-  dollies,
-  onAddDolly,
-  onDeleteDolly,
-  onUpdateDolly,
-  paths,
-  activePathId,
-  onSwitchPath,
-  onAddPath,
-  onDeletePath
+  dollies
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2367,14 +2359,6 @@ function VirtualCameraPanel({
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
   onUpdateComposer: (id: string, settings: ComposerSettings) => void;
   dollies: DemoDolly[];
-  onAddDolly: () => void;
-  onDeleteDolly: (id: string) => void;
-  onUpdateDolly: (id: string, patch: Partial<DemoDolly>) => void;
-  paths: { id: string; name: string }[];
-  activePathId: string;
-  onSwitchPath: (id: string) => void;
-  onAddPath: () => void;
-  onDeletePath: (id: string) => void;
 }) {
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
@@ -2417,87 +2401,6 @@ function VirtualCameraPanel({
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={onCapture}>Add VCam</button>
           <button onClick={onAddCart}>Add Cart VCam</button>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title="Dollies">
-        <div style={{ display: "grid", gap: 4 }}>
-          {dollies.map((dolly) => (
-            <div
-              key={dolly.id}
-              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
-            >
-              <span style={{ flex: 1 }}>{dolly.name}</span>
-              <select
-                title="Which path this dolly rides"
-                value={dolly.pathId}
-                onChange={(event) => onUpdateDolly(dolly.id, { pathId: event.target.value })}
-              >
-                {paths.map((path) => (
-                  <option key={path.id} value={path.id}>
-                    {path.name}
-                  </option>
-                ))}
-              </select>
-              <select
-                title="End-of-rail behavior for this dolly"
-                value={dolly.endOfPath}
-                onChange={(event) =>
-                  onUpdateDolly(dolly.id, {
-                    endOfPath: event.target.value as EndOfPathInstruction
-                  })
-                }
-              >
-                <option value={EndOfPathInstruction.Loop}>Loop</option>
-                <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
-                <option value={EndOfPathInstruction.Stop}>Stop</option>
-              </select>
-              <button
-                disabled={dollies.length <= 1}
-                title={dollies.length <= 1 ? "A production needs at least one dolly" : undefined}
-                onClick={() => onDeleteDolly(dolly.id)}
-              >
-                Del
-              </button>
-            </div>
-          ))}
-          <button onClick={onAddDolly}>Add Dolly</button>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title="Paths">
-        <div style={{ display: "grid", gap: 4 }}>
-          {paths.map((path) => (
-            <div
-              key={path.id}
-              style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
-            >
-              <label style={{ flex: 1 }}>
-                <input
-                  type="radio"
-                  name="active-path"
-                  checked={path.id === activePathId}
-                  onChange={() => onSwitchPath(path.id)}
-                />
-                <span style={{ marginLeft: 6 }}>{path.name}</span>
-              </label>
-              <button
-                disabled={paths.length <= 1 || path.id === activePathId}
-                title={
-                  path.id === activePathId
-                    ? "Switch to another path before deleting this one"
-                    : undefined
-                }
-                onClick={() => onDeletePath(path.id)}
-              >
-                Del
-              </button>
-            </div>
-          ))}
-          <button onClick={onAddPath}>Add Path</button>
-          <div style={{ fontSize: 11, color: "#94a3b8" }}>
-            The selected path is editable in the viewport; others render dashed.
-          </div>
         </div>
       </SettingsSection>
 
@@ -3327,6 +3230,87 @@ export function App() {
           </label>
         </SettingsSection>
 
+        <SettingsSection title="Dollies">
+          <div style={{ display: "grid", gap: 4 }}>
+            {dollies.map((dolly) => (
+              <div
+                key={dolly.id}
+                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+              >
+                <span style={{ flex: 1 }}>{dolly.name}</span>
+                <select
+                  title="Which path this dolly rides"
+                  value={dolly.pathId}
+                  onChange={(event) => updateDolly(dolly.id, { pathId: event.target.value })}
+                >
+                  {paths.map((path) => (
+                    <option key={path.id} value={path.id}>
+                      {path.name}
+                    </option>
+                  ))}
+                </select>
+                <select
+                  title="End-of-rail behavior for this dolly"
+                  value={dolly.endOfPath}
+                  onChange={(event) =>
+                    updateDolly(dolly.id, {
+                      endOfPath: event.target.value as EndOfPathInstruction
+                    })
+                  }
+                >
+                  <option value={EndOfPathInstruction.Loop}>Loop</option>
+                  <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
+                  <option value={EndOfPathInstruction.Stop}>Stop</option>
+                </select>
+                <button
+                  disabled={dollies.length <= 1}
+                  title={dollies.length <= 1 ? "A production needs at least one dolly" : undefined}
+                  onClick={() => deleteDolly(dolly.id)}
+                >
+                  Del
+                </button>
+              </div>
+            ))}
+            <button onClick={addDolly}>Add Dolly</button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Paths">
+          <div style={{ display: "grid", gap: 4 }}>
+            {paths.map((path) => (
+              <div
+                key={path.id}
+                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+              >
+                <label style={{ flex: 1 }}>
+                  <input
+                    type="radio"
+                    name="active-path"
+                    checked={path.id === activePathId}
+                    onChange={() => switchPath(path.id)}
+                  />
+                  <span style={{ marginLeft: 6 }}>{path.name}</span>
+                </label>
+                <button
+                  disabled={paths.length <= 1 || path.id === activePathId}
+                  title={
+                    path.id === activePathId
+                      ? "Switch to another path before deleting this one"
+                      : undefined
+                  }
+                  onClick={() => deletePath(path.id)}
+                >
+                  Del
+                </button>
+              </div>
+            ))}
+            <button onClick={addPath}>Add Path</button>
+            <div style={{ fontSize: 11, color: "#94a3b8" }}>
+              The selected path is editable in the viewport; others render dashed.
+            </div>
+          </div>
+        </SettingsSection>
+
         <SettingsSection title="Rig Driver">
           <NumberSlider
             label="Speed"
@@ -3450,19 +3434,21 @@ export function App() {
           onUpdateShot={updateVirtualCameraShot}
           onUpdateComposer={updateVirtualCameraComposer}
           dollies={dollies}
-          onAddDolly={addDolly}
-          onDeleteDolly={deleteDolly}
-          onUpdateDolly={updateDolly}
-          paths={paths}
-          activePathId={activePathId}
-          onSwitchPath={switchPath}
-          onAddPath={addPath}
-          onDeletePath={deletePath}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
           onRelease={releaseVirtualCamera}
         />
+      </div>
+      <div
+        style={{
+          position: "fixed",
+          bottom: 12,
+          left: 404,
+          right: 404,
+          zIndex: 9
+        }}
+      >
         <TimelineLanes
           shots={virtualCameras.map((vcam) => ({
             id: vcam.id,
