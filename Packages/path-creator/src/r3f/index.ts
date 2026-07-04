@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
+import { useCallback, useEffect, useMemo, useRef, type MutableRefObject } from "react";
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
 import {
   EndOfPathInstruction,
@@ -8,6 +8,7 @@ import {
   type CartFrame,
   type CartOrientationMode,
   type PathCart,
+  type TargetRegistry,
   type Vec3,
   type VertexPath,
   vec3
@@ -379,6 +380,32 @@ export function useDollyCamera(options: UseDollyCameraOptions): {
   }, [options.initialDistance]);
 
   return { state, step, reset };
+}
+
+/**
+ * Registers an Object3D as a tracking target for the ref's lifetime. The
+ * registry pulls the object's live world position whenever a vcam aim or
+ * composer resolves the target id.
+ */
+export function useTrackingTarget(
+  registry: TargetRegistry,
+  id: string,
+  object: MutableRefObject<Object3D | null>,
+  name?: string
+): void {
+  useEffect(() => {
+    const worldPosition = new Vector3();
+    return registry.register(
+      id,
+      () => {
+        const current = object.current;
+        if (!current) return null;
+        current.getWorldPosition(worldPosition);
+        return { x: worldPosition.x, y: worldPosition.y, z: worldPosition.z };
+      },
+      name ?? id
+    );
+  }, [id, name, object, registry]);
 }
 
 export function vec3Distance(a: Vec3, b: Vec3): number {

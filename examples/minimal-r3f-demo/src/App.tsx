@@ -5,8 +5,10 @@ import {
   ControlMode,
   EndOfPathInstruction,
   PathSpace,
+  TargetRegistry,
   VertexPath,
   type CartFrame,
+  type RegisteredTarget,
   type SerializedBezierPath,
   type Vec3
 } from "@huma/path-creator/core";
@@ -16,7 +18,8 @@ import {
   createScreenComposerState,
   samplePathAtDistance,
   usePathCart,
-  usePathFollower
+  usePathFollower,
+  useTrackingTarget
 } from "@huma/path-creator/r3f";
 import {
   activateVirtualCameraBrain,
@@ -78,6 +81,7 @@ type DemoVirtualCamera = {
   id: string;
   name: string;
   bodyType: "static" | "cart";
+  trackTargetId: string | null;
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
@@ -455,8 +459,17 @@ function applyCameraAim(
 
 const CART_RIDER_SPEED = 0.8;
 
-function CartRiderProp({ path, isClosed }: { path: VertexPath; isClosed: boolean }) {
+function CartRiderProp({
+  path,
+  isClosed,
+  targetRegistry
+}: {
+  path: VertexPath;
+  isClosed: boolean;
+  targetRegistry: TargetRegistry;
+}) {
   const groupRef = useRef<Group>(null);
+  useTrackingTarget(targetRegistry, "cart-rider", groupRef, "Cart Rider");
   const { step } = usePathCart({
     path,
     speed: CART_RIDER_SPEED,
@@ -518,7 +531,8 @@ function Scene({
   onVirtualCameraCaptured,
   onVirtualCameraResolved,
   onSelectVirtualCamera,
-  onUpdateVirtualCameraSnapshot
+  onUpdateVirtualCameraSnapshot,
+  targetRegistry
 }: {
   bezierPath: BezierPath;
   vertexPath: VertexPath;
@@ -555,6 +569,7 @@ function Scene({
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
   onSelectVirtualCamera: (id: string | null) => void;
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
+  targetRegistry: TargetRegistry;
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
@@ -564,17 +579,34 @@ function Scene({
   });
   const vcamCart = usePathCart({ path: vertexPath, speed, mode: followMode });
   const vcamCartFrameRef = useRef<CartFrame | null>(null);
+  const followerRef = useRef<Mesh>(null);
+  const lookTargetRef = useRef<Mesh>(null);
+  useTrackingTarget(targetRegistry, "follower", followerRef, "Follower Sphere");
+  useTrackingTarget(targetRegistry, "look-ball", lookTargetRef, "Look Target Ball");
   const resolveDemoVirtualCamera = (vcam: DemoVirtualCamera): VirtualCameraSnapshot => {
-    if (vcam.bodyType !== "cart") return vcam.snapshot;
+    if (vcam.bodyType !== "cart" && !vcam.trackTargetId) return vcam.snapshot;
     const resolved = resolveVirtualCameraDefinition(
       {
         id: vcam.id,
         name: vcam.name,
-        body: { type: "cart", cartId: "demo-rail" },
+        body:
+          vcam.bodyType === "cart"
+            ? { type: "cart", cartId: "demo-rail" }
+            : {
+                type: "static",
+                position: vcam.snapshot.position,
+                quaternion: vcam.snapshot.quaternion
+              },
+        ...(vcam.trackTargetId && {
+          aim: { type: "look-at" as const, target: { targetId: vcam.trackTargetId } }
+        }),
         ...(vcam.snapshot.lens && { lens: vcam.snapshot.lens }),
         ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
       },
-      { getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null) }
+      {
+        getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null),
+        getTargetPosition: (id) => targetRegistry.resolve(id)
+      }
     );
     return resolved ?? vcam.snapshot;
   };
@@ -813,10 +845,15 @@ function Scene({
             curve: virtualCameraActivation.curve
           }
         );
-      } else if (virtualCameraActivation.to.bodyType === "cart") {
-        retargetVirtualCameraBrain(virtualCameraBrainRef.current, {
-          target: resolveDemoVirtualCamera(virtualCameraActivation.to)
-        });
+      } else {
+        const liveVcam =
+          virtualCameras.find((item) => item.id === virtualCameraActivation.to.id) ??
+          virtualCameraActivation.to;
+        if (liveVcam.bodyType === "cart" || liveVcam.trackTargetId) {
+          retargetVirtualCameraBrain(virtualCameraBrainRef.current, {
+            target: resolveDemoVirtualCamera(liveVcam)
+          });
+        }
       }
 
       const resolvedSnapshot = applyVirtualCameraBrain(
@@ -1231,12 +1268,12 @@ function Scene({
         <meshBasicMaterial transparent opacity={0} depthWrite={false} />
       </mesh>
 
-      <mesh name="follower">
+      <mesh name="follower" ref={followerRef}>
         <sphereGeometry args={[0.13, 16, 16]} />
         <meshStandardMaterial color="#ef4444" />
       </mesh>
 
-      <mesh name="look-target">
+      <mesh name="look-target" ref={lookTargetRef}>
         <sphereGeometry args={[0.1, 16, 16]} />
         <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
       </mesh>
@@ -1314,7 +1351,13 @@ function Scene({
         );
       })}
 
-      {showCartRider ? <CartRiderProp path={vertexPath} isClosed={bezierPath.isClosed} /> : null}
+      {showCartRider ? (
+        <CartRiderProp
+          path={vertexPath}
+          isClosed={bezierPath.isClosed}
+          targetRegistry={targetRegistry}
+        />
+      ) : null}
 
       {debugFrustum ? <primitive object={frustumHelper} /> : null}
       {debugPreview ? (
@@ -2011,7 +2054,9 @@ function VirtualCameraPanel({
   onSelect,
   onActivate,
   onDelete,
-  onRelease
+  onRelease,
+  trackTargets,
+  onSetTrackTarget
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2029,6 +2074,8 @@ function VirtualCameraPanel({
   onActivate: (id: string) => void;
   onDelete: (id: string) => void;
   onRelease: () => void;
+  trackTargets: RegisteredTarget[];
+  onSetTrackTarget: (id: string, targetId: string | null) => void;
 }) {
   return (
     <div
@@ -2172,6 +2219,33 @@ function VirtualCameraPanel({
                   >
                     Del
                   </button>
+                  <label
+                    onClick={(event) => event.stopPropagation()}
+                    style={{
+                      gridColumn: "1 / -1",
+                      display: "grid",
+                      gridTemplateColumns: "48px 1fr",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11,
+                      color: "#94a3b8"
+                    }}
+                  >
+                    <span>Track</span>
+                    <select
+                      value={camera.trackTargetId ?? ""}
+                      onChange={(event) =>
+                        onSetTrackTarget(camera.id, event.target.value || null)
+                      }
+                    >
+                      <option value="">Body aim (none)</option>
+                      {trackTargets.map((target) => (
+                        <option key={target.id} value={target.id}>
+                          {target.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
                 </div>
               );
             })}
@@ -2203,6 +2277,7 @@ export function App() {
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   const [showCartRider, setShowCartRider] = useState(false);
+  const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
@@ -2358,6 +2433,7 @@ export function App() {
           id,
           name,
           bodyType: "static" as const,
+          trackTargetId: null,
           snapshot: {
             ...snapshot,
             name,
@@ -2381,6 +2457,7 @@ export function App() {
         id,
         name,
         bodyType: "cart" as const,
+        trackTargetId: null,
         snapshot: {
           name,
           position: { x: 0, y: 0, z: 0 },
@@ -2414,6 +2491,12 @@ export function App() {
       curve: virtualCameraBlendCurve
     };
     setVirtualCameraActivation(activation);
+  }
+
+  function setVirtualCameraTrackTarget(id: string, targetId: string | null): void {
+    setVirtualCameras((current) =>
+      current.map((camera) => (camera.id === id ? { ...camera, trackTargetId: targetId } : camera))
+    );
   }
 
   function deleteVirtualCamera(id: string): void {
@@ -2676,6 +2759,8 @@ export function App() {
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
           onAddCart={addCartVirtualCamera}
+          trackTargets={targetRegistry.list()}
+          onSetTrackTarget={setVirtualCameraTrackTarget}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
@@ -2720,6 +2805,7 @@ export function App() {
         <Scene
           bezierPath={bezierPath}
           vertexPath={vertexPath}
+          targetRegistry={targetRegistry}
           pathVersion={pathVersion}
           speed={speed}
           driveMainCamera={driveMainCamera}

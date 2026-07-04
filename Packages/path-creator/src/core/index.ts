@@ -6,3 +6,4 @@ export * from "./vertex-path-utils";
 export * from "./vec3";
 export * from "./cart";
 export * from "./rig";
+export * from "./targets";

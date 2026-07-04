@@ -7,7 +7,7 @@ export type VirtualCameraBodyDefinition =
 
 export type VirtualCameraAimDefinition =
   | { type: "body" }
-  | { type: "look-at"; target: Vec3 };
+  | { type: "look-at"; target: Vec3 | { targetId: string } };
 
 export interface VirtualCameraDefinition {
   id: string;
@@ -20,6 +20,7 @@ export interface VirtualCameraDefinition {
 
 export interface VirtualCameraResolveContext {
   getCartFrame?: (cartId: string) => CartFrame | null;
+  getTargetPosition?: (targetId: string) => Vec3 | null;
 }
 
 export interface MeshBuffers {
@@ -340,16 +341,22 @@ export function resolveVirtualCameraDefinition(
   }
 
   if (definition.aim?.type === "look-at") {
-    _bodyForward.set(
-      definition.aim.target.x - position.x,
-      definition.aim.target.y - position.y,
-      definition.aim.target.z - position.z
-    );
-    if (_bodyForward.lengthSq() > 1e-12) {
-      quaternion = cameraQuaternionFromFrame(
-        { x: _bodyForward.x, y: _bodyForward.y, z: _bodyForward.z },
-        bodyUp
+    const aimTarget =
+      "targetId" in definition.aim.target
+        ? context.getTargetPosition?.(definition.aim.target.targetId) ?? null
+        : definition.aim.target;
+    if (aimTarget) {
+      _bodyForward.set(
+        aimTarget.x - position.x,
+        aimTarget.y - position.y,
+        aimTarget.z - position.z
       );
+      if (_bodyForward.lengthSq() > 1e-12) {
+        quaternion = cameraQuaternionFromFrame(
+          { x: _bodyForward.x, y: _bodyForward.y, z: _bodyForward.z },
+          bodyUp
+        );
+      }
     }
   }
 
