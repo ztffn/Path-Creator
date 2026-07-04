@@ -129,10 +129,9 @@ type DemoVirtualCamera = {
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
-  /** Shot length in the auto-built timeline. */
-  shotDurationSeconds: number;
-  /** Blend-in from the previous shot; 0 cuts. */
-  shotBlendSeconds: number;
+  /** Block placement on the show timeline; overlap with the previous shot crossfades. */
+  shotStart: number;
+  shotEnd: number;
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
@@ -142,12 +141,7 @@ type DemoVirtualCamera = {
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
-    | "trackTargetId"
-    | "noisePreset"
-    | "dutchDeg"
-    | "shotDurationSeconds"
-    | "shotBlendSeconds"
-    | "cartOffset"
+    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotStart" | "shotEnd" | "cartOffset"
   >
 >;
 
@@ -2464,40 +2458,6 @@ function VirtualCameraPanel({
                       }
                     />
                   </label>
-                  <label
-                    onClick={(event) => event.stopPropagation()}
-                    style={shotRowLabelStyle("48px 1fr 44px 52px")}
-                  >
-                    <span>Shot s</span>
-                    <input
-                      type="number"
-                      value={camera.shotDurationSeconds}
-                      min={0.5}
-                      max={60}
-                      step={0.5}
-                      style={{ width: "100%" }}
-                      onChange={(event) =>
-                        onUpdateShot(camera.id, {
-                          shotDurationSeconds: Number(event.target.value) || 5
-                        })
-                      }
-                    />
-                    <span style={{ textAlign: "right" }}>Blend</span>
-                    <input
-                      type="number"
-                      value={camera.shotBlendSeconds}
-                      min={0}
-                      max={10}
-                      step={0.25}
-                      style={{ width: "100%" }}
-                      title="Blend-in from the previous shot; 0 = cut"
-                      onChange={(event) =>
-                        onUpdateShot(camera.id, {
-                          shotBlendSeconds: Math.max(0, Number(event.target.value) || 0)
-                        })
-                      }
-                    />
-                  </label>
                 </div>
               );
             })}
@@ -2561,7 +2521,8 @@ function TimelinePanel({
 
       {timeline == null ? (
         <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 8 }}>
-          Add vcams to build the show; set duration and blend per shot in its row.
+          Add vcams to build the show; arrange blocks in the lanes below — overlap two
+          shots to crossfade.
         </div>
       ) : (
         <div style={{ display: "grid", gap: 8, marginTop: 8 }}>
@@ -2677,29 +2638,28 @@ export function App() {
   // pointer rate) don't rebuild the timeline object every frame — the lane
   // editor treats a new editorData as a full re-init.
   const shotTimingKey = virtualCameras
-    .map((vcam) => `${vcam.id}:${vcam.shotDurationSeconds}:${vcam.shotBlendSeconds}`)
+    .map((vcam) => `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}`)
     .join("|");
   const demoTimeline = useMemo(() => {
     if (virtualCameras.length === 0) return null;
-    let cursor = 0;
-    const blocks = virtualCameras.map((vcam, index) => {
-      const duration = Math.max(0.5, vcam.shotDurationSeconds);
-      const blend = Math.min(Math.max(0, vcam.shotBlendSeconds), duration);
-      const block = {
+    const ordered = [...virtualCameras].sort((a, b) => a.shotStart - b.shotStart);
+    const blocks = ordered.map((vcam, index) => {
+      // Overlap with the preceding shot is the crossfade window; no overlap
+      // cuts, gaps hold the previous shot (evaluator semantics).
+      const previous = index > 0 ? ordered[index - 1] : undefined;
+      const overlap = previous ? previous.shotEnd - vcam.shotStart : 0;
+      return {
         id: `block-${vcam.id}`,
         vcamId: vcam.id,
-        start: cursor,
-        end: cursor + duration,
-        ...(index > 0 &&
-          blend > 0 && {
-            blendIn: { durationSeconds: blend, curve: "easeInOut" as const }
-          })
+        start: vcam.shotStart,
+        end: vcam.shotEnd,
+        ...(overlap > 0.01 && {
+          blendIn: { durationSeconds: overlap, curve: "easeInOut" as const }
+        })
       };
-      cursor += duration;
-      return block;
     });
     return createTimeline({
-      duration: cursor,
+      duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
       tracks: [{ type: "camera", id: "camera-track", blocks }]
     });
     // shotTimingKey covers every field this memo reads from virtualCameras.
@@ -2822,6 +2782,7 @@ export function App() {
   ): void {
     const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
     const name = `${namePrefix} ${virtualCameras.length + 1}`;
+    const shotStart = virtualCameras.reduce((end, vcam) => Math.max(end, vcam.shotEnd), 0);
     setSelectedVirtualCameraId(id);
     setVirtualCameras((current) => [
       ...current,
@@ -2833,8 +2794,8 @@ export function App() {
         trackTargetId: null,
         noisePreset: "off",
         dutchDeg: 0,
-        shotDurationSeconds: 5,
-        shotBlendSeconds: 1.5,
+        shotStart,
+        shotEnd: shotStart + 5,
         snapshot: {
           ...snapshot,
           name,
@@ -3151,12 +3112,18 @@ export function App() {
         />
         {demoTimeline ? (
           <TimelineLanes
-            timeline={demoTimeline}
-            shotNames={new Map(virtualCameras.map((vcam) => [vcam.id, vcam.name]))}
+            shots={virtualCameras.map((vcam) => ({
+              id: vcam.id,
+              name: vcam.name,
+              start: vcam.shotStart,
+              end: vcam.shotEnd
+            }))}
+            selectedShotId={selectedVirtualCameraId}
             playerRef={timelinePlayerRef}
-            onShotDuration={(vcamId, durationSeconds) =>
-              updateVirtualCameraShot(vcamId, { shotDurationSeconds: durationSeconds })
+            onShotTiming={(vcamId, shotStart, shotEnd) =>
+              updateVirtualCameraShot(vcamId, { shotStart, shotEnd })
             }
+            onSelectShot={selectVirtualCamera}
             onSeek={(time) => {
               seekTimelinePlayer(timelinePlayerRef.current, time);
               setPipDriver("timeline");

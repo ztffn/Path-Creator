@@ -1,8 +1,8 @@
-// Spike: @xzdarcy/react-timeline-editor as a disposable, controlled lane UI
-// over the demo's auto-built camera timeline. Blocks derive from per-shot
-// durations; resizing a block writes the duration back; the cursor is slaved
-// to our TimelinePlayer and their playback engine is never used. If this
-// library fights React 19, replace with a custom ~300-line lane component.
+// Lane editor over the demo show, built on @xzdarcy/react-timeline-editor as
+// a controlled shell (their playback engine is never used). One lane per
+// shot; blocks move and resize freely and write start/end back; overlapping
+// the previous shot IS the crossfade control; clicking a block selects its
+// vcam. Quarantined by an error boundary so a crash can't kill the canvas.
 import {
   Timeline as TimelineLaneEditor,
   type TimelineState
@@ -10,7 +10,17 @@ import {
 import type { TimelineRow } from "@xzdarcy/timeline-engine";
 import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
 import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
-import type { Timeline, TimelinePlayer } from "@huma/path-creator/timeline";
+import type { TimelinePlayer } from "@huma/path-creator/timeline";
+
+const SHOT_EFFECTS = { shot: { id: "shot", name: "Shot" } };
+const SNAP_SECONDS = 0.25;
+
+export interface LaneShot {
+  id: string;
+  name: string;
+  start: number;
+  end: number;
+}
 
 /**
  * Quarantines the third-party lane editor: a crash inside it must not
@@ -27,7 +37,7 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
     if (this.state.failed) {
       return (
         <div style={{ padding: 8, fontSize: 12, color: "#fca5a5" }}>
-          Lane editor crashed — spike fail signal. See console.
+          Lane editor crashed — see console.
         </div>
       );
     }
@@ -35,41 +45,43 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
   }
 }
 
-const SHOT_EFFECTS = { shot: { id: "shot", name: "Shot" } };
-
 export function TimelineLanes({
-  timeline,
-  shotNames,
+  shots,
+  selectedShotId,
   playerRef,
-  onShotDuration,
+  onShotTiming,
+  onSelectShot,
   onSeek
 }: {
-  timeline: Timeline;
-  shotNames: Map<string, string>;
+  shots: LaneShot[];
+  selectedShotId: string | null;
   playerRef: { current: TimelinePlayer };
-  onShotDuration: (vcamId: string, durationSeconds: number) => void;
+  onShotTiming: (shotId: string, start: number, end: number) => void;
+  onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
 }) {
   const laneStateRef = useRef<TimelineState>(null);
 
+  const timingKey = shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|");
   const editorData = useMemo<TimelineRow[]>(
     () =>
-      timeline.tracks
-        .filter((track) => track.type === "camera")
-        .map((track) => ({
-          id: track.id,
-          actions: track.blocks.map((block) => ({
-            id: block.vcamId,
-            start: block.start,
-            end: block.end,
+      shots.map((shot) => ({
+        id: shot.id,
+        actions: [
+          {
+            id: shot.id,
+            start: shot.start,
+            end: shot.end,
             effectId: "shot",
-            // Starts derive from the preceding shots' durations, so blocks
-            // resize but don't move.
-            movable: false,
+            movable: true,
             flexible: true
-          }))
-        })),
-    [timeline]
+          }
+        ]
+      })),
+    // timingKey covers everything this memo reads except names, which render
+    // via the shots prop directly.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [timingKey]
   );
 
   // Slave the lane cursor to our player clock; their engine never runs.
@@ -91,56 +103,69 @@ export function TimelineLanes({
     return () => cancelAnimationFrame(raf);
   }, [playerRef]);
 
+  const shotNames = new Map(shots.map((shot) => [shot.id, shot.name]));
+
   return (
     <LaneErrorBoundary>
       <div style={{ width: "100%", borderRadius: 8, overflow: "hidden" }}>
         <TimelineLaneEditor
-        ref={laneStateRef}
-        editorData={editorData}
-        effects={SHOT_EFFECTS}
-        scale={5}
-        scaleWidth={110}
-        scaleSplitCount={5}
-        startLeft={12}
-        rowHeight={36}
-        autoScroll
-        style={{ width: "100%", height: 90 }}
-        onChange={(rows) => {
-          const previous = new Map(
-            editorData.flatMap((row) => row.actions.map((action) => [action.id, action]))
-          );
-          for (const row of rows) {
-            for (const action of row.actions) {
-              const before = previous.get(action.id);
-              const duration = Math.max(0.5, action.end - action.start);
-              if (!before || Math.abs(duration - (before.end - before.start)) > 1e-6) {
-                onShotDuration(action.id, Math.round(duration * 4) / 4);
+          ref={laneStateRef}
+          editorData={editorData}
+          effects={SHOT_EFFECTS}
+          scale={5}
+          scaleWidth={110}
+          scaleSplitCount={5}
+          startLeft={12}
+          rowHeight={30}
+          autoScroll
+          dragLine
+          style={{ width: "100%", height: Math.min(220, 42 + shots.length * 30) }}
+          onChange={(rows) => {
+            for (const row of rows) {
+              for (const action of row.actions) {
+                const shot = shots.find((item) => item.id === action.id);
+                if (!shot) continue;
+                const start = Math.max(0, Math.round(action.start / SNAP_SECONDS) * SNAP_SECONDS);
+                const end = Math.max(
+                  start + SNAP_SECONDS,
+                  Math.round(action.end / SNAP_SECONDS) * SNAP_SECONDS
+                );
+                if (Math.abs(start - shot.start) > 1e-6 || Math.abs(end - shot.end) > 1e-6) {
+                  onShotTiming(action.id, start, end);
+                }
               }
             }
-          }
-        }}
-        onClickTimeArea={(time) => {
-          onSeek(time);
-          return true;
-        }}
-        onCursorDrag={onSeek}
-        getActionRender={(action) => (
-          <div
-            style={{
-              height: "100%",
-              display: "flex",
-              alignItems: "center",
-              padding: "0 8px",
-              fontSize: 11,
-              color: "#e2e8f0",
-              whiteSpace: "nowrap",
-              overflow: "hidden",
-              textOverflow: "ellipsis"
-            }}
-          >
-            {shotNames.get(action.id) ?? action.id}
-          </div>
-        )}
+          }}
+          onClickAction={(_event, { action }) => onSelectShot(action.id)}
+          onClickTimeArea={(time) => {
+            onSeek(time);
+            return true;
+          }}
+          onCursorDrag={onSeek}
+          getActionRender={(action) => (
+            <div
+              style={{
+                height: "100%",
+                display: "flex",
+                alignItems: "center",
+                padding: "0 8px",
+                fontSize: 11,
+                color: "#e2e8f0",
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+                borderRadius: 4,
+                background:
+                  action.id === selectedShotId ? "rgba(249, 115, 22, 0.45)" : "rgba(59, 130, 246, 0.35)",
+                border:
+                  action.id === selectedShotId
+                    ? "1px solid rgba(249, 115, 22, 0.9)"
+                    : "1px solid rgba(148, 163, 184, 0.35)"
+              }}
+            >
+              {shotNames.get(action.id) ?? action.id}
+            </div>
+          )}
         />
       </div>
     </LaneErrorBoundary>
