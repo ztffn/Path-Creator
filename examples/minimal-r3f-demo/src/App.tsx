@@ -2674,7 +2674,6 @@ export function App() {
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
-  const [gapRelease, setGapRelease] = useState(false);
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   // The show (dollies, shots, mounts, moves) survives reloads like the spline.
@@ -2887,12 +2886,11 @@ export function App() {
     })).filter((track) => track.keys.length > 0);
     return createTimeline({
       duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
-      ...(gapRelease && { gapMode: "release" as const }),
       tracks: [{ type: "camera", id: "camera-track", blocks }, ...cartTracks]
     });
     // shotTimingKey + dollyKey cover every field this memo reads.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyKey, gapRelease]);
+  }, [shotTimingKey, dollyKey]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   const pipLabel = timelineActive
     ? "Timeline"
@@ -3482,8 +3480,6 @@ export function App() {
             setPipDriver("timeline");
           }}
           onTransport={() => setPipDriver("timeline")}
-          gapRelease={gapRelease}
-          onGapReleaseChange={setGapRelease}
         />
       </div>
       {debugPreview ? (
