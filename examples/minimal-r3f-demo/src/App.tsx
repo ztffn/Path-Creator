@@ -120,11 +120,22 @@ type DemoVirtualCamera = {
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
+  /** Shot length in the auto-built timeline. */
+  shotDurationSeconds: number;
+  /** Blend-in from the previous shot; 0 cuts. */
+  shotBlendSeconds: number;
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
   composerSettings: ComposerSettings;
 };
+
+type DemoShotPatch = Partial<
+  Pick<
+    DemoVirtualCamera,
+    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotDurationSeconds" | "shotBlendSeconds"
+  >
+>;
 
 function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition {
   const noise = NOISE_PRESETS[vcam.noisePreset];
@@ -2188,10 +2199,7 @@ function VirtualCameraPanel({
   onDelete: (id: string) => void;
   onRelease: () => void;
   trackTargets: RegisteredTarget[];
-  onUpdateShot: (
-    id: string,
-    patch: Partial<Pick<DemoVirtualCamera, "trackTargetId" | "noisePreset" | "dutchDeg">>
-  ) => void;
+  onUpdateShot: (id: string, patch: DemoShotPatch) => void;
 }) {
   return (
     <div
@@ -2400,6 +2408,48 @@ function VirtualCameraPanel({
                       }
                     />
                   </label>
+                  <label
+                    onClick={(event) => event.stopPropagation()}
+                    style={{
+                      gridColumn: "1 / -1",
+                      display: "grid",
+                      gridTemplateColumns: "48px 1fr 44px 52px",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11,
+                      color: "#94a3b8"
+                    }}
+                  >
+                    <span>Shot s</span>
+                    <input
+                      type="number"
+                      value={camera.shotDurationSeconds}
+                      min={0.5}
+                      max={60}
+                      step={0.5}
+                      style={{ width: "100%" }}
+                      onChange={(event) =>
+                        onUpdateShot(camera.id, {
+                          shotDurationSeconds: Number(event.target.value) || 5
+                        })
+                      }
+                    />
+                    <span style={{ textAlign: "right" }}>Blend</span>
+                    <input
+                      type="number"
+                      value={camera.shotBlendSeconds}
+                      min={0}
+                      max={10}
+                      step={0.25}
+                      style={{ width: "100%" }}
+                      title="Blend-in from the previous shot; 0 = cut"
+                      onChange={(event) =>
+                        onUpdateShot(camera.id, {
+                          shotBlendSeconds: Math.max(0, Number(event.target.value) || 0)
+                        })
+                      }
+                    />
+                  </label>
                 </div>
               );
             })}
@@ -2581,23 +2631,26 @@ export function App() {
     : null;
   const demoTimeline = useMemo(() => {
     if (virtualCameras.length === 0) return null;
+    let cursor = 0;
+    const blocks = virtualCameras.map((vcam, index) => {
+      const duration = Math.max(0.5, vcam.shotDurationSeconds);
+      const blend = Math.min(Math.max(0, vcam.shotBlendSeconds), duration);
+      const block = {
+        id: `block-${vcam.id}`,
+        vcamId: vcam.id,
+        start: cursor,
+        end: cursor + duration,
+        ...(index > 0 &&
+          blend > 0 && {
+            blendIn: { durationSeconds: blend, curve: "easeInOut" as const }
+          })
+      };
+      cursor += duration;
+      return block;
+    });
     return createTimeline({
-      duration: virtualCameras.length * 5,
-      tracks: [
-        {
-          type: "camera",
-          id: "camera-track",
-          blocks: virtualCameras.map((vcam, index) => ({
-            id: `block-${vcam.id}`,
-            vcamId: vcam.id,
-            start: index * 5,
-            end: index * 5 + 5,
-            ...(index > 0 && {
-              blendIn: { durationSeconds: 1.5, curve: "easeInOut" as const }
-            })
-          }))
-        }
-      ]
+      duration: cursor,
+      tracks: [{ type: "camera", id: "camera-track", blocks }]
     });
   }, [virtualCameras]);
   const pipLabel =
@@ -2724,6 +2777,8 @@ export function App() {
           trackTargetId: null,
           noisePreset: "off" as const,
           dutchDeg: 0,
+          shotDurationSeconds: 5,
+          shotBlendSeconds: 1.5,
           snapshot: {
             ...snapshot,
             name,
@@ -2750,6 +2805,8 @@ export function App() {
         trackTargetId: null,
         noisePreset: "off" as const,
         dutchDeg: 0,
+        shotDurationSeconds: 5,
+        shotBlendSeconds: 1.5,
         snapshot: {
           name,
           position: { x: 0, y: 0, z: 0 },
@@ -2785,10 +2842,7 @@ export function App() {
     setVirtualCameraActivation(activation);
   }
 
-  function updateVirtualCameraShot(
-    id: string,
-    patch: Partial<Pick<DemoVirtualCamera, "trackTargetId" | "noisePreset" | "dutchDeg">>
-  ): void {
+  function updateVirtualCameraShot(id: string, patch: DemoShotPatch): void {
     setVirtualCameras((current) =>
       current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
     );
