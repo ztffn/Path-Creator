@@ -7,7 +7,9 @@ import {
   PathSpace,
   TargetRegistry,
   VertexPath,
+  advanceCartDistance,
   createPathCart,
+  sampleCartFrame,
   type CartFrame,
   type RegisteredTarget,
   type SerializedBezierPath,
@@ -71,7 +73,13 @@ const STORAGE_KEY = "path-creator:minimal-demo:path";
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 const DEMO_RAIL_PATH_ID = "rail";
-const DEMO_RAIL_CART_ID = "demo-rail";
+// A production can run several dollies; the demo mounts two on the one rail.
+// Cameras mount a dolly via their cart body's cartId.
+const DEMO_DOLLIES = [
+  { id: "dolly-a", name: "Dolly A" },
+  { id: "dolly-b", name: "Dolly B" }
+] as const;
+const DEFAULT_DOLLY_ID = DEMO_DOLLIES[0].id;
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
@@ -125,6 +133,8 @@ type DemoVirtualCamera = {
   id: string;
   name: string;
   bodyType: "static" | "cart";
+  /** Which dolly a cart body mounts. */
+  cartId: string;
   /** Rail-local camera offset for cart bodies (x=right, y=up, z=forward). */
   cartOffset: Vec3;
   trackTargetId: string | null;
@@ -154,6 +164,7 @@ type DemoShotPatch = Partial<
     | "shotStart"
     | "shotEnd"
     | "cartOffset"
+    | "cartId"
     | "railFrom"
     | "railTo"
   >
@@ -170,7 +181,7 @@ function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition 
     name: vcam.name,
     body:
       vcam.bodyType === "cart"
-        ? { type: "cart", cartId: DEMO_RAIL_CART_ID, positionOffset: vcam.cartOffset }
+        ? { type: "cart", cartId: vcam.cartId, positionOffset: vcam.cartOffset }
         : {
             type: "static",
             position: vcam.snapshot.position,
@@ -733,8 +744,13 @@ function Scene({
     mode: followMode
   });
   useEditorHelpersVisible();
-  const vcamCart = usePathCart({ path: vertexPath, speed, mode: followMode });
-  const vcamCartFrameRef = useRef<CartFrame | null>(null);
+  // One live free-running cart per dolly; the timeline branch overwrites the
+  // frames with evaluated ones while it owns playback.
+  const liveDollies = useMemo(
+    () => new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, createPathCart()])),
+    []
+  );
+  const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   const followerRef = useRef<Mesh>(null);
   const lookTargetRef = useRef<Mesh>(null);
   useTrackingTarget("follower", followerRef, { name: "Follower Sphere", registry: targetRegistry });
@@ -743,7 +759,7 @@ function Scene({
     registry: targetRegistry
   });
   const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
-    getCartFrame: (id) => (id === DEMO_RAIL_CART_ID ? vcamCartFrameRef.current : null),
+    getCartFrame: (id) => dollyFramesRef.current.get(id) ?? null,
     getTargetPosition: (id) => targetRegistry.resolve(id),
     elapsedSeconds
   });
@@ -757,8 +773,8 @@ function Scene({
     () => ({
       rig: {
         paths: new Map([[DEMO_RAIL_PATH_ID, vertexPath]]),
-        carts: new Map([[DEMO_RAIL_CART_ID, createPathCart({ speed })]]),
-        cartPaths: new Map([[DEMO_RAIL_CART_ID, DEMO_RAIL_PATH_ID]])
+        carts: new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, createPathCart({ speed })])),
+        cartPaths: new Map(DEMO_DOLLIES.map((dolly) => [dolly.id, DEMO_RAIL_PATH_ID]))
       },
       vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
       getTargetPosition: (id) => targetRegistry.resolve(id)
@@ -901,7 +917,12 @@ function Scene({
   }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
   useFrame(({ camera, scene }, delta) => {
-    vcamCartFrameRef.current = vcamCart.step(delta);
+    for (const [dollyId, cart] of liveDollies) {
+      cart.speed = speed;
+      cart.endOfPathInstruction = followMode;
+      cart.distance = advanceCartDistance(vertexPath, cart, delta);
+      dollyFramesRef.current.set(dollyId, sampleCartFrame(vertexPath, cart));
+    }
     const mainCamera = camera as PerspectiveCamera;
     const followerObject = scene.getObjectByName("follower") as Mesh | null;
     const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
@@ -1007,11 +1028,10 @@ function Scene({
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
       }
-      // Glyphs and shot previews follow the timeline-evaluated cart, not the
-      // free-running one, while the timeline owns playback.
-      const evaluatedFrame = sample.cartFrames.get(DEMO_RAIL_CART_ID);
-      if (evaluatedFrame) {
-        vcamCartFrameRef.current = evaluatedFrame;
+      // Glyphs and shot previews follow the timeline-evaluated carts, not
+      // the free-running ones, while the timeline owns playback.
+      for (const [dollyId, frame] of sample.cartFrames) {
+        dollyFramesRef.current.set(dollyId, frame);
       }
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
@@ -1469,7 +1489,8 @@ function Scene({
           return (
             <CartVcamGlyphRig
               key={virtualCamera.id}
-              frameRef={vcamCartFrameRef}
+              framesRef={dollyFramesRef}
+              cartId={virtualCamera.cartId}
               selected={isSelected}
               offset={virtualCamera.cartOffset}
               onOffsetChange={(cartOffset) => onUpdateCartOffset(virtualCamera.id, cartOffset)}
@@ -1587,14 +1608,16 @@ function DollyCameraPip({
 }
 
 function CartVcamGlyphRig({
-  frameRef,
+  framesRef,
+  cartId,
   selected,
   offset,
   onOffsetChange,
   onTransformingChange,
   children
 }: {
-  frameRef: { current: CartFrame | null };
+  framesRef: { current: Map<string, CartFrame> };
+  cartId: string;
   selected: boolean;
   offset: Vec3;
   onOffsetChange: (offset: Vec3) => void;
@@ -1611,7 +1634,7 @@ function CartVcamGlyphRig({
   // axes (x=right, y=up, z=forward), so the pivot's local translation IS the
   // rail-local offset the cart body applies.
   useFrame(() => {
-    const frame = frameRef.current;
+    const frame = framesRef.current.get(cartId) ?? null;
     const group = groupRef.current;
     if (!frame || !group) return;
     applyCartFrameToObject(group, frame);
@@ -2513,9 +2536,21 @@ function VirtualCameraPanel({
                     <label
                       onClick={(event) => event.stopPropagation()}
                       title="Rail distance at shot start/end; empty = free-run at rig speed"
-                      style={shotRowLabelStyle("48px 1fr 20px 1fr")}
+                      style={shotRowLabelStyle("48px 72px 1fr 14px 1fr")}
                     >
-                      <span>Rail</span>
+                      <span>Dolly</span>
+                      <select
+                        value={camera.cartId}
+                        onChange={(event) =>
+                          onUpdateShot(camera.id, { cartId: event.target.value })
+                        }
+                      >
+                        {DEMO_DOLLIES.map((dolly) => (
+                          <option key={dolly.id} value={dolly.id}>
+                            {dolly.name}
+                          </option>
+                        ))}
+                      </select>
                       <input
                         type="number"
                         placeholder="free"
@@ -2641,7 +2676,7 @@ export function App() {
   const shotTimingKey = virtualCameras
     .map(
       (vcam) =>
-        `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.railFrom ?? ""}:${vcam.railTo ?? ""}`
+        `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}:${vcam.railFrom ?? ""}:${vcam.railTo ?? ""}`
     )
     .join("|");
   const demoTimeline = useMemo(() => {
@@ -2662,25 +2697,29 @@ export function App() {
         })
       };
     });
-    // Shots that define a dolly move compile to cart-track keys: the rail
-    // camera travels railFrom -> railTo across its block, eased; between
-    // moves the evaluator interpolates toward the next move's start.
-    const cartKeys = ordered
-      .filter(
-        (vcam) => vcam.bodyType === "cart" && vcam.railFrom !== null && vcam.railTo !== null
-      )
-      .flatMap((vcam) => [
-        { time: vcam.shotStart, distance: vcam.railFrom ?? 0, easing: "easeInOut" as const },
-        { time: vcam.shotEnd, distance: vcam.railTo ?? 0 }
-      ]);
+    // Shots that define a dolly move compile to cart-track keys on THEIR
+    // dolly: the camera travels railFrom -> railTo across its block, eased;
+    // between moves the evaluator interpolates toward the next move's start.
+    const cartTracks = DEMO_DOLLIES.map((dolly) => ({
+      type: "cart" as const,
+      id: `dolly-track-${dolly.id}`,
+      cartId: dolly.id,
+      keys: ordered
+        .filter(
+          (vcam) =>
+            vcam.bodyType === "cart" &&
+            vcam.cartId === dolly.id &&
+            vcam.railFrom !== null &&
+            vcam.railTo !== null
+        )
+        .flatMap((vcam) => [
+          { time: vcam.shotStart, distance: vcam.railFrom ?? 0, easing: "easeInOut" as const },
+          { time: vcam.shotEnd, distance: vcam.railTo ?? 0 }
+        ])
+    })).filter((track) => track.keys.length > 0);
     return createTimeline({
       duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
-      tracks: [
-        { type: "camera", id: "camera-track", blocks },
-        ...(cartKeys.length > 0
-          ? [{ type: "cart" as const, id: "dolly-track", cartId: DEMO_RAIL_CART_ID, keys: cartKeys }]
-          : [])
-      ]
+      tracks: [{ type: "camera", id: "camera-track", blocks }, ...cartTracks]
     });
     // shotTimingKey covers every field this memo reads from virtualCameras.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -2810,6 +2849,7 @@ export function App() {
         id,
         name,
         bodyType,
+        cartId: DEFAULT_DOLLY_ID,
         cartOffset: { x: 0, y: 0, z: 0 },
         trackTargetId: null,
         noisePreset: "off",
