@@ -398,7 +398,7 @@ export function TimelineLanes({
               color: "#94a3b8"
             }}
           >
-            <label>
+            <label title="Restart playback when the show ends (per-dolly rail looping lives in Dollies)">
               <input
                 type="checkbox"
                 defaultChecked={playerRef.current.loop}
@@ -406,7 +406,7 @@ export function TimelineLanes({
                   playerRef.current.loop = event.target.checked;
                 }}
               />
-              <span style={{ marginLeft: 4 }}>Loop</span>
+              <span style={{ marginLeft: 4 }}>Replay show</span>
             </label>
             <label title="Playback rate">
               <select

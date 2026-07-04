@@ -76,8 +76,8 @@ const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 const DEMO_RAIL_PATH_ID = "rail";
 // A production can run several dollies, all riding the demo's one rail;
 // cameras mount a dolly via their cart body's cartId.
-type DemoDolly = { id: string; name: string };
-const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1" };
+type DemoDolly = { id: string; name: string; endOfPath: EndOfPathInstruction };
+const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1", endOfPath: EndOfPathInstruction.Loop };
 const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
@@ -748,7 +748,7 @@ function Scene({
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
-    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart()])),
+    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart({ endOfPathInstruction: dolly.endOfPath })])),
     [dollies]
   );
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
@@ -774,7 +774,7 @@ function Scene({
     () => ({
       rig: {
         paths: new Map([[DEMO_RAIL_PATH_ID, vertexPath]]),
-        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed })])),
+        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPath })])),
         cartPaths: new Map(dollies.map((dolly) => [dolly.id, DEMO_RAIL_PATH_ID]))
       },
       vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
@@ -920,7 +920,6 @@ function Scene({
   useFrame(({ camera, scene }, delta) => {
     for (const [dollyId, cart] of liveDollies) {
       cart.speed = speed;
-      cart.endOfPathInstruction = followMode;
       cart.distance = advanceCartDistance(vertexPath, cart, delta);
       dollyFramesRef.current.set(dollyId, sampleCartFrame(vertexPath, cart));
     }
@@ -2321,7 +2320,8 @@ function VirtualCameraPanel({
   onUpdateComposer,
   dollies,
   onAddDolly,
-  onDeleteDolly
+  onDeleteDolly,
+  onUpdateDolly
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2345,6 +2345,7 @@ function VirtualCameraPanel({
   dollies: DemoDolly[];
   onAddDolly: () => void;
   onDeleteDolly: (id: string) => void;
+  onUpdateDolly: (id: string, patch: Partial<DemoDolly>) => void;
 }) {
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
@@ -2398,6 +2399,19 @@ function VirtualCameraPanel({
               style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
             >
               <span style={{ flex: 1 }}>{dolly.name}</span>
+              <select
+                title="End-of-rail behavior for this dolly"
+                value={dolly.endOfPath}
+                onChange={(event) =>
+                  onUpdateDolly(dolly.id, {
+                    endOfPath: event.target.value as EndOfPathInstruction
+                  })
+                }
+              >
+                <option value={EndOfPathInstruction.Loop}>Loop</option>
+                <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
+                <option value={EndOfPathInstruction.Stop}>Stop</option>
+              </select>
               <button
                 disabled={dollies.length <= 1}
                 title={dollies.length <= 1 ? "A production needs at least one dolly" : undefined}
@@ -2682,9 +2696,18 @@ export function App() {
       return null;
     }
   }, []);
-  const [dollies, setDollies] = useState<DemoDolly[]>(
-    () => storedShow?.dollies ?? INITIAL_DOLLIES
+  const [dollies, setDollies] = useState<DemoDolly[]>(() =>
+    (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => ({
+      ...dolly,
+      endOfPath: dolly.endOfPath ?? EndOfPathInstruction.Loop
+    }))
   );
+
+  function updateDolly(id: string, patch: Partial<DemoDolly>): void {
+    setDollies((current) =>
+      current.map((dolly) => (dolly.id === id ? { ...dolly, ...patch } : dolly))
+    );
+  }
   const defaultDollyId = dollies[0]?.id ?? FALLBACK_DOLLY.id;
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() =>
     (storedShow?.vcams ?? []).map((vcam, index) => ({
@@ -2706,7 +2729,7 @@ export function App() {
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
-    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}` }]);
+    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop }]);
   }
 
   function deleteDolly(id: string): void {
@@ -3271,6 +3294,7 @@ export function App() {
           dollies={dollies}
           onAddDolly={addDolly}
           onDeleteDolly={deleteDolly}
+          onUpdateDolly={updateDolly}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}
