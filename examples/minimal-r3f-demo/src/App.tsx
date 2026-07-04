@@ -33,12 +33,13 @@ import {
   applyVirtualCameraSnapshot,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
+  driveVirtualCameraBrain,
   getVirtualCameraBrainProgress,
   resolveVirtualCameraDefinition,
-  retargetVirtualCameraBrain,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraNoiseSettings,
+  type VirtualCameraResolveContext,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
 import {
@@ -51,7 +52,7 @@ import {
   type TimelinePlayer,
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
-import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import {
   CameraHelper,
   Euler,
@@ -65,6 +66,10 @@ import {
 } from "three";
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
+// Correlation keys tying cart-bodied vcams to the demo rail; a rename must
+// touch nothing else.
+const DEMO_RAIL_PATH_ID = "rail";
+const DEMO_RAIL_CART_ID = "demo-rail";
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
@@ -156,7 +161,7 @@ function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition 
     name: vcam.name,
     body:
       vcam.bodyType === "cart"
-        ? { type: "cart", cartId: "demo-rail", positionOffset: vcam.cartOffset }
+        ? { type: "cart", cartId: DEMO_RAIL_CART_ID, positionOffset: vcam.cartOffset }
         : {
             type: "static",
             position: vcam.snapshot.position,
@@ -173,7 +178,7 @@ function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition 
 
 type VirtualCameraActivation = {
   key: number;
-  to: DemoVirtualCamera;
+  toId: string;
   durationSeconds: number;
   curve: VirtualCameraBlendCurve;
 };
@@ -542,6 +547,26 @@ function applyCameraAim(
 
 const CART_RIDER_SPEED = 0.8;
 
+const VCAM_PIVOT_PROPS = {
+  autoTransform: false,
+  fixed: true,
+  scale: 75,
+  lineWidth: 2,
+  depthTest: false
+} as const;
+
+function shotRowLabelStyle(columns: string): CSSProperties {
+  return {
+    gridColumn: "1 / -1",
+    display: "grid",
+    gridTemplateColumns: columns,
+    alignItems: "center",
+    gap: 6,
+    fontSize: 11,
+    color: "#94a3b8"
+  };
+}
+
 function CartRiderProp({
   path,
   isClosed,
@@ -552,7 +577,7 @@ function CartRiderProp({
   targetRegistry: TargetRegistry;
 }) {
   const groupRef = useRef<Group>(null);
-  useTrackingTarget(targetRegistry, "cart-rider", groupRef, "Cart Rider");
+  useTrackingTarget("cart-rider", groupRef, { name: "Cart Rider", registry: targetRegistry });
   const { step } = usePathCart({
     path,
     speed: CART_RIDER_SPEED,
@@ -646,8 +671,7 @@ function Scene({
   onUpdateVirtualCameraSnapshot,
   onUpdateCartOffset,
   targetRegistry,
-  timelineActive,
-  timeline,
+  activeTimeline,
   timelinePlayerRef
 }: {
   bezierPath: BezierPath;
@@ -688,8 +712,8 @@ function Scene({
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   onUpdateCartOffset: (id: string, offset: Vec3) => void;
   targetRegistry: TargetRegistry;
-  timelineActive: boolean;
-  timeline: Timeline | null;
+  /** Non-null while the timeline owns the PiP. */
+  activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
 }) {
   const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
@@ -703,29 +727,28 @@ function Scene({
   const vcamCartFrameRef = useRef<CartFrame | null>(null);
   const followerRef = useRef<Mesh>(null);
   const lookTargetRef = useRef<Mesh>(null);
-  useTrackingTarget(targetRegistry, "follower", followerRef, "Follower Sphere");
-  useTrackingTarget(targetRegistry, "look-ball", lookTargetRef, "Look Target Ball");
+  useTrackingTarget("follower", followerRef, { name: "Follower Sphere", registry: targetRegistry });
+  useTrackingTarget("look-ball", lookTargetRef, {
+    name: "Look Target Ball",
+    registry: targetRegistry
+  });
+  const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
+    getCartFrame: (id) => (id === DEMO_RAIL_CART_ID ? vcamCartFrameRef.current : null),
+    getTargetPosition: (id) => targetRegistry.resolve(id),
+    elapsedSeconds
+  });
   const resolveDemoVirtualCamera = (
     vcam: DemoVirtualCamera,
     elapsedSeconds: number
-  ): VirtualCameraSnapshot => {
-    const noise = NOISE_PRESETS[vcam.noisePreset];
-    if (vcam.bodyType !== "cart" && !vcam.trackTargetId && !noise && !vcam.dutchDeg) {
-      return vcam.snapshot;
-    }
-    const resolved = resolveVirtualCameraDefinition(toDemoVcamDefinition(vcam), {
-      getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null),
-      getTargetPosition: (id) => targetRegistry.resolve(id),
-      elapsedSeconds
-    });
-    return resolved ?? vcam.snapshot;
-  };
+  ): VirtualCameraSnapshot =>
+    resolveVirtualCameraDefinition(toDemoVcamDefinition(vcam), demoResolveContext(elapsedSeconds)) ??
+    vcam.snapshot;
   const timelineContext = useMemo<TimelineRigContext>(
     () => ({
       rig: {
-        paths: new Map([["rail", vertexPath]]),
-        carts: new Map([["demo-rail", createPathCart({ speed })]]),
-        cartPaths: new Map([["demo-rail", "rail"]])
+        paths: new Map([[DEMO_RAIL_PATH_ID, vertexPath]]),
+        carts: new Map([[DEMO_RAIL_CART_ID, createPathCart({ speed })]]),
+        cartPaths: new Map([[DEMO_RAIL_CART_ID, DEMO_RAIL_PATH_ID]])
       },
       vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
       getTargetPosition: (id) => targetRegistry.resolve(id)
@@ -754,14 +777,9 @@ function Scene({
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
   const pipCamera =
-    timelineActive || virtualCameraActivation || selectedVirtualCamera
+    activeTimeline || virtualCameraActivation || selectedVirtualCamera
       ? brainCamera
       : previewCamera;
-  const pipLabel = virtualCameraActivation
-    ? "Brain Camera"
-    : selectedVirtualCamera
-      ? selectedVirtualCamera.name
-      : "Rig Camera";
 
   const pathLinePoints = useMemo(
     () => buildPathLinePoints(vertexPath),
@@ -956,54 +974,54 @@ function Scene({
       "lookahead"
     );
 
-    if (timelineActive && timeline) {
-      stepTimelinePlayer(timelinePlayerRef.current, timeline, delta);
-      const sample = evaluateTimeline(timeline, timelineContext, timelinePlayerRef.current.time);
+    if (activeTimeline) {
+      stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
+      const sample = evaluateTimeline(
+        activeTimeline,
+        timelineContext,
+        timelinePlayerRef.current.time
+      );
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
       }
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
     } else if (virtualCameraActivation && !isTransforming) {
-      if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
-        activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
-        resolvedVirtualCameraKeyRef.current = null;
-        composerState.current = createScreenComposerState();
-        activateVirtualCameraBrain(
-          virtualCameraBrainRef.current,
-          resolveDemoVirtualCamera(virtualCameraActivation.to, elapsed),
-          {
-            durationSeconds: virtualCameraActivation.durationSeconds,
-            curve: virtualCameraActivation.curve
-          }
-        );
-      } else {
-        const liveVcam =
-          virtualCameras.find((item) => item.id === virtualCameraActivation.to.id) ??
-          virtualCameraActivation.to;
-        if (liveVcam.bodyType === "cart" || liveVcam.trackTargetId || liveVcam.noisePreset !== "off") {
-          retargetVirtualCameraBrain(virtualCameraBrainRef.current, {
-            target: resolveDemoVirtualCamera(liveVcam, elapsed)
-          });
+      const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
+      if (liveVcam) {
+        if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
+          activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
+          resolvedVirtualCameraKeyRef.current = null;
+          composerState.current = createScreenComposerState();
+          activateVirtualCameraBrain(
+            virtualCameraBrainRef.current,
+            resolveDemoVirtualCamera(liveVcam, elapsed),
+            {
+              durationSeconds: virtualCameraActivation.durationSeconds,
+              curve: virtualCameraActivation.curve
+            }
+          );
         }
-      }
 
-      const resolvedSnapshot = applyVirtualCameraBrain(
-        brainCamera,
-        virtualCameraBrainRef.current,
-        delta
-      );
-      if (resolvedSnapshot) {
-        const done = !virtualCameraBrainRef.current.isBlending;
-        const progress = getVirtualCameraBrainProgress(virtualCameraBrainRef.current);
-        if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
-          onVirtualCameraResolved({
-            snapshot: resolvedSnapshot,
-            progress,
-            done
-          });
-          if (done) {
-            resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
+        const resolvedSnapshot = driveVirtualCameraBrain(
+          brainCamera,
+          virtualCameraBrainRef.current,
+          toDemoVcamDefinition(liveVcam),
+          demoResolveContext(elapsed),
+          delta
+        );
+        if (resolvedSnapshot) {
+          const done = !virtualCameraBrainRef.current.isBlending;
+          const progress = getVirtualCameraBrainProgress(virtualCameraBrainRef.current);
+          if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
+            onVirtualCameraResolved({
+              snapshot: resolvedSnapshot,
+              progress,
+              done
+            });
+            if (done) {
+              resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
+            }
           }
         }
       }
@@ -1415,7 +1433,7 @@ function Scene({
       <EditorHelpers>
       {virtualCameras.map((virtualCamera) => {
         const isSelected = virtualCamera.id === selectedVirtualCameraId;
-        const isActive = virtualCamera.id === virtualCameraActivation?.to.id;
+        const isActive = virtualCamera.id === virtualCameraActivation?.toId;
         const snapshot = virtualCamera.snapshot;
 
         if (virtualCamera.bodyType === "cart") {
@@ -1442,12 +1460,8 @@ function Scene({
           return (
             <PivotControls
               key={virtualCamera.id}
+              {...VCAM_PIVOT_PROPS}
               matrix={getSnapshotMatrix(snapshot)}
-              autoTransform={false}
-              fixed
-              scale={75}
-              lineWidth={2}
-              depthTest={false}
               disableScaling
               onDragStart={() => onTransformingChange(true)}
               onDragEnd={() => onTransformingChange(false)}
@@ -1505,30 +1519,21 @@ function Scene({
 
       {showTargetRig ? <TargetRigProp targetRegistry={targetRegistry} /> : null}
 
-      {debugPreview ? (
-        <DollyCameraPip
-          camera={pipCamera}
-          frustumHelper={frustumHelper}
-          label={pipLabel}
-        />
-      ) : null}
+      {debugPreview ? <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} /> : null}
     </>
   );
 }
 
 function DollyCameraPip({
   camera: dollyCamera,
-  frustumHelper,
-  label
+  frustumHelper
 }: {
   camera: PerspectiveCamera;
   frustumHelper: CameraHelper;
-  label: string;
 }) {
   const { gl, scene, size } = useThree();
 
   useFrame(({ camera }) => {
-    dollyCamera.name = label;
     gl.setScissorTest(false);
     gl.setViewport(0, 0, size.width, size.height);
     gl.render(scene, camera);
@@ -1551,11 +1556,6 @@ function DollyCameraPip({
 
   return null;
 }
-
-const _railBasisMatrix = new Matrix4();
-const _railRight = new Vector3();
-const _railUp = new Vector3();
-const _railForward = new Vector3();
 
 function CartVcamGlyphRig({
   frameRef,
@@ -1585,12 +1585,8 @@ function CartVcamGlyphRig({
     const frame = frameRef.current;
     const group = groupRef.current;
     if (!frame || !group) return;
+    applyCartFrameToObject(group, frame);
     group.position.set(frame.railPosition.x, frame.railPosition.y, frame.railPosition.z);
-    _railRight.set(frame.right.x, frame.right.y, frame.right.z);
-    _railUp.set(frame.up.x, frame.up.y, frame.up.z);
-    _railForward.set(frame.forward.x, frame.forward.y, frame.forward.z);
-    _railBasisMatrix.makeBasis(_railRight, _railUp, _railForward);
-    group.quaternion.setFromRotationMatrix(_railBasisMatrix);
   });
 
   // Camera glyphs face -Z; the frame's forward is local +Z here.
@@ -1600,12 +1596,8 @@ function CartVcamGlyphRig({
     <group ref={groupRef}>
       {selected ? (
         <PivotControls
+          {...VCAM_PIVOT_PROPS}
           matrix={offsetMatrix}
-          autoTransform={false}
-          fixed
-          scale={75}
-          lineWidth={2}
-          depthTest={false}
           disableRotations
           disableScaling
           onDragStart={() => onTransformingChange(true)}
@@ -2424,15 +2416,7 @@ function VirtualCameraPanel({
                   </button>
                   <label
                     onClick={(event) => event.stopPropagation()}
-                    style={{
-                      gridColumn: "1 / -1",
-                      display: "grid",
-                      gridTemplateColumns: "48px 1fr",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 11,
-                      color: "#94a3b8"
-                    }}
+                    style={shotRowLabelStyle("48px 1fr")}
                   >
                     <span>Track</span>
                     <select
@@ -2451,15 +2435,7 @@ function VirtualCameraPanel({
                   </label>
                   <label
                     onClick={(event) => event.stopPropagation()}
-                    style={{
-                      gridColumn: "1 / -1",
-                      display: "grid",
-                      gridTemplateColumns: "48px 1fr 44px 52px",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 11,
-                      color: "#94a3b8"
-                    }}
+                    style={shotRowLabelStyle("48px 1fr 44px 52px")}
                   >
                     <span>Noise</span>
                     <select
@@ -2489,15 +2465,7 @@ function VirtualCameraPanel({
                   </label>
                   <label
                     onClick={(event) => event.stopPropagation()}
-                    style={{
-                      gridColumn: "1 / -1",
-                      display: "grid",
-                      gridTemplateColumns: "48px 1fr 44px 52px",
-                      alignItems: "center",
-                      gap: 6,
-                      fontSize: 11,
-                      color: "#94a3b8"
-                    }}
+                    style={shotRowLabelStyle("48px 1fr 44px 52px")}
                   >
                     <span>Shot s</span>
                     <input
@@ -2555,6 +2523,7 @@ function TimelinePanel({
   const timeLabelRef = useRef<HTMLSpanElement>(null);
 
   useEffect(() => {
+    if (timeline == null) return;
     let raf = 0;
     const sync = () => {
       const player = playerRef.current;
@@ -2567,7 +2536,7 @@ function TimelinePanel({
     };
     raf = requestAnimationFrame(sync);
     return () => cancelAnimationFrame(raf);
-  }, [playerRef]);
+  }, [playerRef, timeline]);
 
   return (
     <div
@@ -2603,7 +2572,6 @@ function TimelinePanel({
                   seekTimelinePlayer(player, 0);
                 }
                 player.playing = !player.playing;
-                setPlaying(player.playing);
                 onTransport();
               }}
             >
@@ -2671,7 +2639,6 @@ export function App() {
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
-  const [activeVirtualCameraId, setActiveVirtualCameraId] = useState<string | null>(null);
   const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
   const [virtualCameraCaptureSource, setVirtualCameraCaptureSource] =
@@ -2839,57 +2806,29 @@ export function App() {
     setVirtualCameraCaptureRequest((request) => request + 1);
   }
 
-  function addCapturedVirtualCamera(snapshot: VirtualCameraSnapshot): void {
+  function addDemoVcam(
+    bodyType: DemoVirtualCamera["bodyType"],
+    namePrefix: string,
+    snapshot: Omit<VirtualCameraSnapshot, "name" | "settings">
+  ): void {
     const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
-    const name = `VCam ${virtualCameras.length + 1}`;
-    setSelectedVirtualCameraId(id);
-    setVirtualCameras((current) => {
-      return [
-        ...current,
-        {
-          id,
-          name,
-          bodyType: "static" as const,
-          cartOffset: { x: 0, y: 0, z: 0 },
-          trackTargetId: null,
-          noisePreset: "off" as const,
-          dutchDeg: 0,
-          shotDurationSeconds: 5,
-          shotBlendSeconds: 1.5,
-          snapshot: {
-            ...snapshot,
-            name,
-            settings: composerSettingsToVirtualCameraSettings(composerSettings)
-          },
-          poseSource,
-          aimMode,
-          composerSettings
-        }
-      ];
-    });
-  }
-
-  function addCartVirtualCamera(): void {
-    const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
-    const name = `Cart VCam ${virtualCameras.length + 1}`;
+    const name = `${namePrefix} ${virtualCameras.length + 1}`;
     setSelectedVirtualCameraId(id);
     setVirtualCameras((current) => [
       ...current,
       {
         id,
         name,
-        bodyType: "cart" as const,
+        bodyType,
         cartOffset: { x: 0, y: 0, z: 0 },
         trackTargetId: null,
-        noisePreset: "off" as const,
+        noisePreset: "off",
         dutchDeg: 0,
         shotDurationSeconds: 5,
         shotBlendSeconds: 1.5,
         snapshot: {
+          ...snapshot,
           name,
-          position: { x: 0, y: 0, z: 0 },
-          quaternion: { x: 0, y: 0, z: 0, w: 1 },
-          lens: { fov: 45 },
           settings: composerSettingsToVirtualCameraSettings(composerSettings)
         },
         poseSource,
@@ -2899,27 +2838,35 @@ export function App() {
     ]);
   }
 
+  function addCapturedVirtualCamera(snapshot: VirtualCameraSnapshot): void {
+    addDemoVcam("static", "VCam", snapshot);
+  }
+
+  function addCartVirtualCamera(): void {
+    addDemoVcam("cart", "Cart VCam", {
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 },
+      lens: { fov: 45 }
+    });
+  }
+
   function activateVirtualCamera(id: string): void {
     const camera = virtualCameras.find((item) => item.id === id);
     if (!camera) return;
 
     const durationSeconds = virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration;
-    setActiveVirtualCameraId(id);
-    setSelectedVirtualCameraId(id);
-    setPipDriver("shots");
-    timelinePlayerRef.current.playing = false;
+    selectVirtualCamera(id);
     setDriveMainCamera(false);
     setPoseSource(camera.poseSource);
     setAimMode(camera.aimMode);
     setComposerSettings(mergeVirtualCameraSettings(camera.composerSettings, camera.snapshot.settings));
     setVirtualCameraTransitionProgress(durationSeconds <= 0 ? 1 : 0);
-    const activation: VirtualCameraActivation = {
+    setVirtualCameraActivation({
       key: Date.now(),
-      to: camera,
+      toId: id,
       durationSeconds,
       curve: virtualCameraBlendCurve
-    };
-    setVirtualCameraActivation(activation);
+    });
   }
 
   function updateVirtualCameraShot(id: string, patch: DemoShotPatch): void {
@@ -2933,15 +2880,12 @@ export function App() {
     if (selectedVirtualCameraId === id) {
       setSelectedVirtualCameraId(null);
     }
-    if (activeVirtualCameraId === id) {
-      setActiveVirtualCameraId(null);
-      setVirtualCameraActivation(null);
-      setVirtualCameraTransitionProgress(1);
+    if (virtualCameraActivation?.toId === id) {
+      releaseVirtualCamera();
     }
   }
 
   function releaseVirtualCamera(): void {
-    setActiveVirtualCameraId(null);
     setVirtualCameraActivation(null);
     setVirtualCameraTransitionProgress(1);
   }
@@ -2971,10 +2915,8 @@ export function App() {
           : camera
       )
     );
-    if (activeVirtualCameraId === id) {
-      setVirtualCameraActivation(null);
-      setActiveVirtualCameraId(null);
-      setVirtualCameraTransitionProgress(1);
+    if (virtualCameraActivation?.toId === id) {
+      releaseVirtualCamera();
     }
   }
 
@@ -3174,7 +3116,7 @@ export function App() {
       >
         <VirtualCameraPanel
           cameras={virtualCameras}
-          activeId={activeVirtualCameraId}
+          activeId={virtualCameraActivation?.toId ?? null}
           selectedId={selectedVirtualCameraId}
           captureSource={virtualCameraCaptureSource}
           blendCurve={virtualCameraBlendCurve}
@@ -3238,8 +3180,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
-          timelineActive={timelineActive}
-          timeline={demoTimeline}
+          activeTimeline={timelineActive ? demoTimeline : null}
           timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}
           speed={speed}
