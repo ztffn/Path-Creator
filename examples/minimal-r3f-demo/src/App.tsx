@@ -31,7 +31,6 @@ import {
   applyCartFrameToObject,
   applyVirtualCameraBrain,
   applyVirtualCameraSnapshot,
-  cameraQuaternionFromFrame,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
   getVirtualCameraBrainProgress,
@@ -119,6 +118,8 @@ type DemoVirtualCamera = {
   id: string;
   name: string;
   bodyType: "static" | "cart";
+  /** Rail-local camera offset for cart bodies (x=right, y=up, z=forward). */
+  cartOffset: Vec3;
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
@@ -135,7 +136,12 @@ type DemoVirtualCamera = {
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
-    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotDurationSeconds" | "shotBlendSeconds"
+    | "trackTargetId"
+    | "noisePreset"
+    | "dutchDeg"
+    | "shotDurationSeconds"
+    | "shotBlendSeconds"
+    | "cartOffset"
   >
 >;
 
@@ -150,7 +156,7 @@ function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition 
     name: vcam.name,
     body:
       vcam.bodyType === "cart"
-        ? { type: "cart", cartId: "demo-rail" }
+        ? { type: "cart", cartId: "demo-rail", positionOffset: vcam.cartOffset }
         : {
             type: "static",
             position: vcam.snapshot.position,
@@ -638,6 +644,7 @@ function Scene({
   onVirtualCameraResolved,
   onSelectVirtualCamera,
   onUpdateVirtualCameraSnapshot,
+  onUpdateCartOffset,
   targetRegistry,
   timelineActive,
   timeline,
@@ -679,6 +686,7 @@ function Scene({
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
   onSelectVirtualCamera: (id: string | null) => void;
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
+  onUpdateCartOffset: (id: string, offset: Vec3) => void;
   targetRegistry: TargetRegistry;
   timelineActive: boolean;
   timeline: Timeline | null;
@@ -1412,7 +1420,14 @@ function Scene({
 
         if (virtualCamera.bodyType === "cart") {
           return (
-            <CartVcamGlyphRig key={virtualCamera.id} frameRef={vcamCartFrameRef}>
+            <CartVcamGlyphRig
+              key={virtualCamera.id}
+              frameRef={vcamCartFrameRef}
+              selected={isSelected}
+              offset={virtualCamera.cartOffset}
+              onOffsetChange={(cartOffset) => onUpdateCartOffset(virtualCamera.id, cartOffset)}
+              onTransformingChange={onTransformingChange}
+            >
               <VirtualCameraGlyph
                 name={virtualCamera.name}
                 selected={isSelected}
@@ -1537,25 +1552,79 @@ function DollyCameraPip({
   return null;
 }
 
+const _railBasisMatrix = new Matrix4();
+const _railRight = new Vector3();
+const _railUp = new Vector3();
+const _railForward = new Vector3();
+
 function CartVcamGlyphRig({
   frameRef,
+  selected,
+  offset,
+  onOffsetChange,
+  onTransformingChange,
   children
 }: {
   frameRef: { current: CartFrame | null };
+  selected: boolean;
+  offset: Vec3;
+  onOffsetChange: (offset: Vec3) => void;
+  onTransformingChange: (isTransforming: boolean) => void;
   children: ReactNode;
 }) {
   const groupRef = useRef<Group>(null);
+  const offsetMatrix = useMemo(
+    () => new Matrix4().makeTranslation(offset.x, offset.y, offset.z),
+    [offset.x, offset.y, offset.z]
+  );
 
+  // The rig group sits ON the rail with the cart's frame basis as its local
+  // axes (x=right, y=up, z=forward), so the pivot's local translation IS the
+  // rail-local offset the cart body applies.
   useFrame(() => {
     const frame = frameRef.current;
     const group = groupRef.current;
     if (!frame || !group) return;
-    group.position.set(frame.position.x, frame.position.y, frame.position.z);
-    const q = cameraQuaternionFromFrame(frame.forward, frame.up);
-    group.quaternion.set(q.x, q.y, q.z, q.w);
+    group.position.set(frame.railPosition.x, frame.railPosition.y, frame.railPosition.z);
+    _railRight.set(frame.right.x, frame.right.y, frame.right.z);
+    _railUp.set(frame.up.x, frame.up.y, frame.up.z);
+    _railForward.set(frame.forward.x, frame.forward.y, frame.forward.z);
+    _railBasisMatrix.makeBasis(_railRight, _railUp, _railForward);
+    group.quaternion.setFromRotationMatrix(_railBasisMatrix);
   });
 
-  return <group ref={groupRef}>{children}</group>;
+  // Camera glyphs face -Z; the frame's forward is local +Z here.
+  const glyph = <group rotation={[0, Math.PI, 0]}>{children}</group>;
+
+  return (
+    <group ref={groupRef}>
+      {selected ? (
+        <PivotControls
+          matrix={offsetMatrix}
+          autoTransform={false}
+          fixed
+          scale={75}
+          lineWidth={2}
+          depthTest={false}
+          disableRotations
+          disableScaling
+          onDragStart={() => onTransformingChange(true)}
+          onDragEnd={() => onTransformingChange(false)}
+          onDrag={(matrix) => {
+            onOffsetChange({
+              x: matrix.elements[12],
+              y: matrix.elements[13],
+              z: matrix.elements[14]
+            });
+          }}
+        >
+          {glyph}
+        </PivotControls>
+      ) : (
+        <group position={[offset.x, offset.y, offset.z]}>{glyph}</group>
+      )}
+    </group>
+  );
 }
 
 function VirtualCameraGlyph({
@@ -2781,6 +2850,7 @@ export function App() {
           id,
           name,
           bodyType: "static" as const,
+          cartOffset: { x: 0, y: 0, z: 0 },
           trackTargetId: null,
           noisePreset: "off" as const,
           dutchDeg: 0,
@@ -2809,6 +2879,7 @@ export function App() {
         id,
         name,
         bodyType: "cart" as const,
+        cartOffset: { x: 0, y: 0, z: 0 },
         trackTargetId: null,
         noisePreset: "off" as const,
         dutchDeg: 0,
@@ -3215,6 +3286,7 @@ export function App() {
           }}
           onSelectVirtualCamera={selectVirtualCamera}
           onUpdateVirtualCameraSnapshot={updateVirtualCameraSnapshot}
+          onUpdateCartOffset={(id, cartOffset) => updateVirtualCameraShot(id, { cartOffset })}
           onSetAnchorScale={(anchorIndex, scale) => {
             setAnchorScales((prev) => {
               const next = normalizeAnchorScales(bezierPath.numAnchorPoints, prev);
