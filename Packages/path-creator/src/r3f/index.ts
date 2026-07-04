@@ -1,6 +1,17 @@
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
-import { EndOfPathInstruction, type Vec3, type VertexPath, vec3 } from "../core";
+import {
+  EndOfPathInstruction,
+  advanceCartDistance,
+  createPathCart,
+  sampleCartFrame,
+  type CartFrame,
+  type CartOrientationMode,
+  type PathCart,
+  type Vec3,
+  type VertexPath,
+  vec3
+} from "../core";
 
 export interface FollowerState {
   distance: number;
@@ -18,6 +29,11 @@ export interface UsePathFollowerOptions {
   speed: number;
   mode?: EndOfPathInstruction;
   initialDistance?: number;
+}
+
+export interface UsePathCartOptions extends UsePathFollowerOptions {
+  orientationMode?: CartOrientationMode;
+  positionOffset?: Vec3;
 }
 
 export interface UseDollyCameraOptions extends UsePathFollowerOptions {
@@ -67,6 +83,8 @@ const WORLD_UP = new Vector3(0, 1, 0);
 const WORLD_RIGHT = new Vector3(1, 0, 0);
 const EPSILON = 1e-6;
 
+const _followerCart = createPathCart();
+
 export function updateFollowerState(
   state: FollowerState,
   speed: number,
@@ -74,9 +92,11 @@ export function updateFollowerState(
   path: VertexPath,
   mode: EndOfPathInstruction
 ): FollowerState {
-  const nextDistance = state.distance + speed * deltaSeconds;
+  _followerCart.distance = state.distance;
+  _followerCart.speed = speed;
+  _followerCart.endOfPathInstruction = mode;
   return {
-    distance: path.resolveDistance(nextDistance, mode)
+    distance: advanceCartDistance(path, _followerCart, deltaSeconds)
   };
 }
 
@@ -257,6 +277,62 @@ export function usePathFollower(options: UsePathFollowerOptions): {
   }, [options.initialDistance]);
 
   return { state, step, reset };
+}
+
+/**
+ * A cart riding the path: the generic motion primitive for anything that
+ * follows a rail — props, vehicles, and (in later phases) virtual camera
+ * bodies. step() advances live; sampleAt() is pure random access for
+ * scrubbing. Apply frames with applyCartFrameToObject from the three entry.
+ */
+export function usePathCart(options: UsePathCartOptions): {
+  cart: MutableRefObject<PathCart>;
+  step: (deltaSeconds: number) => CartFrame;
+  sampleAt: (distance?: number) => CartFrame;
+  reset: (distance?: number) => void;
+} {
+  const cart = useRef<PathCart>(
+    createPathCart({
+      distance: options.initialDistance ?? 0,
+      speed: options.speed,
+      endOfPathInstruction: options.mode ?? EndOfPathInstruction.Loop,
+      orientationMode: options.orientationMode ?? "path-frame",
+      ...(options.positionOffset !== undefined && { positionOffset: options.positionOffset })
+    })
+  );
+
+  const syncOptions = useCallback(() => {
+    const current = cart.current;
+    current.speed = options.speed;
+    current.endOfPathInstruction = options.mode ?? EndOfPathInstruction.Loop;
+    current.orientationMode = options.orientationMode ?? "path-frame";
+    if (options.positionOffset !== undefined) {
+      current.positionOffset = options.positionOffset;
+    }
+  }, [options.mode, options.orientationMode, options.positionOffset, options.speed]);
+
+  const step = useCallback(
+    (deltaSeconds: number) => {
+      syncOptions();
+      cart.current.distance = advanceCartDistance(options.path, cart.current, deltaSeconds);
+      return sampleCartFrame(options.path, cart.current);
+    },
+    [options.path, syncOptions]
+  );
+
+  const sampleAt = useCallback(
+    (distance?: number) => {
+      syncOptions();
+      return sampleCartFrame(options.path, cart.current, distance);
+    },
+    [options.path, syncOptions]
+  );
+
+  const reset = useCallback((distance = options.initialDistance ?? 0) => {
+    cart.current.distance = distance;
+  }, [options.initialDistance]);
+
+  return { cart, step, sampleAt, reset };
 }
 
 export function useDollyCamera(options: UseDollyCameraOptions): {

@@ -14,10 +14,12 @@ import {
   applyScreenComposerAim,
   createScreenComposerState,
   samplePathAtDistance,
+  usePathCart,
   usePathFollower
 } from "@huma/path-creator/r3f";
 import {
   activateVirtualCameraBrain,
+  applyCartFrameToObject,
   applyVirtualCameraBrain,
   captureVirtualCameraSnapshot,
   createVirtualCameraBrainState,
@@ -34,6 +36,7 @@ import {
   PerspectiveCamera,
   Quaternion,
   Vector3,
+  type Group,
   type Mesh
 } from "three";
 
@@ -445,6 +448,38 @@ function applyCameraAim(
   camera.lookAt(target.x, target.y, target.z);
 }
 
+const CART_RIDER_OFFSET = { x: 0.35, y: 0.12, z: 0 };
+const CART_RIDER_SPEED = 0.8;
+
+function CartRiderProp({ path, isClosed }: { path: VertexPath; isClosed: boolean }) {
+  const groupRef = useRef<Group>(null);
+  const { step } = usePathCart({
+    path,
+    speed: CART_RIDER_SPEED,
+    mode: isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Reverse,
+    orientationMode: "path-frame",
+    positionOffset: CART_RIDER_OFFSET
+  });
+
+  useFrame((_, delta) => {
+    if (!groupRef.current) return;
+    applyCartFrameToObject(groupRef.current, step(delta));
+  });
+
+  return (
+    <group ref={groupRef}>
+      <mesh>
+        <boxGeometry args={[0.16, 0.08, 0.24]} />
+        <meshStandardMaterial color="#eab308" emissive="#eab308" emissiveIntensity={0.15} />
+      </mesh>
+      <mesh position={[0, 0, 0.16]} rotation={[Math.PI / 2, 0, 0]}>
+        <coneGeometry args={[0.05, 0.1, 12]} />
+        <meshStandardMaterial color="#fde047" emissive="#fde047" emissiveIntensity={0.25} />
+      </mesh>
+    </group>
+  );
+}
+
 function Scene({
   bezierPath,
   vertexPath,
@@ -456,6 +491,7 @@ function Scene({
   composerSettings,
   debugPreview,
   debugFrustum,
+  showCartRider,
   selectedHandleIndex,
   selectedMidpointIndex,
   anchorScales,
@@ -491,6 +527,7 @@ function Scene({
   composerSettings: ComposerSettings;
   debugPreview: boolean;
   debugFrustum: boolean;
+  showCartRider: boolean;
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
   anchorScales: number[];
@@ -1237,6 +1274,8 @@ function Scene({
           </group>
         );
       })}
+
+      {showCartRider ? <CartRiderProp path={vertexPath} isClosed={bezierPath.isClosed} /> : null}
 
       {debugFrustum ? <primitive object={frustumHelper} /> : null}
       {debugPreview ? (
@@ -2098,6 +2137,7 @@ export function App() {
   const [aimMode, setAimMode] = useState<CameraAimMode>("screen-composer");
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
+  const [showCartRider, setShowCartRider] = useState(false);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>([]);
@@ -2501,6 +2541,15 @@ export function App() {
             <span style={{ marginLeft: 6 }}>Show rig frustum</span>
           </label>
 
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={showCartRider}
+              onChange={(e) => setShowCartRider(e.target.checked)}
+            />
+            <span style={{ marginLeft: 6 }}>Show cart rider prop</span>
+          </label>
+
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
             Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
           </div>
@@ -2588,6 +2637,7 @@ export function App() {
           composerSettings={composerSettings}
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
+          showCartRider={showCartRider}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
           anchorScales={anchorScales}

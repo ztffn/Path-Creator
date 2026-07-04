@@ -1,5 +1,5 @@
-import { Quaternion, Vector3, type Camera } from "three";
-import { PathSpace, type Vec3, type VertexPath, vec3 } from "../core";
+import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
+import { PathSpace, type CartFrame, type Vec3, type VertexPath, vec3 } from "../core";
 
 export interface MeshBuffers {
   positions: number[];
@@ -82,6 +82,27 @@ interface LensCamera extends Camera {
   top?: number;
   bottom?: number;
   updateProjectionMatrix?: () => void;
+}
+
+const _cartRight = new Vector3();
+const _cartUp = new Vector3();
+const _cartForward = new Vector3();
+const _cartMatrix = new Matrix4();
+
+/**
+ * Places an object at a cart frame: position with rail offset applied,
+ * orientation from the frame basis with the object's +Z as forward
+ * (same convention as applySampleToObject).
+ */
+export function applyCartFrameToObject(object: Object3D, frame: CartFrame): void {
+  object.position.set(frame.position.x, frame.position.y, frame.position.z);
+
+  _cartRight.set(frame.right.x, frame.right.y, frame.right.z);
+  _cartUp.set(frame.up.x, frame.up.y, frame.up.z);
+  _cartForward.set(frame.forward.x, frame.forward.y, frame.forward.z);
+  _cartMatrix.makeBasis(_cartRight, _cartUp, _cartForward);
+  object.quaternion.setFromRotationMatrix(_cartMatrix);
+  object.up.copy(_cartUp);
 }
 
 const ROAD_TRIANGLE_MAP = [0, 8, 1, 1, 8, 9] as const;
