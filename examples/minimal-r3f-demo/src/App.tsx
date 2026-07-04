@@ -53,6 +53,7 @@ import {
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { TimelineLanes } from "./TimelineLanes";
 import {
   CameraHelper,
   Euler,
@@ -3140,6 +3141,20 @@ export function App() {
           driving={timelineActive}
           onTransport={() => setPipDriver("timeline")}
         />
+        {demoTimeline ? (
+          <TimelineLanes
+            timeline={demoTimeline}
+            shotNames={new Map(virtualCameras.map((vcam) => [vcam.id, vcam.name]))}
+            playerRef={timelinePlayerRef}
+            onShotDuration={(vcamId, durationSeconds) =>
+              updateVirtualCameraShot(vcamId, { shotDurationSeconds: durationSeconds })
+            }
+            onSeek={(time) => {
+              seekTimelinePlayer(timelinePlayerRef.current, time);
+              setPipDriver("timeline");
+            }}
+          />
+        ) : null}
         <button
           onClick={() => setSettingsOpen((open) => !open)}
           style={{ width: "100%" }}
