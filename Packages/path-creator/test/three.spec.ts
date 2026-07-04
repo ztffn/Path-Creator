@@ -13,6 +13,7 @@ import {
   createVirtualCameraBrainState,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
+  applyVirtualCameraNoise,
   resolveVirtualCameraDefinition,
   resolveVirtualCameraTransition,
   retargetVirtualCameraBrain,
@@ -334,5 +335,90 @@ describe("retargetVirtualCameraBrain", () => {
     retargetVirtualCameraBrain(brain, { previous: poseAt(4) });
     updateToCompletion(brain, 1);
     expect(brain.live?.position.x).toBeCloseTo(7);
+  });
+});
+
+describe("virtual camera noise channel", () => {
+  const base: VirtualCameraSnapshot = {
+    position: { x: 0, y: 0, z: 0 },
+    quaternion: { x: 0, y: 0, z: 0, w: 1 }
+  };
+
+  it("is deterministic for identical settings and time", () => {
+    const noise = { seed: 7, positionAmplitude: 0.5, rotationAmplitudeDeg: 2 };
+    const a = applyVirtualCameraNoise(base, noise, 1.234);
+    const b = applyVirtualCameraNoise(base, noise, 1.234);
+    expect(a).toEqual(b);
+  });
+
+  it("varies over time and by seed", () => {
+    const noise = { seed: 7, positionAmplitude: 0.5 };
+    const t0 = applyVirtualCameraNoise(base, noise, 0.2);
+    const t1 = applyVirtualCameraNoise(base, noise, 1.7);
+    const otherSeed = applyVirtualCameraNoise(base, { ...noise, seed: 8 }, 0.2);
+    expect(t0.position).not.toEqual(t1.position);
+    expect(t0.position).not.toEqual(otherSeed.position);
+  });
+
+  it("stays within the position amplitude", () => {
+    const noise = { positionAmplitude: 0.25 };
+    for (let i = 0; i < 50; i += 1) {
+      const shaken = applyVirtualCameraNoise(base, noise, i * 0.13);
+      expect(Math.abs(shaken.position.x)).toBeLessThanOrEqual(0.25);
+      expect(Math.abs(shaken.position.y)).toBeLessThanOrEqual(0.25);
+      expect(Math.abs(shaken.position.z)).toBeLessThanOrEqual(0.25);
+    }
+  });
+
+  it("leaves the snapshot unchanged at zero amplitude", () => {
+    const shaken = applyVirtualCameraNoise(base, { seed: 3 }, 2.5);
+    expect(shaken.position).toEqual(base.position);
+    expect(shaken.quaternion).toEqual(base.quaternion);
+  });
+
+  it("resolves through the definition with context time", () => {
+    const definition = {
+      id: "v",
+      body: {
+        type: "static" as const,
+        position: { x: 0, y: 0, z: 0 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 }
+      },
+      noise: { seed: 5, positionAmplitude: 0.3 }
+    };
+    const a = resolveVirtualCameraDefinition(definition, { elapsedSeconds: 0.5 });
+    const b = resolveVirtualCameraDefinition(definition, { elapsedSeconds: 2.5 });
+    expect(a?.position).not.toEqual(b?.position);
+  });
+});
+
+describe("dutch lens", () => {
+  it("rolls the camera around the view axis", () => {
+    const camera = new PerspectiveCamera();
+    applyVirtualCameraSnapshot(camera, {
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 },
+      lens: { dutchDeg: 90 }
+    });
+
+    const up = new Vector3(0, 1, 0).applyQuaternion(camera.quaternion);
+    expect(Math.abs(up.y)).toBeCloseTo(0, 5);
+    const look = new Vector3(0, 0, -1).applyQuaternion(camera.quaternion);
+    expect(look.z).toBeCloseTo(-1, 5);
+  });
+
+  it("blends dutch between lenses, treating absence as zero", () => {
+    const from: VirtualCameraSnapshot = {
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 },
+      lens: { fov: 50 }
+    };
+    const to: VirtualCameraSnapshot = {
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 },
+      lens: { fov: 50, dutchDeg: 20 }
+    };
+    const blended = blendVirtualCameraSnapshots(from, to, 0.5, { curve: "linear" });
+    expect(blended.lens?.dutchDeg).toBeCloseTo(10);
   });
 });

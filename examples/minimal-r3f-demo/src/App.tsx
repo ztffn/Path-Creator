@@ -34,6 +34,7 @@ import {
   resolveVirtualCameraDefinition,
   retargetVirtualCameraBrain,
   type VirtualCameraBlendCurve,
+  type VirtualCameraNoiseSettings,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
@@ -79,11 +80,33 @@ type ComposerSettings = {
   centerOnActivate: boolean;
 };
 
+type DemoNoisePreset = "off" | "subtle" | "rough";
+
+const NOISE_PRESETS: Record<DemoNoisePreset, VirtualCameraNoiseSettings | undefined> = {
+  off: undefined,
+  subtle: {
+    seed: 11,
+    positionAmplitude: 0.03,
+    positionFrequency: 0.9,
+    rotationAmplitudeDeg: 0.6,
+    rotationFrequencyDeg: 0.7
+  },
+  rough: {
+    seed: 23,
+    positionAmplitude: 0.12,
+    positionFrequency: 1.8,
+    rotationAmplitudeDeg: 2.4,
+    rotationFrequencyDeg: 1.6
+  }
+};
+
 type DemoVirtualCamera = {
   id: string;
   name: string;
   bodyType: "static" | "cart";
   trackTargetId: string | null;
+  noisePreset: DemoNoisePreset;
+  dutchDeg: number;
   snapshot: VirtualCameraSnapshot;
   poseSource: CameraPoseSource;
   aimMode: CameraAimMode;
@@ -615,8 +638,18 @@ function Scene({
   const lookTargetRef = useRef<Mesh>(null);
   useTrackingTarget(targetRegistry, "follower", followerRef, "Follower Sphere");
   useTrackingTarget(targetRegistry, "look-ball", lookTargetRef, "Look Target Ball");
-  const resolveDemoVirtualCamera = (vcam: DemoVirtualCamera): VirtualCameraSnapshot => {
-    if (vcam.bodyType !== "cart" && !vcam.trackTargetId) return vcam.snapshot;
+  const resolveDemoVirtualCamera = (
+    vcam: DemoVirtualCamera,
+    elapsedSeconds: number
+  ): VirtualCameraSnapshot => {
+    const noise = NOISE_PRESETS[vcam.noisePreset];
+    if (vcam.bodyType !== "cart" && !vcam.trackTargetId && !noise && !vcam.dutchDeg) {
+      return vcam.snapshot;
+    }
+    const lens = {
+      ...vcam.snapshot.lens,
+      ...(vcam.dutchDeg !== 0 && { dutchDeg: vcam.dutchDeg })
+    };
     const resolved = resolveVirtualCameraDefinition(
       {
         id: vcam.id,
@@ -632,12 +665,14 @@ function Scene({
         ...(vcam.trackTargetId && {
           aim: { type: "look-at" as const, target: { targetId: vcam.trackTargetId } }
         }),
-        ...(vcam.snapshot.lens && { lens: vcam.snapshot.lens }),
+        ...(noise && { noise }),
+        ...(Object.keys(lens).length > 0 && { lens }),
         ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
       },
       {
         getCartFrame: (id) => (id === "demo-rail" ? vcamCartFrameRef.current : null),
-        getTargetPosition: (id) => targetRegistry.resolve(id)
+        getTargetPosition: (id) => targetRegistry.resolve(id),
+        elapsedSeconds
       }
     );
     return resolved ?? vcam.snapshot;
@@ -871,7 +906,7 @@ function Scene({
         composerState.current = createScreenComposerState();
         activateVirtualCameraBrain(
           virtualCameraBrainRef.current,
-          resolveDemoVirtualCamera(virtualCameraActivation.to),
+          resolveDemoVirtualCamera(virtualCameraActivation.to, elapsed),
           {
             durationSeconds: virtualCameraActivation.durationSeconds,
             curve: virtualCameraActivation.curve
@@ -881,9 +916,9 @@ function Scene({
         const liveVcam =
           virtualCameras.find((item) => item.id === virtualCameraActivation.to.id) ??
           virtualCameraActivation.to;
-        if (liveVcam.bodyType === "cart" || liveVcam.trackTargetId) {
+        if (liveVcam.bodyType === "cart" || liveVcam.trackTargetId || liveVcam.noisePreset !== "off") {
           retargetVirtualCameraBrain(virtualCameraBrainRef.current, {
-            target: resolveDemoVirtualCamera(liveVcam)
+            target: resolveDemoVirtualCamera(liveVcam, elapsed)
           });
         }
       }
@@ -911,7 +946,7 @@ function Scene({
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
       virtualCameraBrainRef.current = createVirtualCameraBrainState(
-        resolveDemoVirtualCamera(selectedVirtualCamera)
+        resolveDemoVirtualCamera(selectedVirtualCamera, elapsed)
       );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
     } else if (driveMainCamera && !isTransforming) {
@@ -2090,7 +2125,7 @@ function VirtualCameraPanel({
   onDelete,
   onRelease,
   trackTargets,
-  onSetTrackTarget
+  onUpdateShot
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
@@ -2109,7 +2144,10 @@ function VirtualCameraPanel({
   onDelete: (id: string) => void;
   onRelease: () => void;
   trackTargets: RegisteredTarget[];
-  onSetTrackTarget: (id: string, targetId: string | null) => void;
+  onUpdateShot: (
+    id: string,
+    patch: Partial<Pick<DemoVirtualCamera, "trackTargetId" | "noisePreset" | "dutchDeg">>
+  ) => void;
 }) {
   return (
     <div
@@ -2269,7 +2307,7 @@ function VirtualCameraPanel({
                     <select
                       value={camera.trackTargetId ?? ""}
                       onChange={(event) =>
-                        onSetTrackTarget(camera.id, event.target.value || null)
+                        onUpdateShot(camera.id, { trackTargetId: event.target.value || null })
                       }
                     >
                       <option value="">Body aim (none)</option>
@@ -2279,6 +2317,44 @@ function VirtualCameraPanel({
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <label
+                    onClick={(event) => event.stopPropagation()}
+                    style={{
+                      gridColumn: "1 / -1",
+                      display: "grid",
+                      gridTemplateColumns: "48px 1fr 44px 52px",
+                      alignItems: "center",
+                      gap: 6,
+                      fontSize: 11,
+                      color: "#94a3b8"
+                    }}
+                  >
+                    <span>Noise</span>
+                    <select
+                      value={camera.noisePreset}
+                      onChange={(event) =>
+                        onUpdateShot(camera.id, {
+                          noisePreset: event.target.value as DemoNoisePreset
+                        })
+                      }
+                    >
+                      <option value="off">Off</option>
+                      <option value="subtle">Subtle handheld</option>
+                      <option value="rough">Rough handheld</option>
+                    </select>
+                    <span style={{ textAlign: "right" }}>Dutch</span>
+                    <input
+                      type="number"
+                      value={camera.dutchDeg}
+                      min={-45}
+                      max={45}
+                      step={5}
+                      style={{ width: "100%" }}
+                      onChange={(event) =>
+                        onUpdateShot(camera.id, { dutchDeg: Number(event.target.value) || 0 })
+                      }
+                    />
                   </label>
                 </div>
               );
@@ -2470,6 +2546,8 @@ export function App() {
           name,
           bodyType: "static" as const,
           trackTargetId: null,
+          noisePreset: "off" as const,
+          dutchDeg: 0,
           snapshot: {
             ...snapshot,
             name,
@@ -2494,6 +2572,8 @@ export function App() {
         name,
         bodyType: "cart" as const,
         trackTargetId: null,
+        noisePreset: "off" as const,
+        dutchDeg: 0,
         snapshot: {
           name,
           position: { x: 0, y: 0, z: 0 },
@@ -2529,9 +2609,12 @@ export function App() {
     setVirtualCameraActivation(activation);
   }
 
-  function setVirtualCameraTrackTarget(id: string, targetId: string | null): void {
+  function updateVirtualCameraShot(
+    id: string,
+    patch: Partial<Pick<DemoVirtualCamera, "trackTargetId" | "noisePreset" | "dutchDeg">>
+  ): void {
     setVirtualCameras((current) =>
-      current.map((camera) => (camera.id === id ? { ...camera, trackTargetId: targetId } : camera))
+      current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
     );
   }
 
@@ -2805,7 +2888,7 @@ export function App() {
           onCapture={captureVirtualCamera}
           onAddCart={addCartVirtualCamera}
           trackTargets={registeredTargets}
-          onSetTrackTarget={setVirtualCameraTrackTarget}
+          onUpdateShot={updateVirtualCameraShot}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
           onDelete={deleteVirtualCamera}

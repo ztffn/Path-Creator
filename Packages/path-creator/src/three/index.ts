@@ -21,6 +21,7 @@ export interface VirtualCameraDefinition {
   name?: string;
   body: VirtualCameraBodyDefinition;
   aim?: VirtualCameraAimDefinition;
+  noise?: VirtualCameraNoiseSettings;
   lens?: VirtualCameraLens;
   settings?: Record<string, number>;
 }
@@ -28,6 +29,8 @@ export interface VirtualCameraDefinition {
 export interface VirtualCameraResolveContext {
   getCartFrame?: (cartId: string) => CartFrame | null;
   getTargetPosition?: (targetId: string) => Vec3 | null;
+  /** Clock feeding the noise stage; same time always yields the same pose. */
+  elapsedSeconds?: number;
 }
 
 export interface MeshBuffers {
@@ -62,6 +65,20 @@ export interface VirtualCameraLens {
   near?: number;
   far?: number;
   orthographicSize?: number;
+  /** Roll around the view axis in degrees (positive tilts the horizon CW). */
+  dutchDeg?: number;
+}
+
+export interface VirtualCameraNoiseSettings {
+  seed?: number;
+  /** Camera-local position wobble amplitude in scene units (scalar or per-axis). */
+  positionAmplitude?: number | Vec3;
+  /** Position wobble frequency in Hz (scalar or per-axis; default 1). */
+  positionFrequency?: number | Vec3;
+  /** Local pitch/yaw/roll wobble amplitude in degrees (scalar or per-axis). */
+  rotationAmplitudeDeg?: number | Vec3;
+  /** Rotation wobble frequency in Hz (scalar or per-axis; default 1). */
+  rotationFrequencyDeg?: number | Vec3;
 }
 
 export interface VirtualCameraSnapshot {
@@ -441,11 +458,115 @@ export function resolveVirtualCameraDefinition(
     }
   }
 
-  const snapshot: VirtualCameraSnapshot = { position, quaternion };
+  let snapshot: VirtualCameraSnapshot = { position, quaternion };
   if (definition.name !== undefined) snapshot.name = definition.name;
   if (definition.lens) snapshot.lens = { ...definition.lens };
   if (definition.settings) snapshot.settings = { ...definition.settings };
+  if (definition.noise) {
+    snapshot = applyVirtualCameraNoise(snapshot, definition.noise, context.elapsedSeconds ?? 0);
+  }
   return snapshot;
+}
+
+const _noisePosition = new Vector3();
+const _noiseQuaternion = new Quaternion();
+const _noiseEuler = new Vector3();
+const _noiseRotation = new Quaternion();
+const DEG_TO_RAD = Math.PI / 180;
+
+function noiseHash(seed: number, index: number): number {
+  let h = Math.imul(index ^ seed, 0x9e3779b1);
+  h ^= h >>> 15;
+  h = Math.imul(h, 0x85ebca77);
+  h ^= h >>> 13;
+  return ((h >>> 0) / 0xffffffff) * 2 - 1;
+}
+
+/** Seeded 1D value noise in [-1, 1]; two octaves for a handheld feel. */
+function valueNoise1D(seed: number, t: number): number {
+  let sum = 0;
+  let amplitude = 0.75;
+  let frequency = 1;
+  for (let octave = 0; octave < 2; octave += 1) {
+    const x = t * frequency;
+    const i = Math.floor(x);
+    const f = x - i;
+    const s = f * f * (3 - 2 * f);
+    const seedO = seed + octave * 7919;
+    sum += (noiseHash(seedO, i) * (1 - s) + noiseHash(seedO, i + 1) * s) * amplitude;
+    amplitude *= 0.35;
+    frequency *= 2.7;
+  }
+  return sum;
+}
+
+function noiseAxis(value: number | Vec3 | undefined, axis: "x" | "y" | "z", fallback = 0): number {
+  if (value === undefined) return fallback;
+  return typeof value === "number" ? value : value[axis];
+}
+
+/**
+ * Post-aim noise stage: seeded procedural wobble applied in camera-local
+ * space. A pure function of (settings, timeSeconds) — scrubbing a timeline
+ * to the same time reproduces the identical shake.
+ */
+export function applyVirtualCameraNoise(
+  snapshot: VirtualCameraSnapshot,
+  noise: VirtualCameraNoiseSettings,
+  timeSeconds: number
+): VirtualCameraSnapshot {
+  const seed = noise.seed ?? 1;
+  _noiseQuaternion.set(
+    snapshot.quaternion.x,
+    snapshot.quaternion.y,
+    snapshot.quaternion.z,
+    snapshot.quaternion.w
+  );
+
+  _noisePosition.set(0, 0, 0);
+  for (const axis of ["x", "y", "z"] as const) {
+    const amplitude = noiseAxis(noise.positionAmplitude, axis);
+    if (amplitude === 0) continue;
+    const frequency = noiseAxis(noise.positionFrequency, axis, 1);
+    const axisSeed = seed + (axis === "x" ? 11 : axis === "y" ? 211 : 3011);
+    _noisePosition[axis] = valueNoise1D(axisSeed, timeSeconds * frequency) * amplitude;
+  }
+  _noisePosition.applyQuaternion(_noiseQuaternion);
+
+  _noiseEuler.set(0, 0, 0);
+  for (const axis of ["x", "y", "z"] as const) {
+    const amplitude = noiseAxis(noise.rotationAmplitudeDeg, axis);
+    if (amplitude === 0) continue;
+    const frequency = noiseAxis(noise.rotationFrequencyDeg, axis, 1);
+    const axisSeed = seed + (axis === "x" ? 51_31 : axis === "y" ? 71_23 : 91_11);
+    _noiseEuler[axis] = valueNoise1D(axisSeed, timeSeconds * frequency) * amplitude * DEG_TO_RAD;
+  }
+  _noiseRotation.set(
+    Math.sin(_noiseEuler.x / 2),
+    0,
+    0,
+    Math.cos(_noiseEuler.x / 2)
+  );
+  _noiseQuaternion.multiply(_noiseRotation);
+  _noiseRotation.set(0, Math.sin(_noiseEuler.y / 2), 0, Math.cos(_noiseEuler.y / 2));
+  _noiseQuaternion.multiply(_noiseRotation);
+  _noiseRotation.set(0, 0, Math.sin(_noiseEuler.z / 2), Math.cos(_noiseEuler.z / 2));
+  _noiseQuaternion.multiply(_noiseRotation);
+
+  return {
+    ...snapshot,
+    position: {
+      x: snapshot.position.x + _noisePosition.x,
+      y: snapshot.position.y + _noisePosition.y,
+      z: snapshot.position.z + _noisePosition.z
+    },
+    quaternion: {
+      x: _noiseQuaternion.x,
+      y: _noiseQuaternion.y,
+      z: _noiseQuaternion.z,
+      w: _noiseQuaternion.w
+    }
+  };
 }
 
 /**
@@ -501,6 +622,11 @@ export function applyVirtualCameraSnapshot(camera: Camera, snapshot: VirtualCame
   );
 
   if (snapshot.lens) {
+    if (snapshot.lens.dutchDeg) {
+      const half = (-snapshot.lens.dutchDeg * DEG_TO_RAD) / 2;
+      _noiseRotation.set(0, 0, Math.sin(half), Math.cos(half));
+      camera.quaternion.multiply(_noiseRotation);
+    }
     applyVirtualCameraLens(camera, snapshot.lens);
   }
 }
@@ -792,12 +918,14 @@ function blendVirtualCameraLens(
   const near = blendOptionalNumber(from?.near, to?.near, alpha);
   const far = blendOptionalNumber(from?.far, to?.far, alpha);
   const orthographicSize = blendOptionalNumber(from?.orthographicSize, to?.orthographicSize, alpha);
+  const dutchDeg = blendOptionalNumber(from?.dutchDeg ?? 0, to?.dutchDeg ?? 0, alpha);
 
   if (fov !== undefined) lens.fov = fov;
   if (zoom !== undefined) lens.zoom = zoom;
   if (near !== undefined) lens.near = near;
   if (far !== undefined) lens.far = far;
   if (orthographicSize !== undefined) lens.orthographicSize = orthographicSize;
+  if (dutchDeg !== undefined && dutchDeg !== 0) lens.dutchDeg = dutchDeg;
 
   return Object.keys(lens).length > 0 ? lens : undefined;
 }
