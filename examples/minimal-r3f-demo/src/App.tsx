@@ -2673,6 +2673,12 @@ export function App() {
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
+  // Key the show only on timing fields so gizmo drags (offset/pose edits at
+  // pointer rate) don't rebuild the timeline object every frame — the lane
+  // editor treats a new editorData as a full re-init.
+  const shotTimingKey = virtualCameras
+    .map((vcam) => `${vcam.id}:${vcam.shotDurationSeconds}:${vcam.shotBlendSeconds}`)
+    .join("|");
   const demoTimeline = useMemo(() => {
     if (virtualCameras.length === 0) return null;
     let cursor = 0;
@@ -2696,7 +2702,9 @@ export function App() {
       duration: cursor,
       tracks: [{ type: "camera", id: "camera-track", blocks }]
     });
-  }, [virtualCameras]);
+    // shotTimingKey covers every field this memo reads from virtualCameras.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [shotTimingKey]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   const pipLabel = timelineActive
     ? "Timeline"

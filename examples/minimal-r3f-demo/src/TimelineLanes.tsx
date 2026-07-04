@@ -9,8 +9,31 @@ import {
 } from "@xzdarcy/react-timeline-editor";
 import type { TimelineRow } from "@xzdarcy/timeline-engine";
 import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
-import { useEffect, useMemo, useRef } from "react";
+import { Component, useEffect, useMemo, useRef, type ReactNode } from "react";
 import type { Timeline, TimelinePlayer } from "@huma/path-creator/timeline";
+
+/**
+ * Quarantines the third-party lane editor: a crash inside it must not
+ * unmount the app (and with it the WebGL canvas).
+ */
+class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+  state = { failed: false };
+
+  static getDerivedStateFromError(): { failed: boolean } {
+    return { failed: true };
+  }
+
+  render() {
+    if (this.state.failed) {
+      return (
+        <div style={{ padding: 8, fontSize: 12, color: "#fca5a5" }}>
+          Lane editor crashed — spike fail signal. See console.
+        </div>
+      );
+    }
+    return this.props.children;
+  }
+}
 
 const SHOT_EFFECTS = { shot: { id: "shot", name: "Shot" } };
 
@@ -50,10 +73,18 @@ export function TimelineLanes({
   );
 
   // Slave the lane cursor to our player clock; their engine never runs.
+  // setTime forceUpdates their tree, so only call it when the cursor
+  // actually moved.
   useEffect(() => {
     let raf = 0;
     const sync = () => {
-      laneStateRef.current?.setTime(Math.max(0, playerRef.current.time));
+      const laneState = laneStateRef.current;
+      if (laneState) {
+        const time = Math.max(0, playerRef.current.time);
+        if (Math.abs(laneState.getTime() - time) > 0.0005) {
+          laneState.setTime(time);
+        }
+      }
       raf = requestAnimationFrame(sync);
     };
     raf = requestAnimationFrame(sync);
@@ -61,8 +92,9 @@ export function TimelineLanes({
   }, [playerRef]);
 
   return (
-    <div style={{ width: "100%", borderRadius: 8, overflow: "hidden" }}>
-      <TimelineLaneEditor
+    <LaneErrorBoundary>
+      <div style={{ width: "100%", borderRadius: 8, overflow: "hidden" }}>
+        <TimelineLaneEditor
         ref={laneStateRef}
         editorData={editorData}
         effects={SHOT_EFFECTS}
@@ -109,7 +141,8 @@ export function TimelineLanes({
             {shotNames.get(action.id) ?? action.id}
           </div>
         )}
-      />
-    </div>
+        />
+      </div>
+    </LaneErrorBoundary>
   );
 }
