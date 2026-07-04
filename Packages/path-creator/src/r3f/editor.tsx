@@ -11,8 +11,8 @@ import { EDITOR_HELPERS_LAYER } from "../three";
 /**
  * Wraps editor-only visuals. Everything inside renders exclusively on the
  * helper layer, so only cameras that enabled it (editing viewports) see it.
- * Pointer events keep working — the raycaster tests object layers, not the
- * camera's.
+ * useEditorHelpersVisible also enables the layer on the event raycaster,
+ * which defaults to layer 0 — helpers are only interactive in edit mode.
  */
 export function EditorHelpers({
   layer = EDITOR_HELPERS_LAYER,
@@ -46,11 +46,14 @@ export function EditorHelpers({
  */
 export function useEditorHelpersVisible(visible = true, layer = EDITOR_HELPERS_LAYER): void {
   const camera = useThree((state) => state.camera);
+  const raycaster = useThree((state) => state.raycaster);
   useEffect(() => {
     if (!visible) return;
     camera.layers.enable(layer);
+    raycaster.layers.enable(layer);
     return () => {
       camera.layers.disable(layer);
+      raycaster.layers.disable(layer);
     };
-  }, [camera, layer, visible]);
+  }, [camera, layer, raycaster, visible]);
 }
