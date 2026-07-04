@@ -13,7 +13,10 @@ import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
 import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { seekTimelinePlayer, type TimelinePlayer } from "@huma/path-creator/timeline";
 
-const SHOT_EFFECTS = { shot: { id: "shot", name: "Shot" } };
+const SHOT_EFFECTS = {
+  shot: { id: "shot", name: "Shot" },
+  move: { id: "move", name: "Dolly move" }
+};
 const SNAP_SECONDS = 0.25;
 
 export interface LaneShot {
@@ -21,6 +24,16 @@ export interface LaneShot {
   name: string;
   start: number;
   end: number;
+}
+
+export interface LaneDollyMove {
+  /** Shot that owns this move (clicking the move selects it). */
+  shotId: string;
+  dollyId: string;
+  dollyName: string;
+  start: number;
+  end: number;
+  label: string;
 }
 
 /**
@@ -48,6 +61,7 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
 
 export function TimelineLanes({
   shots,
+  dollyMoves,
   selectedShotId,
   playerRef,
   duration,
@@ -58,6 +72,7 @@ export function TimelineLanes({
   onTransport
 }: {
   shots: LaneShot[];
+  dollyMoves: LaneDollyMove[];
   selectedShotId: string | null;
   playerRef: { current: TimelinePlayer };
   duration: number;
@@ -71,7 +86,19 @@ export function TimelineLanes({
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
 
-  const timingKey = shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|");
+  const timingKey =
+    shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|") +
+    dollyMoves.map((move) => `${move.shotId}:${move.dollyId}:${move.start}:${move.end}`).join("|");
+  const dollyLanes = useMemo(() => {
+    const lanes = new Map<string, { name: string; moves: LaneDollyMove[] }>();
+    for (const move of dollyMoves) {
+      const lane = lanes.get(move.dollyId) ?? { name: move.dollyName, moves: [] };
+      lane.moves.push(move);
+      lanes.set(move.dollyId, lane);
+    }
+    return [...lanes.entries()];
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [timingKey]);
   const editorData = useMemo<TimelineRow[]>(
     () => [
       {
@@ -84,13 +111,27 @@ export function TimelineLanes({
           movable: true,
           flexible: true
         }))
-      }
+      },
+      // Dolly lanes visualize the per-shot rail moves; they are owned by
+      // their shots, so the lane blocks are read-only.
+      ...dollyLanes.map(([dollyId, lane]) => ({
+        id: `dolly-${dollyId}`,
+        actions: lane.moves.map((move) => ({
+          id: `move-${move.shotId}`,
+          start: move.start,
+          end: move.end,
+          effectId: "move",
+          movable: false,
+          flexible: false
+        }))
+      }))
     ],
     // timingKey covers everything this memo reads except names, which render
     // via the shots prop directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [timingKey]
   );
+  const moveLabels = new Map(dollyMoves.map((move) => [`move-${move.shotId}`, move.label]));
 
   // Blend zones: fraction of each clip's width overlapped by the previous
   // clip (in start order), Cinemachine's blend-in region.
@@ -221,14 +262,24 @@ export function TimelineLanes({
               style={{
                 width: 22,
                 display: "flex",
-                alignItems: "flex-end",
-                justifyContent: "center",
-                paddingBottom: 8,
-                fontSize: 14
+                flexDirection: "column",
+                justifyContent: "flex-end",
+                fontSize: 14,
+                textAlign: "center"
               }}
-              title="Shot track"
             >
-              🎥
+              <div style={{ height: 36, lineHeight: "36px" }} title="Shot track">
+                🎥
+              </div>
+              {dollyLanes.map(([dollyId, lane]) => (
+                <div
+                  key={dollyId}
+                  style={{ height: 36, lineHeight: "36px" }}
+                  title={`${lane.name} moves`}
+                >
+                  🛤
+                </div>
+              ))}
             </div>
             <div style={{ flex: 1, minWidth: 0, borderRadius: 6, overflow: "hidden" }}>
               <TimelineLaneEditor
@@ -242,7 +293,7 @@ export function TimelineLanes({
           rowHeight={36}
           autoScroll
           dragLine
-          style={{ width: "100%", height: 84 }}
+          style={{ width: "100%", height: 48 + (1 + dollyLanes.length) * 36 }}
           onActionMoving={({ action, start, end }) =>
             wouldFullyContain(action.id, start, end) ? false : undefined
           }
@@ -266,13 +317,40 @@ export function TimelineLanes({
               }
             }
           }}
-          onClickAction={(_event, { action }) => onSelectShot(action.id)}
+          onClickAction={(_event, { action }) =>
+            onSelectShot(action.id.startsWith("move-") ? action.id.slice(5) : action.id)
+          }
           onClickTimeArea={(time) => {
             onSeek(time);
             return true;
           }}
           onCursorDrag={onSeek}
           getActionRender={(action) => {
+            if (action.effectId === "move") {
+              const ownerSelected = action.id === `move-${selectedShotId}`;
+              return (
+                <div
+                  style={{
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "0 8px",
+                    fontSize: 10,
+                    color: "#cbd5e1",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    borderRadius: 4,
+                    background: ownerSelected ? "rgba(249, 115, 22, 0.22)" : "rgba(148, 163, 184, 0.16)",
+                    border: `1px dashed ${
+                      ownerSelected ? "rgba(249, 115, 22, 0.7)" : "rgba(148, 163, 184, 0.4)"
+                    }`
+                  }}
+                >
+                  {moveLabels.get(action.id) ?? "move"}
+                </div>
+              );
+            }
             const selected = action.id === selectedShotId;
             const blendIn = blendInFractions.get(action.id) ?? 0;
             const base = selected ? "rgba(249, 115, 22, 0.45)" : "rgba(59, 130, 246, 0.35)";

@@ -3195,6 +3195,19 @@ export function App() {
             start: vcam.shotStart,
             end: vcam.shotEnd
           }))}
+          dollyMoves={virtualCameras
+            .filter(
+              (vcam) =>
+                vcam.bodyType === "cart" && vcam.railFrom !== null && vcam.railTo !== null
+            )
+            .map((vcam) => ({
+              shotId: vcam.id,
+              dollyId: vcam.cartId,
+              dollyName: DEMO_DOLLIES.find((dolly) => dolly.id === vcam.cartId)?.name ?? vcam.cartId,
+              start: vcam.shotStart,
+              end: vcam.shotEnd,
+              label: `${vcam.railFrom} → ${vcam.railTo}`
+            }))}
           selectedShotId={selectedVirtualCameraId}
           playerRef={timelinePlayerRef}
           duration={demoTimeline?.duration ?? 0}
