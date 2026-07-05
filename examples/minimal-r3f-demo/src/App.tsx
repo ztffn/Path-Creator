@@ -65,6 +65,7 @@ import {
   vcamDefFromView,
   type DemoNoisePreset,
   type DemoVirtualCamera,
+  type DollyRun,
   type EditorVcam,
   type SceneTarget,
   type ShotTiming
@@ -99,15 +100,7 @@ const DOLLY_PIP_MARGIN = 16;
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
-    | "trackTargetId"
-    | "noisePreset"
-    | "dutchDeg"
-    | "shotStart"
-    | "shotEnd"
-    | "cartOffset"
-    | "cartId"
-    | "railFrom"
-    | "railTo"
+    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotStart" | "shotEnd" | "cartOffset" | "cartId"
   >
 >;
 
@@ -116,7 +109,7 @@ const COMPOSER_UP = new Vector3(0, 1, 0);
 // Fallbacks for a vcam whose sidecar entry is missing (shouldn't happen, but
 // keeps the derived view total). Stable identities, so hoisted out of render.
 const DEFAULT_EDITOR_VCAM: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
-const DEFAULT_SHOT_TIMING: ShotTiming = { start: 0, end: 5, railFrom: null, railTo: null };
+const DEFAULT_SHOT_TIMING: ShotTiming = { start: 0, end: 5 };
 
 // Reframe a camera so the tracked target lands in the composer's screen zones
 // (dead/soft) with damping. Stateful, so it runs on live preview cameras only
@@ -2210,15 +2203,13 @@ function VirtualCameraPanel({
                   {camera.bodyType === "cart" ? (
                     <label
                       onClick={(event) => event.stopPropagation()}
-                      title="Rail distance at shot start/end; empty = free-run at rig speed"
-                      style={shotRowLabelStyle("48px 72px 1fr 14px 1fr")}
+                      title="Which dolly this camera rides; the dolly's motion is authored on its timeline lane"
+                      style={shotRowLabelStyle("48px 1fr")}
                     >
                       <span>Dolly</span>
                       <select
                         value={camera.cartId}
-                        onChange={(event) =>
-                          onUpdateShot(camera.id, { cartId: event.target.value })
-                        }
+                        onChange={(event) => onUpdateShot(camera.id, { cartId: event.target.value })}
                       >
                         {dollies.map((dolly) => (
                           <option key={dolly.id} value={dolly.id}>
@@ -2226,31 +2217,6 @@ function VirtualCameraPanel({
                           </option>
                         ))}
                       </select>
-                      <input
-                        type="number"
-                        placeholder="free"
-                        value={camera.railFrom ?? ""}
-                        step={0.5}
-                        style={{ width: "100%" }}
-                        onChange={(event) =>
-                          onUpdateShot(camera.id, {
-                            railFrom: event.target.value === "" ? null : Number(event.target.value)
-                          })
-                        }
-                      />
-                      <span style={{ textAlign: "center" }}>→</span>
-                      <input
-                        type="number"
-                        placeholder="free"
-                        value={camera.railTo ?? ""}
-                        step={0.5}
-                        style={{ width: "100%" }}
-                        onChange={(event) =>
-                          onUpdateShot(camera.id, {
-                            railTo: event.target.value === "" ? null : Number(event.target.value)
-                          })
-                        }
-                      />
                     </label>
                   ) : null}
                 </div>
@@ -2513,8 +2479,6 @@ export function App() {
           dutchDeg: 0,
           shotStart: index * 5,
           shotEnd: index * 5 + 5,
-          railFrom: null,
-          railTo: null,
           ...vcam
         } as DemoVirtualCamera;
         return { ...base, composerSettings: { ...DEFAULT_COMPOSER_SETTINGS, ...base.composerSettings } };
@@ -2537,13 +2501,11 @@ export function App() {
   );
   const [shotTiming, setShotTiming] = useState<Record<string, ShotTiming>>(() =>
     loadedScene?.shotTiming ??
-    Object.fromEntries(
-      initialShots.map((view) => [
-        view.id,
-        { start: view.shotStart, end: view.shotEnd, railFrom: view.railFrom, railTo: view.railTo }
-      ])
-    )
+    Object.fromEntries(initialShots.map((view) => [view.id, { start: view.shotStart, end: view.shotEnd }]))
   );
+  // Per-dolly run-blocks. From a loaded document (F1+ saves hydrate these from
+  // the cart tracks); pre-format shows start empty and re-author dolly moves.
+  const [dollyRuns, setDollyRuns] = useState<Record<string, DollyRun[]>>(() => loadedScene?.dollyRuns ?? {});
   // The UI-facing view is a pure projection of the authoritative model.
   const virtualCameras = useMemo<DemoVirtualCamera[]>(
     () =>
@@ -2562,13 +2524,14 @@ export function App() {
     vcamDefs,
     editorVcams,
     shotTiming,
+    dollyRuns,
     targets: pointTargets
   };
   useEffect(() => {
     localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
     // currentScene is rebuilt each render from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, paths, activePathId, pointTargets, speed]);
+  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, paths, activePathId, pointTargets, speed]);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -2581,6 +2544,7 @@ export function App() {
     setVcamDefs(scene.vcamDefs);
     setEditorVcams(scene.editorVcams);
     setShotTiming(scene.shotTiming);
+    setDollyRuns(scene.dollyRuns);
     setPointTargets(scene.targets);
     setSelectedVirtualCameraId(null);
     setSelectedPointTargetId(null);
@@ -2619,7 +2583,44 @@ export function App() {
       vcamDefs: [],
       editorVcams: {},
       shotTiming: {},
+      dollyRuns: {},
       targets: []
+    });
+  }
+
+  // Dolly run-block authoring (per cartId). A new run parks-continues from the
+  // previous run's end so it doesn't teleport; the default duration is 3s.
+  function addDollyRun(cartId: string, start: number): void {
+    setDollyRuns((current) => {
+      const runs = current[cartId] ?? [];
+      const from = runs.reduce((last, run) => (run.end <= start ? run.toDistance : last), 0);
+      const run: DollyRun = {
+        id: `run-${cartId}-${Date.now()}`,
+        start,
+        end: start + 3,
+        fromDistance: from,
+        toDistance: from + 1
+      };
+      return { ...current, [cartId]: [...runs, run].sort((a, b) => a.start - b.start) };
+    });
+  }
+
+  function updateDollyRun(cartId: string, runId: string, patch: Partial<DollyRun>): void {
+    setDollyRuns((current) => ({
+      ...current,
+      [cartId]: (current[cartId] ?? [])
+        .map((run) => (run.id === runId ? { ...run, ...patch } : run))
+        .sort((a, b) => a.start - b.start)
+    }));
+  }
+
+  function deleteDollyRun(cartId: string, runId: string): void {
+    setDollyRuns((current) => {
+      const runs = (current[cartId] ?? []).filter((run) => run.id !== runId);
+      const next = { ...current };
+      if (runs.length > 0) next[cartId] = runs;
+      else delete next[cartId];
+      return next;
     });
   }
 
@@ -2685,23 +2686,22 @@ export function App() {
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
-  // Key the show only on timing fields so gizmo drags (offset/pose edits at
+  // Key the show only on timing/run fields so gizmo drags (offset/pose edits at
   // pointer rate) don't rebuild the timeline object every frame — the lane
   // editor treats a new editorData as a full re-init.
   const shotTimingKey = virtualCameras
-    .map(
-      (vcam) =>
-        `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}:${vcam.railFrom ?? ""}:${vcam.railTo ?? ""}`
-    )
+    .map((vcam) => `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}`)
     .join("|");
-  const dollyKey = dollies.map((dolly) => dolly.id).join(",");
+  const dollyRunKey = Object.entries(dollyRuns)
+    .map(([cartId, runs]) => `${cartId}:${runs.map((r) => `${r.start},${r.end},${r.fromDistance},${r.toDistance}`).join(";")}`)
+    .join("|");
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
-  // Keyed on timing so gizmo drags (which change vcamDefs) don't rebuild it.
+  // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.
   const demoTimeline = useMemo(
-    () => (vcamDefs.length === 0 ? null : buildShowTimeline(vcamDefs, shotTiming, dollies)),
+    () => (vcamDefs.length === 0 ? null : buildShowTimeline(vcamDefs, shotTiming, dollyRuns)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [shotTimingKey, dollyKey]
+    [shotTimingKey, dollyRunKey]
   );
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
@@ -2859,7 +2859,7 @@ export function App() {
     setEditorVcams((current) => ({ ...current, [id]: editor }));
     setShotTiming((current) => ({
       ...current,
-      [id]: { start: shotStart, end: shotStart + 5, railFrom: null, railTo: null }
+      [id]: { start: shotStart, end: shotStart + 5 }
     }));
   }
 
@@ -2902,22 +2902,12 @@ export function App() {
   // shotTiming sidecar, noise preset to the editor sidecar (+ expanded onto the
   // definition), and aim/dutch/cart fields onto the definition itself.
   function updateVirtualCameraShot(id: string, patch: DemoShotPatch): void {
-    if (
-      patch.shotStart !== undefined ||
-      patch.shotEnd !== undefined ||
-      patch.railFrom !== undefined ||
-      patch.railTo !== undefined
-    ) {
+    if (patch.shotStart !== undefined || patch.shotEnd !== undefined) {
       setShotTiming((current) => {
         const prev = current[id] ?? DEFAULT_SHOT_TIMING;
         return {
           ...current,
-          [id]: {
-            start: patch.shotStart ?? prev.start,
-            end: patch.shotEnd ?? prev.end,
-            railFrom: patch.railFrom !== undefined ? patch.railFrom : prev.railFrom,
-            railTo: patch.railTo !== undefined ? patch.railTo : prev.railTo
-          }
+          [id]: { start: patch.shotStart ?? prev.start, end: patch.shotEnd ?? prev.end }
         };
       });
     }
@@ -3143,42 +3133,63 @@ export function App() {
         <SettingsSection title="Dollies">
           <div style={{ display: "grid", gap: 4 }}>
             {dollies.map((dolly) => (
-              <div
-                key={dolly.id}
-                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
-              >
-                <input
-                  type="text"
-                  value={dolly.name}
-                  aria-label="Dolly name"
-                  onChange={(event) => updateDolly(dolly.id, { name: event.target.value })}
-                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
-                />
-                <select
-                  title="Which path this dolly rides"
-                  value={dolly.pathId}
-                  onChange={(event) => updateDolly(dolly.id, { pathId: event.target.value })}
-                >
-                  {paths.map((path) => (
-                    <option key={path.id} value={path.id}>
-                      {path.name}
-                    </option>
-                  ))}
-                </select>
-                <select
-                  title="End-of-rail behavior for this dolly"
-                  value={dolly.endOfPathInstruction}
-                  onChange={(event) =>
-                    updateDolly(dolly.id, {
-                      endOfPathInstruction: event.target.value as EndOfPathInstruction
-                    })
-                  }
-                >
-                  <option value={EndOfPathInstruction.Loop}>Loop</option>
-                  <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
-                  <option value={EndOfPathInstruction.Stop}>Stop</option>
-                </select>
-                <button onClick={() => deleteDolly(dolly.id)}>Del</button>
+              <div key={dolly.id} style={{ display: "grid", gap: 3 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                  <input
+                    type="text"
+                    value={dolly.name ?? ""}
+                    aria-label="Dolly name"
+                    onChange={(event) => updateDolly(dolly.id, { name: event.target.value })}
+                    style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+                  />
+                  <select
+                    title="Which path this dolly rides"
+                    value={dolly.pathId}
+                    onChange={(event) => updateDolly(dolly.id, { pathId: event.target.value })}
+                  >
+                    {paths.map((path) => (
+                      <option key={path.id} value={path.id}>
+                        {path.name}
+                      </option>
+                    ))}
+                  </select>
+                  <select
+                    title="End-of-rail behavior for this dolly"
+                    value={dolly.endOfPathInstruction}
+                    onChange={(event) =>
+                      updateDolly(dolly.id, {
+                        endOfPathInstruction: event.target.value as EndOfPathInstruction
+                      })
+                    }
+                  >
+                    <option value={EndOfPathInstruction.Loop}>Loop</option>
+                    <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
+                    <option value={EndOfPathInstruction.Stop}>Stop</option>
+                  </select>
+                  <button onClick={() => deleteDolly(dolly.id)}>Del</button>
+                </div>
+                {/* Run-blocks: over [start,end] the dolly eases from→to (distance). */}
+                {(dollyRuns[dolly.id] ?? []).map((run) => (
+                  <div
+                    key={run.id}
+                    style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, paddingLeft: 10, color: "#94a3b8" }}
+                  >
+                    <span style={{ width: 26 }}>run</span>
+                    <input type="number" title="start (s)" value={run.start} step={0.25} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { start: Number(event.target.value) })} />
+                    <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { end: Number(event.target.value) })} />
+                    <input type="number" title="from (dist)" value={run.fromDistance} step={0.5} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { fromDistance: Number(event.target.value) })} />
+                    <span>→</span>
+                    <input type="number" title="to (dist)" value={run.toDistance} step={0.5} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { toDistance: Number(event.target.value) })} />
+                    <button title="Delete run" onClick={() => deleteDollyRun(dolly.id, run.id)}>×</button>
+                  </div>
+                ))}
+                <button style={{ fontSize: 11, justifySelf: "start", marginLeft: 10 }} onClick={() => addDollyRun(dolly.id, 0)}>
+                  + run
+                </button>
               </div>
             ))}
             <button onClick={addDolly}>Add Dolly</button>
@@ -3387,19 +3398,16 @@ export function App() {
             start: vcam.shotStart,
             end: vcam.shotEnd
           }))}
-          dollyMoves={virtualCameras
-            .filter(
-              (vcam) =>
-                vcam.bodyType === "cart" && vcam.railFrom !== null && vcam.railTo !== null
-            )
-            .map((vcam) => ({
-              shotId: vcam.id,
-              dollyId: vcam.cartId,
-              dollyName: dollies.find((dolly) => dolly.id === vcam.cartId)?.name ?? vcam.cartId,
-              start: vcam.shotStart,
-              end: vcam.shotEnd,
-              label: `${vcam.railFrom} → ${vcam.railTo}`
-            }))}
+          dollyMoves={Object.entries(dollyRuns).flatMap(([cartId, runs]) =>
+            runs.map((run) => ({
+              shotId: run.id,
+              dollyId: cartId,
+              dollyName: dollies.find((dolly) => dolly.id === cartId)?.name ?? cartId,
+              start: run.start,
+              end: run.end,
+              label: `${run.fromDistance.toFixed(1)} → ${run.toDistance.toFixed(1)}`
+            }))
+          )}
           selectedShotId={selectedVirtualCameraId}
           playerRef={timelinePlayerRef}
           duration={demoTimeline?.duration ?? 0}

@@ -22,6 +22,7 @@ import {
   DEFAULT_COMPOSER_SETTINGS,
   NOISE_PRESETS,
   type DemoNoisePreset,
+  type DollyRun,
   type EditorVcam,
   type SceneTarget,
   type ShotTiming
@@ -37,21 +38,23 @@ export interface DemoScene {
   vcamDefs: VirtualCameraDefinition[];
   editorVcams: Record<string, EditorVcam>;
   shotTiming: Record<string, ShotTiming>;
+  /** Per-dolly (cartId) run-blocks; a dolly absent here free-runs at rig speed. */
+  dollyRuns: Record<string, DollyRun[]>;
   targets: SceneTarget[];
 }
 
 /**
- * Builds the show timeline from shot timing: camera blocks (start/end, with a
+ * Builds the show timeline: camera blocks from shot timing (start/end, with a
  * crossfade blendIn where a shot overlaps its predecessor) and one cart track
- * per dolly whose keys are the rail moves at each cart shot's boundaries.
+ * per dolly whose keys are its authored run-blocks (each run a start/end pair).
  */
 export function buildShowTimeline(
   vcamDefs: VirtualCameraDefinition[],
   shotTiming: Record<string, ShotTiming>,
-  dollies: RigCartDefinition[]
+  dollyRuns: Record<string, DollyRun[]>
 ): RigTimelineDefinition {
   const shots = vcamDefs
-    .map((def) => ({ def, timing: shotTiming[def.id] ?? { start: 0, end: 5, railFrom: null, railTo: null } }))
+    .map((def) => ({ def, timing: shotTiming[def.id] ?? { start: 0, end: 5 } }))
     .sort((a, b) => a.timing.start - b.timing.start);
 
   const blocks: CameraBlock[] = shots.map((shot, index) => {
@@ -66,27 +69,24 @@ export function buildShowTimeline(
     };
   });
 
-  const cartTracks: CartTrack[] = dollies
-    .map((dolly) => ({
+  const cartTracks: CartTrack[] = Object.entries(dollyRuns)
+    .map(([cartId, runs]) => ({
       type: "cart" as const,
-      id: `dolly-track-${dolly.id}`,
-      cartId: dolly.id,
-      keys: shots
-        .filter(
-          (shot) =>
-            shot.def.body.type === "cart" &&
-            shot.def.body.cartId === dolly.id &&
-            shot.timing.railFrom !== null &&
-            shot.timing.railTo !== null
-        )
-        .flatMap((shot) => [
-          { time: shot.timing.start, distance: shot.timing.railFrom ?? 0, easing: "easeInOut" as const },
-          { time: shot.timing.end, distance: shot.timing.railTo ?? 0 }
+      id: `dolly-track-${cartId}`,
+      cartId,
+      keys: [...runs]
+        .sort((a, b) => a.start - b.start)
+        .flatMap((run) => [
+          { time: run.start, distance: run.fromDistance, easing: "easeInOut" as const },
+          { time: run.end, distance: run.toDistance }
         ])
     }))
     .filter((track) => track.keys.length > 0);
 
-  const duration = shots.length ? Math.max(...shots.map((shot) => shot.timing.end)) : 0;
+  const cartEnd = Object.values(dollyRuns)
+    .flat()
+    .reduce((max, run) => Math.max(max, run.end), 0);
+  const duration = Math.max(cartEnd, ...shots.map((shot) => shot.timing.end), 0);
   return {
     id: SHOW_TIMELINE_ID,
     name: "Show",
@@ -94,34 +94,42 @@ export function buildShowTimeline(
   };
 }
 
-/** Reverses the show timeline back into per-shot timing (start/end + rail from/to). */
+/** Reverses camera-track blocks into per-shot timing (start/end). */
 function timingFromTimeline(
   timeline: Timeline | undefined,
   vcamDefs: VirtualCameraDefinition[]
 ): Record<string, ShotTiming> {
   const cameraTrack = timeline?.tracks.find((track) => track.type === "camera");
-  const cartTracks = new Map(
-    (timeline?.tracks ?? []).flatMap((track) => (track.type === "cart" ? [[track.cartId, track] as const] : []))
-  );
   const timing: Record<string, ShotTiming> = {};
   for (const def of vcamDefs) {
     const block = cameraTrack?.blocks.find((b) => b.vcamId === def.id);
     const start = block?.start ?? 0;
-    const end = block?.end ?? start + 5;
-    let railFrom: number | null = null;
-    let railTo: number | null = null;
-    if (def.body.type === "cart") {
-      const track = cartTracks.get(def.body.cartId);
-      const from = track?.keys.find((k) => Math.abs(k.time - start) < 1e-6);
-      const to = track?.keys.find((k) => Math.abs(k.time - end) < 1e-6);
-      if (from && to) {
-        railFrom = from.distance;
-        railTo = to.distance;
-      }
-    }
-    timing[def.id] = { start, end, railFrom, railTo };
+    timing[def.id] = { start, end: block?.end ?? start + 5 };
   }
   return timing;
+}
+
+/** Reverses each cart track's keys into run-blocks (keys come in start/end pairs). */
+function runsFromTimeline(timeline: Timeline | undefined): Record<string, DollyRun[]> {
+  const runs: Record<string, DollyRun[]> = {};
+  for (const track of timeline?.tracks ?? []) {
+    if (track.type !== "cart") continue;
+    const list: DollyRun[] = [];
+    for (let i = 0; i + 1 < track.keys.length; i += 2) {
+      const from = track.keys[i];
+      const to = track.keys[i + 1];
+      if (!from || !to) continue;
+      list.push({
+        id: `run-${track.cartId}-${i / 2}`,
+        start: from.time,
+        end: to.time,
+        fromDistance: from.distance,
+        toDistance: to.distance
+      });
+    }
+    if (list.length > 0) runs[track.cartId] = list;
+  }
+  return runs;
 }
 
 /** The noise-preset label whose expansion matches these settings, else "off". */
@@ -141,7 +149,7 @@ export function assembleDocument(scene: DemoScene): RigDocument {
     carts: scene.dollies,
     vcams: scene.vcamDefs,
     targets: scene.targets,
-    timelines: [buildShowTimeline(scene.vcamDefs, scene.shotTiming, scene.dollies)]
+    timelines: [buildShowTimeline(scene.vcamDefs, scene.shotTiming, scene.dollyRuns)]
   });
 }
 
@@ -162,6 +170,7 @@ export function hydrateScene(document: RigDocument): DemoScene {
     vcamDefs,
     editorVcams,
     shotTiming: timingFromTimeline(document.timelines?.[0], vcamDefs),
+    dollyRuns: runsFromTimeline(document.timelines?.[0]),
     targets: (document.targets ?? []).filter(
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
     )

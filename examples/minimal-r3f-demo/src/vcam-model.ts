@@ -70,8 +70,22 @@ export const NOISE_PRESETS: Record<DemoNoisePreset, VirtualCameraNoiseSettings |
 /** Editor-only extras keyed to a vcam id; not part of the portable definition. */
 export type EditorVcam = { noisePreset: DemoNoisePreset; composerSettings: ComposerSettings };
 
-/** Shot placement on the show timeline; a later step lifts this into the timeline. */
-export type ShotTiming = { start: number; end: number; railFrom: number | null; railTo: number | null };
+/** A shot's placement on the camera track (seconds). */
+export type ShotTiming = { start: number; end: number };
+
+/**
+ * One dolly run: over [start, end] the cart eases from fromDistance to
+ * toDistance along its path. Runs are authored per dolly, independent of camera
+ * shots; a new run defaults fromDistance to the previous run's toDistance so
+ * gaps park rather than teleport. No runs on a dolly = free-run at rig speed.
+ */
+export type DollyRun = {
+  id: string;
+  start: number;
+  end: number;
+  fromDistance: number;
+  toDistance: number;
+};
 
 /**
  * The flat, UI-facing projection the authoring panels/glyphs/lane editor read.
@@ -88,8 +102,6 @@ export type DemoVirtualCamera = {
   dutchDeg: number;
   shotStart: number;
   shotEnd: number;
-  railFrom: number | null;
-  railTo: number | null;
   snapshot: VirtualCameraSnapshot;
   composerSettings: ComposerSettings;
 };
@@ -132,8 +144,6 @@ export function toVcamView(
     dutchDeg,
     shotStart: timing.start,
     shotEnd: timing.end,
-    railFrom: timing.railFrom,
-    railTo: timing.railTo,
     snapshot,
     composerSettings: editor.composerSettings
   };
