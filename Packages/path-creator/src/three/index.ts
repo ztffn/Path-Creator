@@ -414,10 +414,11 @@ export function resolveVirtualCameraDefinition(
     bodyUp = frame.up;
   }
 
-  // A "screen-composer" aim is intentionally not handled here: it is a live,
-  // stateful post-stage owned by the drive-loop, so pure resolution leaves the
-  // body orientation untouched (deterministic snapshot = body pose).
-  if (definition.aim?.type === "look-at") {
+  // A "track" aim WITH settings is the damped composer: a live, stateful
+  // post-stage owned by the drive-loop, so pure resolution leaves the body
+  // orientation for it to damp from. Without settings it is an instant look-at,
+  // resolved deterministically here (target centred every frame).
+  if (definition.aim?.type === "track" && !definition.aim.settings) {
     const aimTarget =
       "targetId" in definition.aim.target
         ? context.getTargetPosition?.(definition.aim.target.targetId) ?? null

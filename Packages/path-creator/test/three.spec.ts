@@ -286,7 +286,7 @@ describe("virtual camera bodies", () => {
     expect(b?.position.x).toBeCloseTo(7);
   });
 
-  it("look-at aim orients toward the target", () => {
+  it("track aim without settings orients toward the target (instant look-at)", () => {
     const snapshot = resolveVirtualCameraDefinition({
       id: "vcam-aim",
       body: {
@@ -294,7 +294,7 @@ describe("virtual camera bodies", () => {
         position: { x: 0, y: 0, z: 0 },
         quaternion: { x: 0, y: 0, z: 0, w: 1 }
       },
-      aim: { type: "look-at", target: { x: 10, y: 0, z: 0 } }
+      aim: { type: "track", target: { x: 10, y: 0, z: 0 } }
     });
 
     const q = snapshot!.quaternion;
@@ -304,7 +304,7 @@ describe("virtual camera bodies", () => {
     expect(look.z).toBeCloseTo(0);
   });
 
-  it("leaves body orientation for a screen-composer aim (composer is a live post-stage)", () => {
+  it("leaves body orientation for a track aim with settings (composer is a live post-stage)", () => {
     const snapshot = resolveVirtualCameraDefinition(
       {
         id: "vcam-composer",
@@ -314,7 +314,7 @@ describe("virtual camera bodies", () => {
           quaternion: { x: 0, y: 0, z: 0, w: 1 }
         },
         aim: {
-          type: "screen-composer",
+          type: "track",
           target: { x: 10, y: 0, z: 0 },
           settings: DEFAULT_COMPOSER_SETTINGS
         }

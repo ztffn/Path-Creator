@@ -127,13 +127,18 @@ export const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
   centerOnActivate: false
 };
 
+/**
+ * Aim at a target. `settings` selects the framing profile:
+ * - omitted → instant look-at: the target is centred every frame, so it is
+ *   pure/deterministic and `resolveVirtualCameraDefinition` computes it directly.
+ * - present → the damped screen composer (dead/soft zones): stateful (depends on
+ *   the previous frame), so it is a live post-stage owned by the drive-loop and
+ *   pure resolution leaves the body orientation for the composer to damp from.
+ * An instant look-at is just the degenerate composer, so there is one aim, not two.
+ */
 export type VirtualCameraAimDefinition =
   | { type: "body" }
-  | { type: "look-at"; target: Vec3 | { targetId: string } }
-  // Live, stateful screen-space framing owned by the drive-loop composer stage.
-  // Pure resolution (resolveVirtualCameraDefinition) leaves body orientation —
-  // the composer is a post-stage, outside deterministic resolution.
-  | { type: "screen-composer"; target: Vec3 | { targetId: string }; settings: ComposerSettings };
+  | { type: "track"; target: Vec3 | { targetId: string }; settings?: ComposerSettings };
 
 export interface VirtualCameraDefinition {
   id: string;

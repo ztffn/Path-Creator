@@ -115,31 +115,23 @@ export function buildRigRuntime(document: RigDocument): RigRuntime {
     cartPaths.set(cartDef.id, cartDef.pathId);
   }
 
+  const vcams = new Map<string, VirtualCameraDefinition>();
+  for (const vcam of document.vcams ?? []) {
+    if (vcam.body.type === "cart" && !carts.has(vcam.body.cartId)) {
+      throw new Error(`Rig vcam "${vcam.id}" references unknown cart "${vcam.body.cartId}"`);
+    }
+    // A track aim's target ref is resolved through the runtime target registry,
+    // which may hold objects not declared in the document, so it is
+    // intentionally not cross-checked here.
+    vcams.set(vcam.id, vcam);
+  }
+
   const targets = new Map<string, TrackingTargetDefinition>();
   for (const target of document.targets ?? []) {
     if (target.type === "cart" && !carts.has(target.cartId)) {
       throw new Error(`Rig target "${target.id}" references unknown cart "${target.cartId}"`);
     }
     targets.set(target.id, target);
-  }
-
-  const vcams = new Map<string, VirtualCameraDefinition>();
-  for (const vcam of document.vcams ?? []) {
-    if (vcam.body.type === "cart" && !carts.has(vcam.body.cartId)) {
-      throw new Error(`Rig vcam "${vcam.id}" references unknown cart "${vcam.body.cartId}"`);
-    }
-    // A screen-composer aim frames a declared target; look-at stays lenient
-    // (it may point at a runtime-registered object absent from the document).
-    if (
-      vcam.aim?.type === "screen-composer" &&
-      "targetId" in vcam.aim.target &&
-      !targets.has(vcam.aim.target.targetId)
-    ) {
-      throw new Error(
-        `Rig vcam "${vcam.id}" screen-composer aim references unknown target "${vcam.aim.target.targetId}"`
-      );
-    }
-    vcams.set(vcam.id, vcam);
   }
 
   const timelines = new Map<string, RigTimelineDefinition>();

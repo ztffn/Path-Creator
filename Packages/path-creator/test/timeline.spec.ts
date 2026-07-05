@@ -173,7 +173,7 @@ describe("block overrides (retarget)", () => {
               vcamId: "wide",
               start: 5,
               end: 10,
-              overrides: { aim: { type: "look-at", target: { targetId: "buoy" } } }
+              overrides: { aim: { type: "track", target: { targetId: "buoy" } } }
             }
           ]
         }

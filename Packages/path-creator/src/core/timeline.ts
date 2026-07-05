@@ -21,7 +21,7 @@ export interface CameraBlock {
   blendIn?: TimelineBlendIn;
   /**
    * Shallow per-field patch of the vcam definition while this block is live
-   * (e.g. { aim: { type: "look-at", target: { targetId } } } retargets the
+   * (e.g. { aim: { type: "track", target: { targetId } } } retargets the
    * shot). A patched field replaces the definition's field entirely.
    */
   overrides?: Partial<Omit<VirtualCameraDefinition, "id">>;

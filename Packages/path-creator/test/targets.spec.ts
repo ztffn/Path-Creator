@@ -1,6 +1,6 @@
 // Tests for the tracking-target seam: registry registration/unregistration,
 // live pull-based resolution, weighted group centroids, and virtual camera
-// look-at aims referencing targets by id through the resolve context. Pins
+// track aims referencing targets by id through the resolve context. Pins
 // the contract that lets vcams track arbitrary scene objects without knowing
 // what they are.
 import { Group, Quaternion, Vector3 } from "three";
@@ -72,7 +72,7 @@ describe("vcam aim by targetId", () => {
       {
         id: "v",
         body: staticBody,
-        aim: { type: "look-at", target: { targetId: "ball" } }
+        aim: { type: "track", target: { targetId: "ball" } }
       },
       { getTargetPosition: (id) => registry.resolve(id) }
     );
@@ -87,7 +87,7 @@ describe("vcam aim by targetId", () => {
       {
         id: "v",
         body: staticBody,
-        aim: { type: "look-at", target: { targetId: "missing" } }
+        aim: { type: "track", target: { targetId: "missing" } }
       },
       { getTargetPosition: () => null }
     );
