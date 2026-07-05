@@ -138,7 +138,7 @@ export function applyDollyCamera(
   damping = 0,
   deltaSeconds = 0
 ): void {
-  const alpha = damping > 0 ? 1 - Math.exp(-damping * deltaSeconds) : 1;
+  const alpha = damping > 0 ? 1 - Math.exp(-(12 / damping) * deltaSeconds) : 1;
 
   _tmpVec.set(sample.position.x, sample.position.y, sample.position.z);
   if (alpha < 1) {
@@ -404,7 +404,7 @@ function applyDollyCameraPosition(
   damping = 0,
   deltaSeconds = 0
 ): void {
-  const alpha = damping > 0 ? 1 - Math.exp(-damping * deltaSeconds) : 1;
+  const alpha = damping > 0 ? 1 - Math.exp(-(12 / damping) * deltaSeconds) : 1;
   _tmpVec.set(sample.position.x, sample.position.y, sample.position.z);
 
   if (alpha < 1) {
@@ -469,7 +469,9 @@ function getScreenCorrection(
   const clampCorrection = Math.max(0, magnitude - softHalf);
   const withinSoft = magnitude - clampCorrection;
   const dampedCorrection = Math.max(0, withinSoft - deadHalf);
-  const alpha = damping > 0 ? 1 - Math.exp(-damping * deltaSeconds) : 1;
+  // Damping is a heaviness value (bigger = slower/heavier), consistent with
+  // lookahead smoothing: alpha = 1 - e^(-(12/damping)·dt).
+  const alpha = damping > 0 ? 1 - Math.exp(-(12 / damping) * deltaSeconds) : 1;
 
   return sign * (clampCorrection + dampedCorrection * alpha);
 }

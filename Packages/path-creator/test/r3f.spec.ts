@@ -165,7 +165,8 @@ describe("r3f runtime helpers", () => {
       createScreenComposerState(),
       {
         deadZone: { width: 0.2, height: 0.2 },
-        damping: { x: 12, y: 1 }
+        // Damping is heaviness (bigger = slower). The lighter x axis corrects more.
+        damping: { x: 1, y: 12 }
       },
       1 / 30
     );
