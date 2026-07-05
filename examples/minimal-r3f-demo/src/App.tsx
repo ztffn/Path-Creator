@@ -11,6 +11,7 @@ import {
   createPathCart,
   sampleCartFrame,
   type CartFrame,
+  type ComposerSettings,
   type RegisteredTarget,
   type SerializedBezierPath,
   type Vec3
@@ -34,7 +35,6 @@ import {
   resolveVirtualCameraDefinition,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
-  type VirtualCameraNoiseSettings,
   type VirtualCameraResolveContext,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
@@ -50,6 +50,16 @@ import {
 } from "@huma/path-creator/timeline";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { TimelineLanes } from "./TimelineLanes";
+import {
+  DEFAULT_COMPOSER_SETTINGS,
+  expandNoisePreset,
+  toVcamView,
+  vcamDefFromView,
+  type DemoNoisePreset,
+  type DemoVirtualCamera,
+  type EditorVcam,
+  type ShotTiming
+} from "./vcam-model";
 import {
   CameraHelper,
   Color,
@@ -76,73 +86,6 @@ const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 
-type ComposerSettings = {
-  pathLookaheadDistance: number;
-  targetWeight: number;
-  targetOffsetX: number;
-  targetOffsetY: number;
-  targetOffsetZ: number;
-  screenX: number;
-  screenY: number;
-  deadWidth: number;
-  deadHeight: number;
-  softWidth: number;
-  softHeight: number;
-  hardWidth: number;
-  hardHeight: number;
-  dampingX: number;
-  dampingY: number;
-  lookaheadTime: number;
-  lookaheadSmoothing: number;
-  lookaheadIgnoreY: boolean;
-  centerOnActivate: boolean;
-};
-
-type DemoNoisePreset = "off" | "subtle" | "rough";
-
-const NOISE_PRESETS: Record<DemoNoisePreset, VirtualCameraNoiseSettings | undefined> = {
-  off: undefined,
-  subtle: {
-    seed: 11,
-    positionAmplitude: 0.03,
-    positionFrequency: 0.9,
-    rotationAmplitudeDeg: 0.6,
-    rotationFrequencyDeg: 0.7
-  },
-  rough: {
-    seed: 23,
-    positionAmplitude: 0.12,
-    positionFrequency: 1.8,
-    rotationAmplitudeDeg: 2.4,
-    rotationFrequencyDeg: 1.6
-  }
-};
-
-type DemoVirtualCamera = {
-  id: string;
-  name: string;
-  bodyType: "static" | "cart";
-  /** Which dolly a cart body mounts. */
-  cartId: string;
-  /** Rail-local camera offset for cart bodies (x=right, y=up, z=forward). */
-  cartOffset: Vec3;
-  trackTargetId: string | null;
-  noisePreset: DemoNoisePreset;
-  dutchDeg: number;
-  /** Block placement on the show timeline; overlap with the previous shot crossfades. */
-  shotStart: number;
-  shotEnd: number;
-  /**
-   * Dolly move for cart shots: rail distance at shot start/end, compiled to
-   * cart-track keys. Null = the cart free-runs at the rig speed.
-   */
-  railFrom: number | null;
-  railTo: number | null;
-  snapshot: VirtualCameraSnapshot;
-  /** Screen-composer framing for the tracked target (dead/soft/hard zones). */
-  composerSettings: ComposerSettings;
-};
-
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
@@ -161,8 +104,8 @@ type DemoShotPatch = Partial<
 const COMPOSER_UP = new Vector3(0, 1, 0);
 
 // Reframe a camera so the tracked target lands in the composer's screen zones
-// (dead/soft/hard) with damping. Stateful, so it runs on live preview cameras
-// only (not in pure timeline evaluation) — see the package composer notes.
+// (dead/soft) with damping. Stateful, so it runs on live preview cameras only
+// (not in pure timeline evaluation) — see the package composer notes.
 function applyComposerAim(
   camera: PerspectiveCamera,
   target: Vec3,
@@ -179,7 +122,6 @@ function applyComposerAim(
       screenPosition: { x: settings.screenX, y: settings.screenY },
       deadZone: { width: settings.deadWidth, height: settings.deadHeight },
       softZone: { width: settings.softWidth, height: settings.softHeight },
-      hardLimits: { width: settings.hardWidth, height: settings.hardHeight },
       damping: { x: settings.dampingX, y: settings.dampingY },
       lookaheadTime: settings.lookaheadTime,
       lookaheadSmoothing: settings.lookaheadSmoothing,
@@ -188,31 +130,6 @@ function applyComposerAim(
     },
     deltaSeconds
   );
-}
-
-function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition {
-  const noise = NOISE_PRESETS[vcam.noisePreset];
-  const lens = {
-    ...vcam.snapshot.lens,
-    ...(vcam.dutchDeg !== 0 && { dutchDeg: vcam.dutchDeg })
-  };
-  return {
-    id: vcam.id,
-    name: vcam.name,
-    body:
-      vcam.bodyType === "cart"
-        ? { type: "cart", cartId: vcam.cartId, positionOffset: vcam.cartOffset }
-        : {
-            type: "static",
-            position: vcam.snapshot.position,
-            quaternion: vcam.snapshot.quaternion
-          },
-    // Aiming at a tracked target is done by the live screen-composer stage
-    // (damped, zone-aware), not a pure look-at that would pin it dead-centre.
-    ...(noise && { noise }),
-    ...(Object.keys(lens).length > 0 && { lens }),
-    ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
-  };
 }
 
 type VirtualCameraActivation = {
@@ -231,8 +148,7 @@ type VirtualCameraResolved = {
 function getComposerZones(settings: ComposerSettings) {
   return {
     deadZone: { width: settings.deadWidth, height: settings.deadHeight },
-    softZone: { width: settings.softWidth, height: settings.softHeight },
-    hardLimits: { width: settings.hardWidth, height: settings.hardHeight }
+    softZone: { width: settings.softWidth, height: settings.softHeight }
   };
 }
 
@@ -244,48 +160,6 @@ function getComposerLookaheadTarget(target: Vec3, settings: ComposerSettings, ve
     z: target.z + velocity.z * settings.lookaheadTime
   };
 }
-
-const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
-  pathLookaheadDistance: 0.85,
-  targetWeight: 1,
-  targetOffsetX: 0,
-  targetOffsetY: 0,
-  targetOffsetZ: 0,
-  screenX: 0,
-  screenY: 0,
-  deadWidth: 0.18,
-  deadHeight: 0.14,
-  softWidth: 0.55,
-  softHeight: 0.45,
-  hardWidth: 0.9,
-  hardHeight: 0.85,
-  dampingX: 6,
-  dampingY: 8,
-  lookaheadTime: 0.2,
-  lookaheadSmoothing: 8,
-  lookaheadIgnoreY: false,
-  centerOnActivate: false
-};
-
-const VIRTUAL_CAMERA_SETTING_KEYS = [
-  "pathLookaheadDistance",
-  "targetWeight",
-  "targetOffsetX",
-  "targetOffsetY",
-  "targetOffsetZ",
-  "screenX",
-  "screenY",
-  "deadWidth",
-  "deadHeight",
-  "softWidth",
-  "softHeight",
-  "hardWidth",
-  "hardHeight",
-  "dampingX",
-  "dampingY",
-  "lookaheadTime",
-  "lookaheadSmoothing"
-] as const;
 
 // A new path starts as a simple two-anchor segment (start → stop); the user
 // builds from there with Add Anchor / Insert Midpoint.
@@ -438,16 +312,6 @@ function getAnchorPointIndexForHandle(path: BezierPath, pointIndex: number): num
   if (mod === 0) return pointIndex;
   if (mod === 1) return Math.max(0, pointIndex - 1);
   return Math.min(path.numPoints - 1, pointIndex + 1);
-}
-
-function composerSettingsToVirtualCameraSettings(
-  settings: ComposerSettings
-): Record<string, number> {
-  const values: Record<string, number> = {};
-  for (const key of VIRTUAL_CAMERA_SETTING_KEYS) {
-    values[key] = settings[key];
-  }
-  return values;
 }
 
 function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
@@ -705,6 +569,7 @@ function Scene({
   virtualCameraCaptureRequest,
   virtualCameraActivation,
   virtualCameras,
+  vcamDefs,
   selectedVirtualCameraId,
   onVirtualCameraCaptured,
   onVirtualCameraResolved,
@@ -741,7 +606,10 @@ function Scene({
   lookaheadLineRef: { current: SVGLineElement | null };
   virtualCameraCaptureRequest: number;
   virtualCameraActivation: VirtualCameraActivation | null;
+  /** UI-facing view (glyphs, composer fields); authoritative defs are vcamDefs. */
   virtualCameras: DemoVirtualCamera[];
+  /** Real definitions the drive-loop resolves/blends; parallel to virtualCameras by id. */
+  vcamDefs: VirtualCameraDefinition[];
   selectedVirtualCameraId: string | null;
   onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
@@ -769,12 +637,15 @@ function Scene({
     getTargetPosition: (id) => targetRegistry.resolve(id),
     elapsedSeconds
   });
-  const resolveDemoVirtualCamera = (
-    vcam: DemoVirtualCamera,
+  const vcamDefById = useMemo(
+    () => new Map(vcamDefs.map((def) => [def.id, def])),
+    [vcamDefs]
+  );
+  const resolveVcamDef = (
+    def: VirtualCameraDefinition,
     elapsedSeconds: number
-  ): VirtualCameraSnapshot =>
-    resolveVirtualCameraDefinition(toDemoVcamDefinition(vcam), demoResolveContext(elapsedSeconds)) ??
-    vcam.snapshot;
+  ): VirtualCameraSnapshot | null =>
+    resolveVirtualCameraDefinition(def, demoResolveContext(elapsedSeconds));
   const timelineContext = useMemo<TimelineRigContext>(
     () => ({
       rig: {
@@ -782,10 +653,10 @@ function Scene({
         carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPath })])),
         cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
       },
-      vcams: new Map(virtualCameras.map((vcam) => [vcam.id, toDemoVcamDefinition(vcam)])),
+      vcams: vcamDefById,
       getTargetPosition: (id) => targetRegistry.resolve(id)
     }),
-    [speed, targetRegistry, vertexPaths, virtualCameras, dollies]
+    [speed, targetRegistry, vertexPaths, vcamDefById, dollies]
   );
   const brainCamera = useMemo(() => {
     const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
@@ -795,6 +666,9 @@ function Scene({
   }, []);
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
+    : null;
+  const selectedVcamDef = selectedVirtualCameraId
+    ? vcamDefById.get(selectedVirtualCameraId) ?? null
     : null;
   // The PiP shows an authored camera: timeline output, an activated shot, or
   // the selected shot. Otherwise nothing drives it ("no output").
@@ -946,11 +820,7 @@ function Scene({
     if (virtualCameraCaptureRequest !== lastCaptureRequestRef.current) {
       lastCaptureRequestRef.current = virtualCameraCaptureRequest;
       // Capture the main viewport (orbit) camera as a new static vcam.
-      onVirtualCameraCaptured(
-        captureVirtualCameraSnapshot(mainCamera, {
-          settings: composerSettingsToVirtualCameraSettings(DEFAULT_COMPOSER_SETTINGS)
-        })
-      );
+      onVirtualCameraCaptured(captureVirtualCameraSnapshot(mainCamera));
     }
 
     // Which vcam drives the PiP this frame, for the composer overlay below.
@@ -988,13 +858,14 @@ function Scene({
       resolvedVirtualCameraKeyRef.current = null;
     } else if (virtualCameraActivation && !isTransforming) {
       const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
-      if (liveVcam) {
+      const liveDef = vcamDefById.get(virtualCameraActivation.toId);
+      if (liveVcam && liveDef) {
         if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
           activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
           resolvedVirtualCameraKeyRef.current = null;
           activateVirtualCameraBrain(
             virtualCameraBrainRef.current,
-            resolveDemoVirtualCamera(liveVcam, elapsed),
+            resolveVcamDef(liveDef, elapsed) ?? liveVcam.snapshot,
             {
               durationSeconds: virtualCameraActivation.durationSeconds,
               curve: virtualCameraActivation.curve
@@ -1005,7 +876,7 @@ function Scene({
         const resolvedSnapshot = driveVirtualCameraBrain(
           brainCamera,
           virtualCameraBrainRef.current,
-          toDemoVcamDefinition(liveVcam),
+          liveDef,
           demoResolveContext(elapsed),
           delta
         );
@@ -1030,7 +901,7 @@ function Scene({
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
       virtualCameraBrainRef.current = createVirtualCameraBrainState(
-        resolveDemoVirtualCamera(selectedVirtualCamera, elapsed)
+        (selectedVcamDef ? resolveVcamDef(selectedVcamDef, elapsed) : null) ?? selectedVirtualCamera.snapshot
       );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
       applyPreviewComposer(selectedVirtualCamera, delta);
@@ -1987,12 +1858,20 @@ function NumberSlider({
 // zones, damping, and lookahead. Edits VirtualCameraDefinition.settings.
 function RigSettingsPanel({
   settings,
+  noisePreset,
+  dutchDeg,
   onChange,
+  onNoisePresetChange,
+  onDutchChange,
   onClose,
   onReset
 }: {
   settings: ComposerSettings;
+  noisePreset: DemoNoisePreset;
+  dutchDeg: number;
   onChange: (next: ComposerSettings) => void;
+  onNoisePresetChange: (preset: DemoNoisePreset) => void;
+  onDutchChange: (deg: number) => void;
   onClose: () => void;
   onReset: () => void;
 }) {
@@ -2018,6 +1897,18 @@ function RigSettingsPanel({
           <button onClick={onClose}>Close</button>
         </div>
       </div>
+
+      <SettingsSection title="Camera">
+        <label style={{ display: "grid", gridTemplateColumns: "96px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
+          <span>Noise</span>
+          <select value={noisePreset} onChange={(event) => onNoisePresetChange(event.target.value as DemoNoisePreset)}>
+            <option value="off">Off</option>
+            <option value="subtle">Subtle handheld</option>
+            <option value="rough">Rough handheld</option>
+          </select>
+        </label>
+        <NumberSlider label="Dutch" value={dutchDeg} min={-45} max={45} step={1} unit="°" onChange={onDutchChange} />
+      </SettingsSection>
 
       <SettingsSection title="Screen">
         <button onClick={() => onChange({ ...settings, screenX: 0, screenY: 0 })}>Center screen</button>
@@ -2270,42 +2161,16 @@ function VirtualCameraPanel({
                     {composerOpenId === camera.id ? (
                       <RigSettingsPanel
                         settings={camera.composerSettings}
+                        noisePreset={camera.noisePreset}
+                        dutchDeg={camera.dutchDeg}
                         onChange={(settings) => onUpdateComposer(camera.id, settings)}
+                        onNoisePresetChange={(noisePreset) => onUpdateShot(camera.id, { noisePreset })}
+                        onDutchChange={(dutchDeg) => onUpdateShot(camera.id, { dutchDeg })}
                         onClose={() => setComposerOpenId(null)}
                         onReset={() => onUpdateComposer(camera.id, DEFAULT_COMPOSER_SETTINGS)}
                       />
                     ) : null}
                   </div>
-                  <label
-                    onClick={(event) => event.stopPropagation()}
-                    style={shotRowLabelStyle("48px 1fr 44px 52px")}
-                  >
-                    <span>Noise</span>
-                    <select
-                      value={camera.noisePreset}
-                      onChange={(event) =>
-                        onUpdateShot(camera.id, {
-                          noisePreset: event.target.value as DemoNoisePreset
-                        })
-                      }
-                    >
-                      <option value="off">Off</option>
-                      <option value="subtle">Subtle handheld</option>
-                      <option value="rough">Rough handheld</option>
-                    </select>
-                    <span style={{ textAlign: "right" }}>Dutch</span>
-                    <input
-                      type="number"
-                      value={camera.dutchDeg}
-                      min={-45}
-                      max={45}
-                      step={5}
-                      style={{ width: "100%" }}
-                      onChange={(event) =>
-                        onUpdateShot(camera.id, { dutchDeg: Number(event.target.value) || 0 })
-                      }
-                    />
-                  </label>
                   {camera.bodyType === "cart" ? (
                     <label
                       onClick={(event) => event.stopPropagation()}
@@ -2567,23 +2432,63 @@ export function App() {
     }
   }
   const defaultDollyId = dollies[0]?.id ?? FALLBACK_DOLLY.id;
-  const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() =>
-    (storedShow?.vcams ?? []).map((vcam, index) => ({
-      cartId: storedShow?.dollies?.[0]?.id ?? FALLBACK_DOLLY.id,
-      cartOffset: { x: 0, y: 0, z: 0 },
-      trackTargetId: null,
-      noisePreset: "off" as const,
-      dutchDeg: 0,
-      shotStart: index * 5,
-      shotEnd: index * 5 + 5,
-      railFrom: null,
-      railTo: null,
-      composerSettings: DEFAULT_COMPOSER_SETTINGS,
-      ...vcam
-    })) as DemoVirtualCamera[]
+  // Migrate the stored flat "view" shape into defaulted views, then split into
+  // the authoritative model (real defs + editor/timing sidecars). Fields absent
+  // in older saves fall back to defaults; composer settings merge over the
+  // default so saves predating a field stay valid.
+  const initialShots = useMemo<DemoVirtualCamera[]>(
+    () =>
+      (storedShow?.vcams ?? []).map((vcam, index) => {
+        const base = {
+          cartId: storedShow?.dollies?.[0]?.id ?? FALLBACK_DOLLY.id,
+          cartOffset: { x: 0, y: 0, z: 0 },
+          trackTargetId: null,
+          noisePreset: "off" as const,
+          dutchDeg: 0,
+          shotStart: index * 5,
+          shotEnd: index * 5 + 5,
+          railFrom: null,
+          railTo: null,
+          composerSettings: DEFAULT_COMPOSER_SETTINGS,
+          ...vcam
+        } as DemoVirtualCamera;
+        return { ...base, composerSettings: { ...DEFAULT_COMPOSER_SETTINGS, ...base.composerSettings } };
+      }),
+    // storedShow is read once; this is the initial-load migration only.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    []
+  );
+  const [vcamDefs, setVcamDefs] = useState<VirtualCameraDefinition[]>(() =>
+    initialShots.map((view) =>
+      vcamDefFromView(view, { noisePreset: view.noisePreset, composerSettings: view.composerSettings })
+    )
+  );
+  const [editorVcams, setEditorVcams] = useState<Record<string, EditorVcam>>(() =>
+    Object.fromEntries(
+      initialShots.map((view) => [view.id, { noisePreset: view.noisePreset, composerSettings: view.composerSettings }])
+    )
+  );
+  const [shotTiming, setShotTiming] = useState<Record<string, ShotTiming>>(() =>
+    Object.fromEntries(
+      initialShots.map((view) => [
+        view.id,
+        { start: view.shotStart, end: view.shotEnd, railFrom: view.railFrom, railTo: view.railTo }
+      ])
+    )
+  );
+  const defaultEditorVcam: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
+  const defaultShotTiming: ShotTiming = { start: 0, end: 5, railFrom: null, railTo: null };
+  // The UI-facing view is a pure projection of the authoritative model.
+  const virtualCameras = useMemo<DemoVirtualCamera[]>(
+    () =>
+      vcamDefs.map((def) =>
+        toVcamView(def, editorVcams[def.id] ?? defaultEditorVcam, shotTiming[def.id] ?? defaultShotTiming)
+      ),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [vcamDefs, editorVcams, shotTiming]
   );
   useEffect(() => {
-        localStorage.setItem(
+    localStorage.setItem(
       SHOW_STORAGE_KEY,
       JSON.stringify({ dollies, vcams: virtualCameras, paths, activePathId, pointTargets })
     );
@@ -2601,8 +2506,12 @@ export function App() {
       // dolly left the reference dangles (a cart vcam then produces no frame).
       const remount = next[0]?.id;
       if (remount) {
-        setVirtualCameras((vcams) =>
-          vcams.map((vcam) => (vcam.cartId === id ? { ...vcam, cartId: remount } : vcam))
+        setVcamDefs((defs) =>
+          defs.map((def) =>
+            def.body.type === "cart" && def.body.cartId === id
+              ? { ...def, body: { ...def.body, cartId: remount } }
+              : def
+          )
         );
       }
       return next;
@@ -2838,30 +2747,28 @@ export function App() {
     const name = `${namePrefix} ${virtualCameras.length + 1}`;
     const shotStart =
       startTime ?? virtualCameras.reduce((end, vcam) => Math.max(end, vcam.shotEnd), 0);
+    const editor: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
+    const def =
+      bodyType === "cart"
+        ? ({
+            id,
+            name,
+            body: { type: "cart", cartId: defaultDollyId, positionOffset: { x: 0, y: 0, z: 0 } },
+            ...(snapshot.lens && { lens: snapshot.lens })
+          } as VirtualCameraDefinition)
+        : ({
+            id,
+            name,
+            body: { type: "static", position: snapshot.position, quaternion: snapshot.quaternion },
+            ...(snapshot.lens && { lens: snapshot.lens })
+          } as VirtualCameraDefinition);
     setSelectedVirtualCameraId(id);
-    setVirtualCameras((current) => [
+    setVcamDefs((current) => [...current, def]);
+    setEditorVcams((current) => ({ ...current, [id]: editor }));
+    setShotTiming((current) => ({
       ...current,
-      {
-        id,
-        name,
-        bodyType,
-        cartId: defaultDollyId,
-        cartOffset: { x: 0, y: 0, z: 0 },
-        trackTargetId: null,
-        noisePreset: "off",
-        dutchDeg: 0,
-        shotStart,
-        shotEnd: shotStart + 5,
-        railFrom: null,
-        railTo: null,
-        snapshot: {
-          ...snapshot,
-          name,
-          settings: composerSettingsToVirtualCameraSettings(DEFAULT_COMPOSER_SETTINGS)
-        },
-        composerSettings: DEFAULT_COMPOSER_SETTINGS
-      }
-    ]);
+      [id]: { start: shotStart, end: shotStart + 5, railFrom: null, railTo: null }
+    }));
   }
 
   function addCapturedVirtualCamera(snapshot: VirtualCameraSnapshot): void {
@@ -2899,31 +2806,112 @@ export function App() {
     });
   }
 
+  // Routes a shot-panel patch onto the authoritative model: timing to the
+  // shotTiming sidecar, noise preset to the editor sidecar (+ expanded onto the
+  // definition), and aim/dutch/cart fields onto the definition itself.
   function updateVirtualCameraShot(id: string, patch: DemoShotPatch): void {
-    setVirtualCameras((current) =>
-      current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
-    );
+    if (
+      patch.shotStart !== undefined ||
+      patch.shotEnd !== undefined ||
+      patch.railFrom !== undefined ||
+      patch.railTo !== undefined
+    ) {
+      setShotTiming((current) => {
+        const prev = current[id] ?? defaultShotTiming;
+        return {
+          ...current,
+          [id]: {
+            start: patch.shotStart ?? prev.start,
+            end: patch.shotEnd ?? prev.end,
+            railFrom: patch.railFrom !== undefined ? patch.railFrom : prev.railFrom,
+            railTo: patch.railTo !== undefined ? patch.railTo : prev.railTo
+          }
+        };
+      });
+    }
+    if (patch.noisePreset !== undefined) {
+      const preset = patch.noisePreset;
+      setEditorVcams((current) => ({
+        ...current,
+        [id]: { ...(current[id] ?? defaultEditorVcam), noisePreset: preset }
+      }));
+      setVcamDefs((current) =>
+        current.map((def) => {
+          if (def.id !== id) return def;
+          const next: VirtualCameraDefinition = { ...def };
+          const noise = expandNoisePreset(preset);
+          if (noise) next.noise = noise;
+          else delete next.noise;
+          return next;
+        })
+      );
+    }
+    if (
+      patch.trackTargetId !== undefined ||
+      patch.dutchDeg !== undefined ||
+      patch.cartId !== undefined ||
+      patch.cartOffset !== undefined
+    ) {
+      setVcamDefs((current) =>
+        current.map((def) => {
+          if (def.id !== id) return def;
+          const next: VirtualCameraDefinition = { ...def };
+          if (patch.trackTargetId !== undefined) {
+            if (patch.trackTargetId) {
+              next.aim = {
+                type: "screen-composer",
+                target: { targetId: patch.trackTargetId },
+                settings: editorVcams[id]?.composerSettings ?? DEFAULT_COMPOSER_SETTINGS
+              };
+            } else {
+              delete next.aim;
+            }
+          }
+          if (patch.dutchDeg !== undefined) {
+            const lens = { ...next.lens };
+            if (patch.dutchDeg === 0) delete lens.dutchDeg;
+            else lens.dutchDeg = patch.dutchDeg;
+            if (Object.keys(lens).length > 0) next.lens = lens;
+            else delete next.lens;
+          }
+          if (patch.cartId !== undefined && next.body.type === "cart") {
+            next.body = { ...next.body, cartId: patch.cartId };
+          }
+          if (patch.cartOffset !== undefined && next.body.type === "cart") {
+            next.body = { ...next.body, positionOffset: patch.cartOffset };
+          }
+          return next;
+        })
+      );
+    }
   }
 
   function updateVirtualCameraComposer(id: string, settings: ComposerSettings): void {
-    setVirtualCameras((current) =>
-      current.map((camera) =>
-        camera.id === id
-          ? {
-              ...camera,
-              composerSettings: settings,
-              snapshot: {
-                ...camera.snapshot,
-                settings: composerSettingsToVirtualCameraSettings(settings)
-              }
-            }
-          : camera
+    setEditorVcams((current) => ({
+      ...current,
+      [id]: { ...(current[id] ?? defaultEditorVcam), composerSettings: settings }
+    }));
+    setVcamDefs((current) =>
+      current.map((def) =>
+        def.id === id && def.aim?.type === "screen-composer"
+          ? { ...def, aim: { ...def.aim, settings } }
+          : def
       )
     );
   }
 
   function deleteVirtualCamera(id: string): void {
-    setVirtualCameras((current) => current.filter((camera) => camera.id !== id));
+    setVcamDefs((current) => current.filter((def) => def.id !== id));
+    setEditorVcams((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
+    setShotTiming((current) => {
+      const next = { ...current };
+      delete next[id];
+      return next;
+    });
     if (selectedVirtualCameraId === id) {
       setSelectedVirtualCameraId(null);
     }
@@ -2949,19 +2937,17 @@ export function App() {
   }
 
   function updateVirtualCameraSnapshot(id: string, snapshot: VirtualCameraSnapshot): void {
-    setVirtualCameras((current) =>
-      current.map((camera) =>
-        camera.id === id
-          ? {
-              ...camera,
-              snapshot: {
-                ...snapshot,
-                name: camera.name,
-                settings: camera.snapshot.settings ?? {}
-              }
-            }
-          : camera
-      )
+    setVcamDefs((current) =>
+      current.map((def) => {
+        if (def.id !== id || def.body.type !== "static") return def;
+        const next: VirtualCameraDefinition = {
+          ...def,
+          body: { type: "static", position: snapshot.position, quaternion: snapshot.quaternion }
+        };
+        if (snapshot.lens && Object.keys(snapshot.lens).length > 0) next.lens = { ...snapshot.lens };
+        else delete next.lens;
+        return next;
+      })
     );
     if (virtualCameraActivation?.toId === id) {
       releaseVirtualCamera();
@@ -3393,6 +3379,7 @@ export function App() {
           virtualCameraCaptureRequest={virtualCameraCaptureRequest}
           virtualCameraActivation={virtualCameraActivation}
           virtualCameras={virtualCameras}
+          vcamDefs={vcamDefs}
           selectedVirtualCameraId={selectedVirtualCameraId}
           onVirtualCameraCaptured={addCapturedVirtualCamera}
           onVirtualCameraResolved={({ progress }) => {
