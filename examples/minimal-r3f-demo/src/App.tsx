@@ -16,16 +16,9 @@ import {
   type Vec3
 } from "@huma/path-creator/core";
 import {
-  applySampleToObject,
-  applyScreenComposerAim,
-  createScreenComposerState,
-  samplePathAtDistance,
   EditorHelpers,
-  usePathCart,
-  usePathFollower,
   useEditorHelpersVisible,
-  useRegisteredTargets,
-  useTrackingTarget
+  useRegisteredTargets
 } from "@huma/path-creator/r3f";
 import {
   activateVirtualCameraBrain,
@@ -64,8 +57,7 @@ import {
   PerspectiveCamera,
   Quaternion,
   Vector3,
-  type Group,
-  type Mesh
+  type Group
 } from "three";
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
@@ -81,10 +73,6 @@ const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1", endOfPath: E
 const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
-const STATIC_CAMERA_POSITION = { x: 0, y: 1.1, z: 6 };
-type CameraPoseSource = "dolly" | "static";
-type CameraAimMode = "path-lookahead" | "look-at-target" | "screen-composer";
-type VirtualCameraCaptureSource = "rig" | "viewport";
 
 type ComposerSettings = {
   pathLookaheadDistance: number;
@@ -149,8 +137,7 @@ type DemoVirtualCamera = {
   railFrom: number | null;
   railTo: number | null;
   snapshot: VirtualCameraSnapshot;
-  poseSource: CameraPoseSource;
-  aimMode: CameraAimMode;
+  /** Retained authored aim tuning for a future screen-composer aim mode. */
   composerSettings: ComposerSettings;
 };
 
@@ -250,34 +237,17 @@ const VIRTUAL_CAMERA_SETTING_KEYS = [
   "lookaheadSmoothing"
 ] as const;
 
-function createMobiusLikeAnchors(count = 10): Vec3[] {
-  const anchors: Vec3[] = [];
-  const radius = 2.2;
-  const halfWidth = 0.7;
-  const tMin = -Math.PI * 0.9;
-  const tMax = Math.PI * 0.9;
-
-  for (let i = 0; i < count; i += 1) {
-    const u = count === 1 ? 0 : i / (count - 1);
-    const t = tMin + (tMax - tMin) * u;
-    const w = Math.sin(t * 1.3) * halfWidth;
-
-    const x = (radius + w * Math.cos(t * 0.5)) * Math.cos(t);
-    const y = (radius + w * Math.cos(t * 0.5)) * Math.sin(t) * 0.45;
-    const z = w * Math.sin(t * 0.5) * 2.4;
-
-    anchors.push({ x, y, z });
-  }
-
-  return anchors;
-}
-
+// A new path starts as a simple two-anchor segment (start → stop); the user
+// builds from there with Add Anchor / Insert Midpoint.
 function createDefaultBezier(): BezierPath {
   return new BezierPath(
-    createMobiusLikeAnchors(10),
+    [
+      { x: -1.5, y: 0, z: 0 },
+      { x: 1.5, y: 0, z: 0 }
+    ],
     {
       space: PathSpace.XYZ,
-      controlMode: ControlMode.Free
+      controlMode: ControlMode.Automatic
     }
   );
 }
@@ -420,39 +390,6 @@ function getAnchorPointIndexForHandle(path: BezierPath, pointIndex: number): num
   return Math.min(path.numPoints - 1, pointIndex + 1);
 }
 
-function getPathLookTarget(samplePosition: Vec3, pathLookTarget: Vec3, trackingTarget: Vec3): Vec3 {
-  const dx = pathLookTarget.x - samplePosition.x;
-  const dy = pathLookTarget.y - samplePosition.y;
-  const dz = pathLookTarget.z - samplePosition.z;
-  return dx * dx + dy * dy + dz * dz < 1e-5 ? trackingTarget : pathLookTarget;
-}
-
-function getWeightedTarget(pathTarget: Vec3, trackingTarget: Vec3, settings: ComposerSettings): Vec3 {
-  const weight = Math.max(0, Math.min(1, settings.targetWeight));
-  return {
-    x: pathTarget.x + (trackingTarget.x + settings.targetOffsetX - pathTarget.x) * weight,
-    y: pathTarget.y + (trackingTarget.y + settings.targetOffsetY - pathTarget.y) * weight,
-    z: pathTarget.z + (trackingTarget.z + settings.targetOffsetZ - pathTarget.z) * weight
-  };
-}
-
-function getComposerZones(settings: ComposerSettings) {
-  return {
-    deadZone: { width: settings.deadWidth, height: settings.deadHeight },
-    softZone: { width: settings.softWidth, height: settings.softHeight },
-    hardLimits: { width: settings.hardWidth, height: settings.hardHeight }
-  };
-}
-
-function getComposerLookaheadTarget(target: Vec3, settings: ComposerSettings, velocity?: Vec3): Vec3 {
-  if (!velocity || settings.lookaheadTime <= 0) return target;
-  return {
-    x: target.x + velocity.x * settings.lookaheadTime,
-    y: target.y + velocity.y * settings.lookaheadTime,
-    z: target.z + velocity.z * settings.lookaheadTime
-  };
-}
-
 function composerSettingsToVirtualCameraSettings(
   settings: ComposerSettings
 ): Record<string, number> {
@@ -461,21 +398,6 @@ function composerSettingsToVirtualCameraSettings(
     values[key] = settings[key];
   }
   return values;
-}
-
-function mergeVirtualCameraSettings(
-  base: ComposerSettings,
-  values: Record<string, number> | undefined
-): ComposerSettings {
-  if (!values) return base;
-  const next = { ...base };
-  for (const key of VIRTUAL_CAMERA_SETTING_KEYS) {
-    const value = values[key];
-    if (typeof value === "number" && Number.isFinite(value)) {
-      next[key] = value;
-    }
-  }
-  return next;
 }
 
 function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
@@ -514,58 +436,6 @@ function updateSnapshotTransform(snapshot: VirtualCameraSnapshot, matrix: Matrix
   };
 }
 
-function applyCameraPose(
-  camera: PerspectiveCamera,
-  poseSource: CameraPoseSource,
-  samplePosition: Vec3,
-  target: Vector3,
-  deltaSeconds: number
-): void {
-  const alpha = 1 - Math.exp(-8 * deltaSeconds);
-  if (poseSource === "dolly") {
-    target.set(samplePosition.x, samplePosition.y, samplePosition.z);
-  } else {
-    target.set(STATIC_CAMERA_POSITION.x, STATIC_CAMERA_POSITION.y, STATIC_CAMERA_POSITION.z);
-  }
-  camera.position.lerp(target, alpha);
-}
-
-function applyCameraAim(
-  camera: PerspectiveCamera,
-  aimMode: CameraAimMode,
-  target: Vec3,
-  railUp: Vec3,
-  settings: ComposerSettings,
-  composerState: ReturnType<typeof createScreenComposerState>,
-  deltaSeconds: number
-): void {
-  if (aimMode === "screen-composer") {
-    applyScreenComposerAim(
-      camera,
-      target,
-      railUp,
-      composerState,
-      {
-        screenPosition: { x: settings.screenX, y: settings.screenY },
-        ...getComposerZones(settings),
-        damping: { x: settings.dampingX, y: settings.dampingY },
-        lookaheadTime: settings.lookaheadTime,
-        lookaheadSmoothing: settings.lookaheadSmoothing,
-        lookaheadIgnoreY: settings.lookaheadIgnoreY,
-        centerOnActivate: settings.centerOnActivate
-      },
-      deltaSeconds
-    );
-    return;
-  }
-
-  composerState.initialized = false;
-  camera.up.set(railUp.x, railUp.y, railUp.z).normalize();
-  camera.lookAt(target.x, target.y, target.z);
-}
-
-const CART_RIDER_SPEED = 0.8;
-
 const VCAM_PIVOT_PROPS = {
   autoTransform: false,
   fixed: true,
@@ -584,43 +454,6 @@ function shotRowLabelStyle(columns: string): CSSProperties {
     fontSize: 11,
     color: "#94a3b8"
   };
-}
-
-function CartRiderProp({
-  path,
-  isClosed,
-  targetRegistry
-}: {
-  path: VertexPath;
-  isClosed: boolean;
-  targetRegistry: TargetRegistry;
-}) {
-  const groupRef = useRef<Group>(null);
-  useTrackingTarget("cart-rider", groupRef, { name: "Cart Rider", registry: targetRegistry });
-  const { step } = usePathCart({
-    path,
-    speed: CART_RIDER_SPEED,
-    mode: isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop,
-    orientationMode: "path-frame"
-  });
-
-  useFrame((_, delta) => {
-    if (!groupRef.current) return;
-    applyCartFrameToObject(groupRef.current, step(delta));
-  });
-
-  return (
-    <group ref={groupRef}>
-      <mesh>
-        <boxGeometry args={[0.16, 0.08, 0.24]} />
-        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
-      </mesh>
-      <mesh position={[0, 0, 0.16]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.05, 0.1, 12]} />
-        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.35} />
-      </mesh>
-    </group>
-  );
 }
 
 // Targets are cyan across the demo (look-target ball, point targets). Point
@@ -747,13 +580,8 @@ function Scene({
   vertexPath,
   pathVersion,
   speed,
-  driveMainCamera,
-  poseSource,
-  aimMode,
-  composerSettings,
   debugPreview,
   debugFrustum,
-  showCartRider,
   selectedHandleIndex,
   selectedMidpointIndex,
   anchorScales,
@@ -765,12 +593,7 @@ function Scene({
   onSetAnchorScale,
   onRotateMidpointNormal,
   onTransformingChange,
-  dollyTargetMarkerRef,
-  dollyTargetLineRef,
-  lookaheadMarkerRef,
-  lookaheadLineRef,
   virtualCameraCaptureRequest,
-  virtualCameraCaptureSource,
   virtualCameraActivation,
   virtualCameras,
   selectedVirtualCameraId,
@@ -789,13 +612,8 @@ function Scene({
   vertexPath: VertexPath | null;
   pathVersion: number;
   speed: number;
-  driveMainCamera: boolean;
-  poseSource: CameraPoseSource;
-  aimMode: CameraAimMode;
-  composerSettings: ComposerSettings;
   debugPreview: boolean;
   debugFrustum: boolean;
-  showCartRider: boolean;
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
   anchorScales: number[];
@@ -807,12 +625,7 @@ function Scene({
   onSetAnchorScale: (anchorIndex: number, scale: number) => void;
   onRotateMidpointNormal: (segmentIndex: number, deltaDegrees: number) => void;
   onTransformingChange: (isTransforming: boolean) => void;
-  dollyTargetMarkerRef: { current: HTMLDivElement | null };
-  dollyTargetLineRef: { current: SVGLineElement | null };
-  lookaheadMarkerRef: { current: HTMLDivElement | null };
-  lookaheadLineRef: { current: SVGLineElement | null };
   virtualCameraCaptureRequest: number;
-  virtualCameraCaptureSource: VirtualCameraCaptureSource;
   virtualCameraActivation: VirtualCameraActivation | null;
   virtualCameras: DemoVirtualCamera[];
   selectedVirtualCameraId: string | null;
@@ -828,12 +641,6 @@ function Scene({
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
 }) {
-  const followMode = bezierPath?.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
-  const follower = usePathFollower({
-    path: vertexPath,
-    speed,
-    mode: followMode
-  });
   useEditorHelpersVisible();
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
@@ -842,13 +649,6 @@ function Scene({
     [dollies]
   );
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
-  const followerRef = useRef<Mesh>(null);
-  const lookTargetRef = useRef<Mesh>(null);
-  useTrackingTarget("follower", followerRef, { name: "Follower Sphere", registry: targetRegistry });
-  useTrackingTarget("look-ball", lookTargetRef, {
-    name: "Look Target Ball",
-    registry: targetRegistry
-  });
   const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
     getCartFrame: (id) => dollyFramesRef.current.get(id) ?? null,
     getTargetPosition: (id) => targetRegistry.resolve(id),
@@ -872,17 +672,6 @@ function Scene({
     }),
     [speed, targetRegistry, vertexPaths, virtualCameras, dollies]
   );
-  const composerState = useRef(createScreenComposerState());
-  const previewComposerState = useRef(createScreenComposerState());
-  const cameraPositionTarget = useMemo(() => new Vector3(), []);
-  const previewCameraPositionTarget = useMemo(() => new Vector3(), []);
-  const projectedTarget = useMemo(() => new Vector3(), []);
-  const previewCamera = useMemo(() => {
-    const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
-    camera.name = "dolly-preview-camera";
-    camera.updateProjectionMatrix();
-    return camera;
-  }, []);
   const brainCamera = useMemo(() => {
     const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
     camera.name = "virtual-camera-brain";
@@ -892,26 +681,15 @@ function Scene({
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
-  const pipCamera =
-    activeTimeline || virtualCameraActivation || selectedVirtualCamera
-      ? brainCamera
-      : previewCamera;
-  // The rig preview (previewCamera) only has a source while an editable path
-  // drives the follower. With no timeline/shot/selection and no path, nothing
-  // feeds the PiP — the frustum hides and the PiP reads "no output".
+  // The PiP shows an authored camera: timeline output, an activated shot, or
+  // the selected shot. Otherwise nothing drives it ("no output").
+  const pipCamera = brainCamera;
   const hasPipSource = Boolean(
-    activeTimeline || virtualCameraActivation || selectedVirtualCamera || vertexPath
+    activeTimeline || virtualCameraActivation || selectedVirtualCamera
   );
-  // The frustum visualizes whichever camera feeds the PiP (rig, shot brain,
-  // or timeline), not just the rig preview — tinted to match the vcam glyph
-  // state colors (green live, orange selected, slate rig).
   const frustumHelper = useMemo(() => new CameraHelper(pipCamera), [pipCamera]);
-  const frustumColor =
-    activeTimeline || virtualCameraActivation
-      ? "#22c55e"
-      : selectedVirtualCamera
-        ? "#f97316"
-        : "#64748b";
+  // Green while a shot/timeline is live, orange for the selected shot.
+  const frustumColor = activeTimeline || virtualCameraActivation ? "#22c55e" : "#f97316";
   useEffect(() => {
     const color = new Color(frustumColor);
     frustumHelper.setColors(color, color, color, color, color);
@@ -983,17 +761,6 @@ function Scene({
   }, [frustumHelper]);
 
   useEffect(() => {
-    composerState.current = createScreenComposerState();
-    previewComposerState.current = createScreenComposerState();
-  }, [
-    aimMode,
-    poseSource,
-    composerSettings.centerOnActivate,
-    composerSettings.screenX,
-    composerSettings.screenY
-  ]);
-
-  useEffect(() => {
     if (!selectedHandlePoint || isTransforming) return;
     handlePivotMatrix.compose(
       new Vector3(selectedHandlePoint.x, selectedHandlePoint.y, selectedHandlePoint.z),
@@ -1014,7 +781,7 @@ function Scene({
     setHandleGizmoRotation([euler.x, euler.y, euler.z]);
   }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
-  useFrame(({ camera, scene }, delta) => {
+  useFrame(({ camera }, delta) => {
     for (const dolly of dollies) {
       const cart = liveDollies.get(dolly.id);
       const dollyPath = vertexPaths.get(dolly.pathId);
@@ -1026,107 +793,14 @@ function Scene({
     const mainCamera = camera as PerspectiveCamera;
     const elapsed = performance.now() / 1000;
 
-    // The follower, look target, and rig-preview camera all sample the editable
-    // path; the composer demo only runs while one is open. sample/aimTarget stay
-    // null otherwise so the "drive main camera from rig" branch below no-ops.
-    let sample: ReturnType<typeof follower.step> | null = null;
-    let aimTarget: Vec3 | null = null;
-    if (vertexPath) {
-      const followerObject = scene.getObjectByName("follower") as Mesh | null;
-      const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
-      sample = follower.step(delta);
-      const lookSample = samplePathAtDistance(
-        vertexPath,
-        follower.state.current.distance + composerSettings.pathLookaheadDistance,
-        followMode
-      );
-      const tangent = new Vector3(
-        lookSample.direction.x,
-        lookSample.direction.y,
-        lookSample.direction.z
-      ).normalize();
-      const normal = new Vector3(lookSample.normal.x, lookSample.normal.y, lookSample.normal.z).normalize();
-      const side = new Vector3().crossVectors(tangent, normal).normalize();
-      const lookTarget = {
-        x: lookSample.position.x + side.x * Math.sin(elapsed * 0.85) * 0.75 + normal.x * Math.sin(elapsed * 1.7) * 0.35,
-        y: lookSample.position.y + side.y * Math.sin(elapsed * 0.85) * 0.75 + normal.y * Math.sin(elapsed * 1.7) * 0.35,
-        z: lookSample.position.z + side.z * Math.sin(elapsed * 0.85) * 0.75 + normal.z * Math.sin(elapsed * 1.7) * 0.35
-      };
-      const pathLookTarget = getPathLookTarget(sample.position, lookSample.position, lookTarget);
-      const weightedTarget = getWeightedTarget(pathLookTarget, lookTarget, composerSettings);
-      aimTarget = aimMode === "look-at-target" || aimMode === "screen-composer"
-        ? weightedTarget
-        : pathLookTarget;
-
-      if (followerObject) {
-        applySampleToObject(followerObject, sample);
-      }
-
-      if (lookTargetObject) {
-        lookTargetObject.position.set(lookTarget.x, lookTarget.y, lookTarget.z);
-      }
-
-      applyCameraPose(previewCamera, poseSource, sample.position, previewCameraPositionTarget, delta);
-      applyCameraAim(
-        previewCamera,
-        aimMode,
-        aimTarget,
-        sample.normal,
-        composerSettings,
-        previewComposerState.current,
-        delta
-      );
-      previewCamera.updateMatrixWorld();
-
-      projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(pipCamera);
-      updateDollyTargetOverlay(
-        dollyTargetMarkerRef.current,
-        dollyTargetLineRef.current,
-        (projectedTarget.x + 1) * 0.5,
-        (1 - projectedTarget.y) * 0.5,
-        projectedTarget.z >= -1 &&
-          projectedTarget.z <= 1 &&
-          projectedTarget.x >= -1 &&
-          projectedTarget.x <= 1 &&
-          projectedTarget.y >= -1 &&
-          projectedTarget.y <= 1
-      );
-      const lookaheadTarget = getComposerLookaheadTarget(
-        aimTarget,
-        composerSettings,
-        previewComposerState.current.smoothedVelocity
-      );
-      projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(pipCamera);
-      updateDollyTargetOverlay(
-        lookaheadMarkerRef.current,
-        lookaheadLineRef.current,
-        (projectedTarget.x + 1) * 0.5,
-        (1 - projectedTarget.y) * 0.5,
-        aimMode === "screen-composer" &&
-          composerSettings.lookaheadTime > 0 &&
-          projectedTarget.z >= -1 &&
-          projectedTarget.z <= 1 &&
-          projectedTarget.x >= -1 &&
-          projectedTarget.x <= 1 &&
-          projectedTarget.y >= -1 &&
-          projectedTarget.y <= 1,
-        "lookahead"
-      );
-    } else {
-      // No editable path: park the composer overlay markers out of sight.
-      updateDollyTargetOverlay(dollyTargetMarkerRef.current, dollyTargetLineRef.current, 0.5, 0.5, false);
-      updateDollyTargetOverlay(lookaheadMarkerRef.current, lookaheadLineRef.current, 0.5, 0.5, false, "lookahead");
-    }
-
     frustumHelper.update();
 
     if (virtualCameraCaptureRequest !== lastCaptureRequestRef.current) {
       lastCaptureRequestRef.current = virtualCameraCaptureRequest;
-      const sourceCamera =
-        virtualCameraCaptureSource === "viewport" ? mainCamera : previewCamera;
+      // Capture the main viewport (orbit) camera as a new static vcam.
       onVirtualCameraCaptured(
-        captureVirtualCameraSnapshot(sourceCamera, {
-          settings: composerSettingsToVirtualCameraSettings(composerSettings)
+        captureVirtualCameraSnapshot(mainCamera, {
+          settings: composerSettingsToVirtualCameraSettings(DEFAULT_COMPOSER_SETTINGS)
         })
       );
     }
@@ -1140,13 +814,9 @@ function Scene({
       );
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
-      } else {
-        // Released gap (Cinemachine semantics): the live rig camera takes over.
-        brainCamera.position.copy(previewCamera.position);
-        brainCamera.quaternion.copy(previewCamera.quaternion);
       }
-      // Glyphs and shot previews follow the timeline-evaluated carts, not
-      // the free-running ones, while the timeline owns playback.
+      // Released gap (no camera): the PiP holds the last pose; there is no
+      // separate live rig camera in the authored model.
       for (const [dollyId, frame] of sample.cartFrames) {
         dollyFramesRef.current.set(dollyId, frame);
       }
@@ -1158,7 +828,6 @@ function Scene({
         if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
           activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
           resolvedVirtualCameraKeyRef.current = null;
-          composerState.current = createScreenComposerState();
           activateVirtualCameraBrain(
             virtualCameraBrainRef.current,
             resolveDemoVirtualCamera(liveVcam, elapsed),
@@ -1198,25 +867,10 @@ function Scene({
         resolveDemoVirtualCamera(selectedVirtualCamera, elapsed)
       );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
-    } else if (driveMainCamera && !isTransforming && sample && aimTarget) {
-      activeVirtualCameraKeyRef.current = null;
-      resolvedVirtualCameraKeyRef.current = null;
-      virtualCameraBrainRef.current = createVirtualCameraBrainState();
-      applyCameraPose(mainCamera, poseSource, sample.position, cameraPositionTarget, delta);
-      applyCameraAim(
-        mainCamera,
-        aimMode,
-        aimTarget,
-        sample.normal,
-        composerSettings,
-        composerState.current,
-        delta
-      );
     } else {
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
       virtualCameraBrainRef.current = createVirtualCameraBrainState();
-      composerState.current = createScreenComposerState();
     }
   });
 
@@ -1601,20 +1255,6 @@ function Scene({
       </mesh>
       </EditorHelpers>
 
-      {vertexPath ? (
-        <>
-          <mesh name="follower" ref={followerRef}>
-            <sphereGeometry args={[0.13, 16, 16]} />
-            <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
-          </mesh>
-
-          <mesh name="look-target" ref={lookTargetRef}>
-            <sphereGeometry args={[0.1, 16, 16]} />
-            <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
-          </mesh>
-        </>
-      ) : null}
-
       <EditorHelpers>
       {virtualCameras.map((virtualCamera) => {
         const isSelected = virtualCamera.id === selectedVirtualCameraId;
@@ -1694,14 +1334,6 @@ function Scene({
       })}
       {debugFrustum && hasPipSource ? <primitive object={frustumHelper} /> : null}
       </EditorHelpers>
-
-      {showCartRider && vertexPath && bezierPath ? (
-        <CartRiderProp
-          path={vertexPath}
-          isClosed={bezierPath.isClosed}
-          targetRegistry={targetRegistry}
-        />
-      ) : null}
 
       {debugPreview ? (
         <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} hasSource={hasPipSource} />
@@ -1879,56 +1511,10 @@ function VirtualCameraGlyph({
   );
 }
 
-function DollyPreviewChrome({
-  composerActive,
-  composerSettings,
-  label,
-  hasSource,
-  targetMarkerRef,
-  targetLineRef,
-  lookaheadMarkerRef,
-  lookaheadLineRef
-}: {
-  composerActive: boolean;
-  composerSettings: ComposerSettings;
-  label: string;
-  hasSource: boolean;
-  targetMarkerRef: { current: HTMLDivElement | null };
-  targetLineRef: { current: SVGLineElement | null };
-  lookaheadMarkerRef: { current: HTMLDivElement | null };
-  lookaheadLineRef: { current: SVGLineElement | null };
-}) {
-  const zones = getComposerZones(composerSettings);
-
-  // No driving camera: just the framed panel + label; the composer zone/target
-  // overlays would be meaningless without a source.
-  if (!hasSource) {
-    return (
-      <div
-        style={{
-          position: "fixed",
-          right: DOLLY_PIP_MARGIN,
-          bottom: DOLLY_PIP_MARGIN,
-          zIndex: 9,
-          width: "min(360px, max(220px, 28vw))",
-          aspectRatio: "16 / 9",
-          pointerEvents: "none",
-          border: "2px solid rgba(148, 163, 184, 0.35)",
-          boxShadow: "0 18px 44px rgba(15, 23, 42, 0.28)",
-          background: "rgba(10, 16, 28, 0.55)",
-          boxSizing: "border-box",
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "center"
-        }}
-      >
-        <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>
-          {label}
-        </div>
-      </div>
-    );
-  }
-
+// The PiP overlay chrome: just a framed panel + label. The camera view is
+// rendered into this screen region by DollyCameraPip; a slate border/label
+// reads "no output" when nothing drives it.
+function DollyPreviewChrome({ label, hasSource }: { label: string; hasSource: boolean }) {
   return (
     <div
       style={{
@@ -1939,100 +1525,12 @@ function DollyPreviewChrome({
         width: "min(360px, max(220px, 28vw))",
         aspectRatio: "16 / 9",
         pointerEvents: "none",
-        border: "2px solid rgba(248, 250, 252, 0.92)",
+        border: `2px solid ${hasSource ? "rgba(248, 250, 252, 0.92)" : "rgba(148, 163, 184, 0.35)"}`,
         boxShadow: "0 18px 44px rgba(15, 23, 42, 0.28)",
-        background: "rgba(15, 23, 42, 0.2)",
+        background: hasSource ? "transparent" : "rgba(10, 16, 28, 0.55)",
         boxSizing: "border-box"
       }}
     >
-      <DollyPipZone
-        width={zones.hardLimits.width}
-        height={zones.hardLimits.height}
-        centerX={composerSettings.screenX}
-        centerY={composerSettings.screenY}
-        color="rgba(248, 250, 252, 0.54)"
-        fill="rgba(248, 250, 252, 0.02)"
-      />
-      <DollyPipZone
-        width={zones.softZone.width}
-        height={zones.softZone.height}
-        centerX={composerSettings.screenX}
-        centerY={composerSettings.screenY}
-        color={composerActive ? "rgba(6, 182, 212, 0.78)" : "rgba(6, 182, 212, 0.38)"}
-        fill="rgba(6, 182, 212, 0.035)"
-      />
-      <DollyPipZone
-        width={zones.deadZone.width}
-        height={zones.deadZone.height}
-        centerX={composerSettings.screenX}
-        centerY={composerSettings.screenY}
-        color={composerActive ? "rgba(249, 115, 22, 0.92)" : "rgba(249, 115, 22, 0.44)"}
-        fill="rgba(249, 115, 22, 0.04)"
-      />
-      <svg
-        viewBox="0 0 100 100"
-        preserveAspectRatio="none"
-        style={{
-          position: "absolute",
-          inset: 0,
-          width: "100%",
-          height: "100%",
-          overflow: "visible"
-        }}
-      >
-        <line
-          ref={targetLineRef}
-          x1="50"
-          y1="50"
-          x2="50"
-          y2="50"
-          stroke="rgba(6, 182, 212, 0.72)"
-          strokeWidth="0.55"
-          vectorEffect="non-scaling-stroke"
-        />
-        <line
-          ref={lookaheadLineRef}
-          x1="50"
-          y1="50"
-          x2="50"
-          y2="50"
-          stroke="rgba(250, 204, 21, 0)"
-          strokeWidth="0.55"
-          strokeDasharray="3 2"
-          vectorEffect="non-scaling-stroke"
-        />
-      </svg>
-      <div
-        ref={targetMarkerRef}
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "50%",
-          width: 14,
-          height: 14,
-          transform: "translate(-50%, -50%)",
-          borderRadius: 999,
-          background: "#06b6d4",
-          border: "2px solid rgba(248, 250, 252, 0.95)",
-          boxShadow: "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)",
-          boxSizing: "border-box"
-        }}
-      />
-      <div
-        ref={lookaheadMarkerRef}
-        style={{
-          position: "absolute",
-          left: "50%",
-          top: "50%",
-          width: 10,
-          height: 10,
-          transform: "translate(-50%, -50%) rotate(45deg)",
-          background: "rgba(250, 204, 21, 0)",
-          border: "2px solid rgba(250, 204, 21, 0)",
-          boxShadow: "0 0 0 3px rgba(250, 204, 21, 0)",
-          boxSizing: "border-box"
-        }}
-      />
       <div
         style={{
           position: "absolute",
@@ -2041,10 +1539,9 @@ function DollyPreviewChrome({
           padding: "3px 7px",
           borderRadius: 4,
           background: "rgba(15, 23, 42, 0.72)",
-          color: "#f8fafc",
+          color: hasSource ? "#f8fafc" : "#64748b",
           fontSize: 11,
           fontWeight: 700,
-          letterSpacing: 0,
           fontFamily: "ui-sans-serif, system-ui, sans-serif"
         }}
       >
@@ -2054,364 +1551,6 @@ function DollyPreviewChrome({
   );
 }
 
-function updateDollyTargetOverlay(
-  marker: HTMLDivElement | null,
-  line: SVGLineElement | null,
-  x: number,
-  y: number,
-  visible: boolean,
-  kind: "target" | "lookahead" = "target"
-): void {
-  const clampedX = Math.max(0.02, Math.min(0.98, x));
-  const clampedY = Math.max(0.02, Math.min(0.98, y));
-  const xPercent = clampedX * 100;
-  const yPercent = clampedY * 100;
-
-  if (marker) {
-    marker.style.left = `${xPercent}%`;
-    marker.style.top = `${yPercent}%`;
-    if (kind === "lookahead") {
-      marker.style.opacity = visible ? "1" : "0";
-      marker.style.background = visible ? "rgba(250, 204, 21, 0.95)" : "rgba(250, 204, 21, 0)";
-      marker.style.borderColor = visible ? "rgba(15, 23, 42, 0.8)" : "rgba(250, 204, 21, 0)";
-      marker.style.boxShadow = visible
-        ? "0 0 0 3px rgba(250, 204, 21, 0.24), 0 0 16px rgba(250, 204, 21, 0.75)"
-        : "0 0 0 3px rgba(250, 204, 21, 0)";
-    } else {
-      marker.style.opacity = visible ? "1" : "0.42";
-      marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
-      marker.style.boxShadow = visible
-        ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
-        : "0 0 0 4px rgba(6, 182, 212, 0.12)";
-    }
-  }
-
-  if (line) {
-    line.setAttribute("x2", xPercent.toFixed(3));
-    line.setAttribute("y2", yPercent.toFixed(3));
-    line.setAttribute(
-      "stroke",
-      kind === "lookahead"
-        ? visible ? "rgba(250, 204, 21, 0.72)" : "rgba(250, 204, 21, 0)"
-        : visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
-    );
-  }
-}
-
-function DollyPipZone({
-  width,
-  height,
-  centerX,
-  centerY,
-  color,
-  fill
-}: {
-  width: number;
-  height: number;
-  centerX: number;
-  centerY: number;
-  color: string;
-  fill: string;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: `${50 + centerX * 100}%`,
-        top: `${50 - centerY * 100}%`,
-        width: `${width * 100}%`,
-        height: `${height * 100}%`,
-        transform: "translate(-50%, -50%)",
-        border: `1.5px solid ${color}`,
-        background: fill,
-        boxSizing: "border-box"
-      }}
-    />
-  );
-}
-
-function ComposerGuides({ settings }: { settings: ComposerSettings }) {
-  const zones = getComposerZones(settings);
-  return (
-    <div
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 8,
-        pointerEvents: "none"
-      }}
-    >
-      <ComposerGuideBox
-        width={zones.hardLimits.width}
-        height={zones.hardLimits.height}
-        centerX={settings.screenX}
-        centerY={settings.screenY}
-        color="rgba(15, 23, 42, 0.45)"
-      />
-      <ComposerGuideBox
-        width={zones.softZone.width}
-        height={zones.softZone.height}
-        centerX={settings.screenX}
-        centerY={settings.screenY}
-        color="rgba(6, 182, 212, 0.55)"
-      />
-      <ComposerGuideBox
-        width={zones.deadZone.width}
-        height={zones.deadZone.height}
-        centerX={settings.screenX}
-        centerY={settings.screenY}
-        color="rgba(249, 115, 22, 0.8)"
-      />
-    </div>
-  );
-}
-
-function ComposerGuideBox({
-  width,
-  height,
-  centerX,
-  centerY,
-  color
-}: {
-  width: number;
-  height: number;
-  centerX: number;
-  centerY: number;
-  color: string;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: `${50 + centerX * 100}vw`,
-        top: `${50 - centerY * 100}vh`,
-        width: `${width * 100}vw`,
-        height: `${height * 100}vh`,
-        transform: "translate(-50%, -50%)",
-        border: `2px solid ${color}`,
-        boxSizing: "border-box"
-      }}
-    />
-  );
-}
-
-function RigSettingsPanel({
-  settings,
-  onChange,
-  onClose,
-  onReset
-}: {
-  settings: ComposerSettings;
-  onChange: (next: ComposerSettings) => void;
-  onClose: () => void;
-  onReset: () => void;
-}) {
-  function setValue<K extends keyof ComposerSettings>(key: K, value: ComposerSettings[K]): void {
-    onChange({ ...settings, [key]: value });
-  }
-
-  return (
-    <div
-      style={{
-        width: "100%",
-        boxSizing: "border-box",
-        padding: 12,
-        borderRadius: 8,
-        background: "rgba(10, 16, 28, 0.92)",
-        color: "#f8fafc",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        boxShadow: "0 24px 60px rgba(15, 23, 42, 0.35)",
-        border: "1px solid rgba(148, 163, 184, 0.22)"
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 10 }}>
-        <div>
-          <div style={{ fontSize: 13, fontWeight: 800 }}>Composer Settings</div>
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>Rotation Composer</div>
-        </div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={onReset}>Reset</button>
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-
-      <SettingsSection title="Targets">
-        <NumberSlider
-          label="Path Lookahead"
-          value={settings.pathLookaheadDistance}
-          min={0}
-          max={3}
-          step={0.05}
-          unit="m"
-          onChange={(value) => setValue("pathLookaheadDistance", value)}
-        />
-        <NumberSlider
-          label="Target Weight"
-          value={settings.targetWeight}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("targetWeight", value)}
-        />
-        <NumberSlider
-          label="Tracked Offset X"
-          value={settings.targetOffsetX}
-          min={-2}
-          max={2}
-          step={0.05}
-          onChange={(value) => setValue("targetOffsetX", value)}
-        />
-        <NumberSlider
-          label="Tracked Offset Y"
-          value={settings.targetOffsetY}
-          min={-2}
-          max={2}
-          step={0.05}
-          onChange={(value) => setValue("targetOffsetY", value)}
-        />
-        <NumberSlider
-          label="Tracked Offset Z"
-          value={settings.targetOffsetZ}
-          min={-2}
-          max={2}
-          step={0.05}
-          onChange={(value) => setValue("targetOffsetZ", value)}
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Screen">
-        <div style={{ display: "flex", gap: 8 }}>
-          <button
-            onClick={() => onChange({ ...settings, screenX: 0, screenY: 0 })}
-            style={{ flex: 1 }}
-          >
-            Center Screen
-          </button>
-          <button
-            onClick={() => setValue("centerOnActivate", !settings.centerOnActivate)}
-            style={{ flex: 1 }}
-          >
-            {settings.centerOnActivate ? "Center On Activate: On" : "Center On Activate: Off"}
-          </button>
-        </div>
-        <NumberSlider
-          label="Screen X"
-          value={settings.screenX}
-          min={-0.4}
-          max={0.4}
-          step={0.01}
-          onChange={(value) => setValue("screenX", value)}
-        />
-        <NumberSlider
-          label="Screen Y"
-          value={settings.screenY}
-          min={-0.4}
-          max={0.4}
-          step={0.01}
-          onChange={(value) => setValue("screenY", value)}
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Zones">
-        <NumberSlider
-          label="Dead Width"
-          value={settings.deadWidth}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("deadWidth", value)}
-        />
-        <NumberSlider
-          label="Dead Height"
-          value={settings.deadHeight}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("deadHeight", value)}
-        />
-        <NumberSlider
-          label="Soft Width"
-          value={settings.softWidth}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("softWidth", value)}
-        />
-        <NumberSlider
-          label="Soft Height"
-          value={settings.softHeight}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("softHeight", value)}
-        />
-        <NumberSlider
-          label="Hard Width"
-          value={settings.hardWidth}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("hardWidth", value)}
-        />
-        <NumberSlider
-          label="Hard Height"
-          value={settings.hardHeight}
-          min={0}
-          max={1}
-          step={0.01}
-          onChange={(value) => setValue("hardHeight", value)}
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Damping">
-        <NumberSlider
-          label="Horizontal"
-          value={settings.dampingX}
-          min={0}
-          max={20}
-          step={0.1}
-          onChange={(value) => setValue("dampingX", value)}
-        />
-        <NumberSlider
-          label="Vertical"
-          value={settings.dampingY}
-          min={0}
-          max={20}
-          step={0.1}
-          onChange={(value) => setValue("dampingY", value)}
-        />
-      </SettingsSection>
-
-      <SettingsSection title="Lookahead">
-        <NumberSlider
-          label="Time"
-          value={settings.lookaheadTime}
-          min={0}
-          max={1.5}
-          step={0.01}
-          unit="s"
-          onChange={(value) => setValue("lookaheadTime", value)}
-        />
-        <NumberSlider
-          label="Smoothing"
-          value={settings.lookaheadSmoothing}
-          min={0}
-          max={20}
-          step={0.1}
-          onChange={(value) => setValue("lookaheadSmoothing", value)}
-        />
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={settings.lookaheadIgnoreY}
-            onChange={(event) => setValue("lookaheadIgnoreY", event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Ignore Y</span>
-        </label>
-      </SettingsSection>
-    </div>
-  );
-}
 
 function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
   return (
@@ -2480,11 +1619,9 @@ function VirtualCameraPanel({
   cameras,
   activeId,
   selectedId,
-  captureSource,
   blendCurve,
   blendDuration,
   transitionProgress,
-  onCaptureSourceChange,
   onBlendCurveChange,
   onBlendDurationChange,
   onCapture,
@@ -2495,17 +1632,14 @@ function VirtualCameraPanel({
   onRelease,
   trackTargets,
   onUpdateShot,
-  onUpdateComposer,
   dollies
 }: {
   cameras: DemoVirtualCamera[];
   activeId: string | null;
   selectedId: string | null;
-  captureSource: VirtualCameraCaptureSource;
   blendCurve: VirtualCameraBlendCurve;
   blendDuration: number;
   transitionProgress: number;
-  onCaptureSourceChange: (source: VirtualCameraCaptureSource) => void;
   onBlendCurveChange: (curve: VirtualCameraBlendCurve) => void;
   onBlendDurationChange: (duration: number) => void;
   onCapture: () => void;
@@ -2516,10 +1650,8 @@ function VirtualCameraPanel({
   onRelease: () => void;
   trackTargets: RegisteredTarget[];
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
-  onUpdateComposer: (id: string, settings: ComposerSettings) => void;
   dollies: DemoDolly[];
 }) {
-  const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
     <div
       style={{
@@ -2546,19 +1678,9 @@ function VirtualCameraPanel({
         ) : null}
       </div>
 
-      <SettingsSection title="Capture">
-        <label style={{ display: "grid", gridTemplateColumns: "96px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-          <span>Source</span>
-          <select
-            value={captureSource}
-            onChange={(event) => onCaptureSourceChange(event.target.value as VirtualCameraCaptureSource)}
-          >
-            <option value="rig">Rig camera (dolly pose)</option>
-            <option value="viewport">Main viewport (orbit camera)</option>
-          </select>
-        </label>
+      <SettingsSection title="Cameras">
         <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={onCapture}>Add VCam</button>
+          <button onClick={onCapture}>Add VCam (from viewport)</button>
           <button onClick={onAddCart}>Add Cart VCam</button>
         </div>
       </SettingsSection>
@@ -2762,27 +1884,6 @@ function VirtualCameraPanel({
                       />
                     </label>
                   ) : null}
-                  <div
-                    onClick={(event) => event.stopPropagation()}
-                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
-                  >
-                    <button
-                      style={{ fontSize: 11, textAlign: "left" }}
-                      onClick={() =>
-                        setComposerOpenId(composerOpenId === camera.id ? null : camera.id)
-                      }
-                    >
-                      {composerOpenId === camera.id ? "▾ Composer settings" : "▸ Composer settings"}
-                    </button>
-                    {composerOpenId === camera.id ? (
-                      <RigSettingsPanel
-                        settings={camera.composerSettings}
-                        onChange={(settings) => onUpdateComposer(camera.id, settings)}
-                        onClose={() => setComposerOpenId(null)}
-                        onReset={() => onUpdateComposer(camera.id, DEFAULT_COMPOSER_SETTINGS)}
-                      />
-                    ) : null}
-                  </div>
                 </div>
               );
             })}
@@ -2827,17 +1928,12 @@ export function App() {
 
   const [pathVersion, setPathVersion] = useState(0);
   const [speed, setSpeed] = useState(1);
-  const [driveMainCamera, setDriveMainCamera] = useState(false);
-  const [poseSource, setPoseSource] = useState<CameraPoseSource>("dolly");
-  const [aimMode, setAimMode] = useState<CameraAimMode>("screen-composer");
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
-  const [showCartRider, setShowCartRider] = useState(false);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
-  const [composerSettings, setComposerSettings] = useState<ComposerSettings>(DEFAULT_COMPOSER_SETTINGS);
   // The show (dollies, shots, mounts, moves) survives reloads like the spline.
   const storedShow = useMemo(() => {
     try {
@@ -3031,8 +2127,6 @@ export function App() {
   }
   const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
-  const [virtualCameraCaptureSource, setVirtualCameraCaptureSource] =
-    useState<VirtualCameraCaptureSource>("rig");
   const [virtualCameraActivation, setVirtualCameraActivation] =
     useState<VirtualCameraActivation | null>(null);
   const [virtualCameraBlendCurve, setVirtualCameraBlendCurve] =
@@ -3043,10 +2137,6 @@ export function App() {
   const [isTransforming, setIsTransforming] = useState(false);
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
   const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
-  const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
-  const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
-  const lookaheadMarkerRef = useRef<HTMLDivElement | null>(null);
-  const lookaheadLineRef = useRef<SVGLineElement | null>(null);
   const [anchorScales, setAnchorScales] = useState<number[]>(
     () => (bezierPath ? new Array(bezierPath.numAnchorPoints).fill(1) : [])
   );
@@ -3281,11 +2371,9 @@ export function App() {
         snapshot: {
           ...snapshot,
           name,
-          settings: composerSettingsToVirtualCameraSettings(composerSettings)
+          settings: composerSettingsToVirtualCameraSettings(DEFAULT_COMPOSER_SETTINGS)
         },
-        poseSource,
-        aimMode,
-        composerSettings
+        composerSettings: DEFAULT_COMPOSER_SETTINGS
       }
     ]);
   }
@@ -3316,10 +2404,6 @@ export function App() {
 
     const durationSeconds = virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration;
     selectVirtualCamera(id);
-    setDriveMainCamera(false);
-    setPoseSource(camera.poseSource);
-    setAimMode(camera.aimMode);
-    setComposerSettings(mergeVirtualCameraSettings(camera.composerSettings, camera.snapshot.settings));
     setVirtualCameraTransitionProgress(durationSeconds <= 0 ? 1 : 0);
     setVirtualCameraActivation({
       key: Date.now(),
@@ -3333,27 +2417,6 @@ export function App() {
     setVirtualCameras((current) =>
       current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
     );
-  }
-
-  function updateVirtualCameraComposer(id: string, settings: ComposerSettings): void {
-    setVirtualCameras((current) =>
-      current.map((camera) =>
-        camera.id === id
-          ? {
-              ...camera,
-              composerSettings: settings,
-              snapshot: {
-                ...camera.snapshot,
-                settings: composerSettingsToVirtualCameraSettings(settings)
-              }
-            }
-          : camera
-      )
-    );
-    // Keep the live rig in sync when the edited shot is the one on screen.
-    if (id === selectedVirtualCameraId || id === virtualCameraActivation?.toId) {
-      setComposerSettings(settings);
-    }
   }
 
   function deleteVirtualCamera(id: string): void {
@@ -3627,7 +2690,7 @@ export function App() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Rig Driver">
+        <SettingsSection title="Dolly Speed">
           <NumberSlider
             label="Speed"
             value={speed}
@@ -3636,41 +2699,6 @@ export function App() {
             step={0.1}
             onChange={setSpeed}
           />
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={driveMainCamera}
-              onChange={(e) => {
-                setDriveMainCamera(e.target.checked);
-                if (e.target.checked) releaseVirtualCamera();
-              }}
-            />
-            <span style={{ marginLeft: 6 }}>Drive main viewport from rig</span>
-          </label>
-
-          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-            <span>Pose Source</span>
-            <select
-              value={poseSource}
-              onChange={(e) => setPoseSource(e.target.value as CameraPoseSource)}
-            >
-              <option value="dolly">Dolly Rail</option>
-              <option value="static">Static</option>
-            </select>
-          </label>
-
-          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-            <span>Aim Mode</span>
-            <select
-              value={aimMode}
-              onChange={(e) => setAimMode(e.target.value as CameraAimMode)}
-            >
-              <option value="screen-composer">Screen Composer</option>
-              <option value="path-lookahead">Path Lookahead</option>
-              <option value="look-at-target">Look At Target</option>
-            </select>
-          </label>
         </SettingsSection>
 
         <SettingsSection title="Viewport Debug">
@@ -3689,16 +2717,7 @@ export function App() {
               checked={debugFrustum}
               onChange={(e) => setDebugFrustum(e.target.checked)}
             />
-            <span style={{ marginLeft: 6 }}>Show rig frustum</span>
-          </label>
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={showCartRider}
-              onChange={(e) => setShowCartRider(e.target.checked)}
-            />
-            <span style={{ marginLeft: 6 }}>Show cart rider prop</span>
+            <span style={{ marginLeft: 6 }}>Show camera frustum</span>
           </label>
 
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
@@ -3707,9 +2726,6 @@ export function App() {
         </SettingsSection>
       </div>
 
-      {driveMainCamera && aimMode === "screen-composer" ? (
-        <ComposerGuides settings={composerSettings} />
-      ) : null}
       <div
         style={{
           position: "fixed",
@@ -3728,18 +2744,15 @@ export function App() {
           cameras={virtualCameras}
           activeId={virtualCameraActivation?.toId ?? null}
           selectedId={selectedVirtualCameraId}
-          captureSource={virtualCameraCaptureSource}
           blendCurve={virtualCameraBlendCurve}
           blendDuration={virtualCameraBlendDuration}
           transitionProgress={virtualCameraTransitionProgress}
-          onCaptureSourceChange={setVirtualCameraCaptureSource}
           onBlendCurveChange={setVirtualCameraBlendCurve}
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
           onAddCart={addCartVirtualCamera}
           trackTargets={registeredTargets}
           onUpdateShot={updateVirtualCameraShot}
-          onUpdateComposer={updateVirtualCameraComposer}
           dollies={dollies}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
@@ -3803,23 +2816,14 @@ export function App() {
         />
       </div>
       {debugPreview ? (
-        <DollyPreviewChrome
-          composerActive={aimMode === "screen-composer"}
-          composerSettings={composerSettings}
-          label={pipLabel}
-          hasSource={hasPipSource}
-          targetMarkerRef={dollyTargetMarkerRef}
-          targetLineRef={dollyTargetLineRef}
-          lookaheadMarkerRef={lookaheadMarkerRef}
-          lookaheadLineRef={lookaheadLineRef}
-        />
+        <DollyPreviewChrome label={pipLabel} hasSource={hasPipSource} />
       ) : null}
 
       <Canvas style={{ width: "100%", height: "100%" }} camera={{ position: [0, 0, 6], fov: 45 }}>
         <color attach="background" args={["#f8fafc"]} />
         <OrbitControls
           makeDefault
-          enabled={!isTransforming && !driveMainCamera}
+          enabled={!isTransforming}
           enableDamping
           dampingFactor={0.08}
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
@@ -3834,13 +2838,8 @@ export function App() {
           timelinePlayerRef={timelinePlayerRef}
           pathVersion={pathVersion}
           speed={speed}
-          driveMainCamera={driveMainCamera}
-          poseSource={poseSource}
-          aimMode={aimMode}
-          composerSettings={composerSettings}
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
-          showCartRider={showCartRider}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
           anchorScales={anchorScales}
@@ -3861,19 +2860,13 @@ export function App() {
           }}
           onTransformingChange={setIsTransforming}
           onRotateMidpointNormal={rotateMidpointNormal}
-          dollyTargetMarkerRef={dollyTargetMarkerRef}
-          dollyTargetLineRef={dollyTargetLineRef}
-          lookaheadMarkerRef={lookaheadMarkerRef}
-          lookaheadLineRef={lookaheadLineRef}
           virtualCameraCaptureRequest={virtualCameraCaptureRequest}
-          virtualCameraCaptureSource={virtualCameraCaptureSource}
           virtualCameraActivation={virtualCameraActivation}
           virtualCameras={virtualCameras}
           selectedVirtualCameraId={selectedVirtualCameraId}
           onVirtualCameraCaptured={addCapturedVirtualCamera}
-          onVirtualCameraResolved={({ snapshot, progress }) => {
+          onVirtualCameraResolved={({ progress }) => {
             setVirtualCameraTransitionProgress(progress);
-            setComposerSettings((current) => mergeVirtualCameraSettings(current, snapshot.settings));
           }}
           onSelectVirtualCamera={selectVirtualCamera}
           onUpdateVirtualCameraSnapshot={updateVirtualCameraSnapshot}
