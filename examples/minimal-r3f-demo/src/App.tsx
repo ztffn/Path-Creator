@@ -3047,6 +3047,8 @@ export function App() {
   }
 
   function addCartVirtualCamera(startTime?: number | null): void {
+    // Guard: this is wired to button onClick in places, which passes the event.
+    const start = typeof startTime === "number" ? startTime : null;
     addDemoVcam(
       "cart",
       "Cart VCam",
@@ -3055,7 +3057,7 @@ export function App() {
         quaternion: { x: 0, y: 0, z: 0, w: 1 },
         lens: { fov: 45 }
       },
-      startTime
+      start
     );
   }
 
