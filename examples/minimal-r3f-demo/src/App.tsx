@@ -3168,13 +3168,13 @@ export function App() {
                   </select>
                   <button onClick={() => deleteDolly(dolly.id)}>Del</button>
                 </div>
-                {/* Run-blocks: over [start,end] the dolly eases from→to (distance). */}
+                {/* Dolly moves: over [start,end] the dolly eases from→to (distance). */}
                 {(dollyRuns[dolly.id] ?? []).map((run) => (
                   <div
                     key={run.id}
                     style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, paddingLeft: 10, color: "#94a3b8" }}
                   >
-                    <span style={{ width: 26 }}>run</span>
+                    <span style={{ width: 30 }}>move</span>
                     <input type="number" title="start (s)" value={run.start} step={0.25} style={{ width: 46 }}
                       onChange={(event) => updateDollyRun(dolly.id, run.id, { start: Number(event.target.value) })} />
                     <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
@@ -3184,11 +3184,11 @@ export function App() {
                     <span>→</span>
                     <input type="number" title="to (dist)" value={run.toDistance} step={0.5} style={{ width: 46 }}
                       onChange={(event) => updateDollyRun(dolly.id, run.id, { toDistance: Number(event.target.value) })} />
-                    <button title="Delete run" onClick={() => deleteDollyRun(dolly.id, run.id)}>×</button>
+                    <button title="Delete move" onClick={() => deleteDollyRun(dolly.id, run.id)}>×</button>
                   </div>
                 ))}
                 <button style={{ fontSize: 11, justifySelf: "start", marginLeft: 10 }} onClick={() => addDollyRun(dolly.id, 0)}>
-                  + run
+                  + move
                 </button>
               </div>
             ))}
@@ -3398,6 +3398,7 @@ export function App() {
             start: vcam.shotStart,
             end: vcam.shotEnd
           }))}
+          dollies={dollies.map((dolly) => ({ id: dolly.id, name: dolly.name ?? dolly.id }))}
           dollyMoves={Object.entries(dollyRuns).flatMap(([cartId, runs]) =>
             runs.map((run) => ({
               shotId: run.id,

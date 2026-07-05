@@ -10,7 +10,7 @@ import {
 } from "@xzdarcy/react-timeline-editor";
 import type { TimelineRow } from "@xzdarcy/timeline-engine";
 import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
-import { Component, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { seekTimelinePlayer, type TimelinePlayer } from "@huma/path-creator/timeline";
 
 const SHOT_EFFECTS = {
@@ -61,6 +61,7 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
 
 export function TimelineLanes({
   shots,
+  dollies,
   dollyMoves,
   selectedShotId,
   playerRef,
@@ -77,6 +78,8 @@ export function TimelineLanes({
   onCreateDollyRun
 }: {
   shots: LaneShot[];
+  /** One lane per dolly (shown even with no runs, so you can add the first one). */
+  dollies: { id: string; name: string }[];
   dollyMoves: LaneDollyMove[];
   selectedShotId: string | null;
   playerRef: { current: TimelinePlayer };
@@ -103,20 +106,35 @@ export function TimelineLanes({
   const laneStateRef = useRef<TimelineState>(null);
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
+  const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  // Clamp the context menu into the viewport (the lane sits at the bottom, so a
+  // menu placed at the click point would open off-screen). Runs before paint.
+  useLayoutEffect(() => {
+    const menu = contextMenuRef.current;
+    if (!menu || !contextMenu) return;
+    const rect = menu.getBoundingClientRect();
+    const left = Math.max(8, Math.min(contextMenu.x, window.innerWidth - rect.width - 8));
+    const top = Math.max(8, Math.min(contextMenu.y, window.innerHeight - rect.height - 8));
+    menu.style.left = `${left}px`;
+    menu.style.top = `${top}px`;
+  }, [contextMenu]);
 
   const timingKey =
     shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|") +
+    dollies.map((dolly) => `${dolly.id}:${dolly.name}`).join(",") +
     dollyMoves.map((move) => `${move.shotId}:${move.dollyId}:${move.start}:${move.end}`).join("|");
-  const dollyLanes = useMemo(() => {
-    const lanes = new Map<string, { name: string; moves: LaneDollyMove[] }>();
-    for (const move of dollyMoves) {
-      const lane = lanes.get(move.dollyId) ?? { name: move.dollyName, moves: [] };
-      lane.moves.push(move);
-      lanes.set(move.dollyId, lane);
-    }
-    return [...lanes.entries()];
+  // One lane per dolly (even with no runs), so the lane is always there to
+  // double-click / right-click for the first run.
+  const dollyLanes = useMemo(
+    () =>
+      dollies.map(
+        (dolly) =>
+          [dolly.id, { name: dolly.name, moves: dollyMoves.filter((move) => move.dollyId === dolly.id) }] as const
+      ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [timingKey]);
+    [timingKey]
+  );
   const editorData = useMemo<TimelineRow[]>(
     () => [
       {
@@ -447,6 +465,7 @@ export function TimelineLanes({
             }}
           >
             <div
+              ref={contextMenuRef}
               style={{
                 position: "fixed",
                 left: contextMenu.x,
@@ -500,7 +519,7 @@ export function TimelineLanes({
                       setContextMenu(null);
                     }}
                   >
-                    Add dolly run here
+                    Add dolly move here
                   </button>
                   <div style={{ height: 1, margin: "4px 0", background: "rgba(148, 163, 184, 0.18)" }} />
                 </>
