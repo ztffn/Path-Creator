@@ -13,6 +13,8 @@ import {
   type CartFrame,
   type ComposerSettings,
   type RegisteredTarget,
+  type RigCartDefinition,
+  type RigPathDefinition,
   type SerializedBezierPath,
   type Vec3
 } from "@huma/path-creator/core";
@@ -53,11 +55,13 @@ import { TimelineLanes } from "./TimelineLanes";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
+  makeDolly,
   toVcamView,
   vcamDefFromView,
   type DemoNoisePreset,
   type DemoVirtualCamera,
   type EditorVcam,
+  type SceneTarget,
   type ShotTiming
 } from "./vcam-model";
 import {
@@ -78,11 +82,9 @@ const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // touch nothing else.
 // A production can run several dollies, all riding the demo's one rail;
 // cameras mount a dolly via their cart body's cartId.
-type DemoPath = { id: string; name: string; bezier: SerializedBezierPath };
-type DemoDolly = { id: string; name: string; endOfPath: EndOfPathInstruction; pathId: string };
 const FALLBACK_PATH_ID = "path-1";
-const FALLBACK_DOLLY: DemoDolly = { id: "dolly-1", name: "Dolly 1", endOfPath: EndOfPathInstruction.Loop, pathId: FALLBACK_PATH_ID };
-const INITIAL_DOLLIES: DemoDolly[] = [FALLBACK_DOLLY];
+const FALLBACK_DOLLY: RigCartDefinition = makeDolly({ id: "dolly-1", name: "Dolly 1", pathId: FALLBACK_PATH_ID });
+const INITIAL_DOLLIES: RigCartDefinition[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 
@@ -381,26 +383,39 @@ function shotRowLabelStyle(columns: string): CSSProperties {
 // shows in the PiP (the stand-in for the real renderer) — off makes it an
 // invisible aim point, still manipulable in the authoring view. `cartId` mounts
 // the target on a dolly (it then rides the rail); null = static at `position`.
-type DemoPointTarget = {
+const INITIAL_POINT_TARGETS: SceneTarget[] = [
+  { id: "target-1", name: "Target 1", type: "point", position: { x: 3.3, y: 0.8, z: 0 }, visibleInRender: true },
+  { id: "target-2", name: "Target 2", type: "point", position: { x: 1.95, y: 1.15, z: 0.78 }, visibleInRender: true },
+  // Seeded cart-mounted, to demonstrate a moving aim point authored as data.
+  { id: "target-3", name: "Target 3", type: "cart", cartId: FALLBACK_DOLLY.id, visibleInRender: true }
+];
+
+// A stored target from any era: the current tagged union, or the legacy flat
+// shape (no `type`, a nullable cartId, an always-present position).
+type StoredTarget = {
   id: string;
-  name: string;
-  position: Vec3;
-  cartId: string | null;
-  visibleInRender: boolean;
+  name?: string;
+  type?: "point" | "cart";
+  position?: Vec3;
+  cartId?: string | null;
+  visibleInRender?: boolean;
 };
 
-const INITIAL_POINT_TARGETS: DemoPointTarget[] = [
-  { id: "target-1", name: "Target 1", position: { x: 3.3, y: 0.8, z: 0 }, cartId: null, visibleInRender: true },
-  { id: "target-2", name: "Target 2", position: { x: 1.95, y: 1.15, z: 0.78 }, cartId: null, visibleInRender: true },
-  // Seeded cart-mounted, to demonstrate a moving aim point authored as data.
-  { id: "target-3", name: "Target 3", position: { x: 1.95, y: 0.6, z: -0.78 }, cartId: FALLBACK_DOLLY.id, visibleInRender: true }
-];
+/** Migrates a stored target to the package's point/cart union. */
+function toSceneTarget(raw: StoredTarget): SceneTarget {
+  const visibleInRender = raw.visibleInRender ?? true;
+  const named = raw.name !== undefined ? { name: raw.name } : {};
+  const mounted = raw.type === "cart" || (raw.type === undefined && raw.cartId);
+  return mounted
+    ? { id: raw.id, ...named, type: "cart", cartId: raw.cartId ?? "", visibleInRender }
+    : { id: raw.id, ...named, type: "point", position: raw.position ?? { x: 0, y: 0, z: 0 }, visibleInRender };
+}
 
 // Next "Target N" that doesn't collide with an existing trailing number, so
 // names stay stable after deletes.
-function nextTargetName(current: DemoPointTarget[]): string {
+function nextTargetName(current: SceneTarget[]): string {
   const highest = current.reduce((max, t) => {
-    const match = /(\d+)$/.exec(t.name);
+    const match = /(\d+)$/.exec(t.name ?? "");
     return match ? Math.max(max, Number(match[1])) : max;
   }, 0);
   return `Target ${highest + 1}`;
@@ -418,7 +433,7 @@ function TargetView({
   onMove,
   onTransformingChange
 }: {
-  target: DemoPointTarget;
+  target: SceneTarget;
   isSelected: boolean;
   framesRef: { current: Map<string, CartFrame> };
   onSelect: (id: string | null) => void;
@@ -426,12 +441,11 @@ function TargetView({
   onTransformingChange: (isTransforming: boolean) => void;
 }) {
   const groupRef = useRef<Group>(null);
-  const isCart = target.cartId !== null;
 
   useFrame(() => {
     const group = groupRef.current;
-    if (!isCart || !group) return;
-    const frame = framesRef.current.get(target.cartId as string);
+    if (target.type !== "cart" || !group) return;
+    const frame = framesRef.current.get(target.cartId);
     group.visible = frame != null;
     if (frame) group.position.set(frame.position.x, frame.position.y, frame.position.z);
   });
@@ -449,7 +463,7 @@ function TargetView({
   );
   const body = (
     <>
-      {target.visibleInRender ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
+      {(target.visibleInRender ?? true) ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
       {isSelected ? (
         <EditorHelpers>
           <Billboard>
@@ -463,10 +477,12 @@ function TargetView({
     </>
   );
 
-  if (isCart) {
+  if (target.type === "cart") {
     // Position driven each frame from the cart frame; not draggable.
     return <group ref={groupRef}>{body}</group>;
   }
+  // Groups aren't authored in this demo; only points are draggable.
+  if (target.type !== "point") return null;
 
   return (
     <>
@@ -508,7 +524,7 @@ function PointTargets({
   onMove,
   onTransformingChange
 }: {
-  targets: DemoPointTarget[];
+  targets: SceneTarget[];
   registry: TargetRegistry;
   framesRef: { current: Map<string, CartFrame> };
   selectedId: string | null;
@@ -518,13 +534,20 @@ function PointTargets({
 }) {
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
-  const membershipKey = targets.map((t) => `${t.id}:${t.name}:${t.cartId ?? ""}`).join("|");
+  const membershipKey = targets
+    .map((t) => `${t.id}:${t.name ?? ""}:${t.type === "cart" ? t.cartId : ""}`)
+    .join("|");
 
   useEffect(() => {
     const unregister = targets.map((t) => {
-      const source = t.cartId
-        ? () => framesRef.current.get(t.cartId as string)?.position ?? null
-        : () => targetsRef.current.find((x) => x.id === t.id)?.position ?? t.position;
+      const source =
+        t.type === "cart"
+          ? () => framesRef.current.get(t.cartId)?.position ?? null
+          : () => {
+              const current = targetsRef.current.find((x) => x.id === t.id);
+              if (current?.type === "point") return current.position;
+              return t.type === "point" ? t.position : null;
+            };
       return registry.register(t.id, source, t.name);
     });
     return () => unregister.forEach((fn) => fn());
@@ -624,7 +647,7 @@ function Scene({
   targetRegistry: TargetRegistry;
   /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
   dollyFramesRef: { current: Map<string, CartFrame> };
-  dollies: DemoDolly[];
+  dollies: RigCartDefinition[];
   vertexPaths: Map<string, VertexPath>;
   /** Non-null while the timeline owns the PiP. */
   activeTimeline: Timeline | null;
@@ -634,7 +657,7 @@ function Scene({
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
-    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart({ endOfPathInstruction: dolly.endOfPath })])),
+    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart({ endOfPathInstruction: dolly.endOfPathInstruction })])),
     [dollies]
   );
   const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
@@ -655,7 +678,7 @@ function Scene({
     () => ({
       rig: {
         paths: vertexPaths,
-        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPath })])),
+        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPathInstruction })])),
         cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
       },
       vcams: vcamDefById,
@@ -1994,7 +2017,7 @@ function VirtualCameraPanel({
   trackTargets: RegisteredTarget[];
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
   onUpdateComposer: (id: string, settings: ComposerSettings) => void;
-  dollies: DemoDolly[];
+  dollies: RigCartDefinition[];
 }) {
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
@@ -2238,7 +2261,7 @@ export function App() {
       const rawShow = localStorage.getItem(SHOW_STORAGE_KEY);
       if (rawShow) {
         const parsedShow = JSON.parse(rawShow) as {
-          paths?: DemoPath[];
+          paths?: RigPathDefinition[];
           activePathId?: string;
         };
         // An explicit paths array (incl. empty) is authoritative: no editable
@@ -2287,25 +2310,19 @@ export function App() {
       const parsed = JSON.parse(raw) as
         | Partial<DemoVirtualCamera>[]
         | {
-            dollies?: Partial<DemoDolly>[];
+            dollies?: Partial<RigCartDefinition>[];
             vcams?: Partial<DemoVirtualCamera>[];
-            paths?: DemoPath[];
+            paths?: RigPathDefinition[];
             activePathId?: string;
-            pointTargets?: DemoPointTarget[];
+            pointTargets?: StoredTarget[];
           };
       return Array.isArray(parsed) ? { vcams: parsed } : parsed;
     } catch {
       return null;
     }
   }, []);
-  const [pointTargets, setPointTargets] = useState<DemoPointTarget[]>(
-    () =>
-      // Default cartId/visibleInRender for targets persisted before those fields.
-      storedShow?.pointTargets?.map((t) => ({
-        ...t,
-        cartId: t.cartId ?? null,
-        visibleInRender: t.visibleInRender ?? true
-      })) ?? INITIAL_POINT_TARGETS
+  const [pointTargets, setPointTargets] = useState<SceneTarget[]>(
+    () => storedShow?.pointTargets?.map(toSceneTarget) ?? INITIAL_POINT_TARGETS
   );
   const [selectedPointTargetId, setSelectedPointTargetId] = useState<string | null>(null);
 
@@ -2322,13 +2339,24 @@ export function App() {
     const id = `target-${Date.now()}`;
     setPointTargets((current) => [
       ...current,
-      { id, name: nextTargetName(current), position: { x: 2.4, y: 0.8, z: 0 }, cartId: null, visibleInRender: true }
+      { id, name: nextTargetName(current), type: "point", position: { x: 2.4, y: 0.8, z: 0 }, visibleInRender: true }
     ]);
     selectPointTarget(id);
   }
 
+  // Toggle static/cart: mounting drops the fixed position (the cart drives it);
+  // unmounting parks the target at its current world position so it doesn't jump.
   function setPointTargetMount(id: string, cartId: string | null): void {
-    setPointTargets((current) => current.map((t) => (t.id === id ? { ...t, cartId } : t)));
+    setPointTargets((current) =>
+      current.map((t) => {
+        if (t.id !== id) return t;
+        const named = t.name !== undefined ? { name: t.name } : {};
+        const visibleInRender = t.visibleInRender ?? true;
+        if (cartId) return { id: t.id, ...named, type: "cart", cartId, visibleInRender };
+        const parked = targetRegistry.resolve(id) ?? (t.type === "point" ? t.position : { x: 0, y: 0, z: 0 });
+        return { id: t.id, ...named, type: "point", position: parked, visibleInRender };
+      })
+    );
   }
 
   function deletePointTarget(id: string): void {
@@ -2337,7 +2365,9 @@ export function App() {
   }
 
   function movePointTarget(id: string, position: Vec3): void {
-    setPointTargets((current) => current.map((t) => (t.id === id ? { ...t, position } : t)));
+    setPointTargets((current) =>
+      current.map((t) => (t.id === id && t.type === "point" ? { ...t, position } : t))
+    );
   }
 
   function renamePointTarget(id: string, name: string): void {
@@ -2346,26 +2376,30 @@ export function App() {
 
   function togglePointTargetVisible(id: string): void {
     setPointTargets((current) =>
-      current.map((t) => (t.id === id ? { ...t, visibleInRender: !t.visibleInRender } : t))
+      current.map((t) => (t.id === id ? { ...t, visibleInRender: !(t.visibleInRender ?? true) } : t))
     );
   }
 
-  const [dollies, setDollies] = useState<DemoDolly[]>(() =>
-    (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => ({
-      ...FALLBACK_DOLLY,
-      ...dolly,
-      endOfPath: dolly.endOfPath ?? EndOfPathInstruction.Loop,
-      pathId: dolly.pathId ?? storedShow?.paths?.[0]?.id ?? FALLBACK_PATH_ID
-    }))
+  const [dollies, setDollies] = useState<RigCartDefinition[]>(() =>
+    (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => {
+      // Legacy saves used `endOfPath`; the package cart uses `endOfPathInstruction`.
+      const legacy = dolly as Partial<RigCartDefinition> & { endOfPath?: EndOfPathInstruction };
+      return makeDolly({
+        id: legacy.id ?? FALLBACK_DOLLY.id,
+        name: legacy.name ?? "Dolly",
+        pathId: legacy.pathId ?? storedShow?.paths?.[0]?.id ?? FALLBACK_PATH_ID,
+        endOfPathInstruction: legacy.endOfPathInstruction ?? legacy.endOfPath ?? EndOfPathInstruction.Loop
+      });
+    })
   );
 
-  function updateDolly(id: string, patch: Partial<DemoDolly>): void {
+  function updateDolly(id: string, patch: Partial<RigCartDefinition>): void {
     setDollies((current) =>
       current.map((dolly) => (dolly.id === id ? { ...dolly, ...patch } : dolly))
     );
   }
 
-  const [paths, setPaths] = useState<DemoPath[]>(
+  const [paths, setPaths] = useState<RigPathDefinition[]>(
     () =>
       storedShow?.paths ?? [{ id: FALLBACK_PATH_ID, name: "Path 1", bezier: createDefaultBezier().toJSON() }]
   );
@@ -2498,7 +2532,7 @@ export function App() {
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
-    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop, pathId: activePathId ?? paths[0]?.id ?? "" }]);
+    setDollies((current) => [...current, makeDolly({ id, name: `Dolly ${current.length + 1}`, pathId: activePathId ?? paths[0]?.id ?? "" })]);
   }
 
   function deleteDolly(id: string): void {
@@ -3077,10 +3111,10 @@ export function App() {
                 </select>
                 <select
                   title="End-of-rail behavior for this dolly"
-                  value={dolly.endOfPath}
+                  value={dolly.endOfPathInstruction}
                   onChange={(event) =>
                     updateDolly(dolly.id, {
-                      endOfPath: event.target.value as EndOfPathInstruction
+                      endOfPathInstruction: event.target.value as EndOfPathInstruction
                     })
                   }
                 >
@@ -3111,7 +3145,7 @@ export function App() {
                 />
                 <input
                   type="text"
-                  value={path.name}
+                  value={path.name ?? ""}
                   aria-label="Path name"
                   onChange={(event) => renamePath(path.id, event.target.value)}
                   style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
@@ -3142,7 +3176,7 @@ export function App() {
                 />
                 <input
                   type="text"
-                  value={target.name}
+                  value={target.name ?? ""}
                   aria-label="Target name"
                   onChange={(event) => renamePointTarget(target.id, event.target.value)}
                   onFocus={() => selectPointTarget(target.id)}
@@ -3150,7 +3184,7 @@ export function App() {
                 />
                 <select
                   title="Mount: static, or ride a dolly"
-                  value={target.cartId ?? ""}
+                  value={target.type === "cart" ? target.cartId : ""}
                   onChange={(event) => setPointTargetMount(target.id, event.target.value || null)}
                 >
                   <option value="">Static</option>

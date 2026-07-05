@@ -6,12 +6,42 @@
 // a later step lifts it into an authored timeline.
 import {
   DEFAULT_COMPOSER_SETTINGS,
+  EndOfPathInstruction,
   type ComposerSettings,
+  type RigCartDefinition,
+  type TrackingTargetDefinition,
   type Vec3,
   type VirtualCameraDefinition,
   type VirtualCameraNoiseSettings,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/core";
+
+/** The targets this editor authors: package point/cart targets (no groups yet). */
+export type SceneTarget = Exclude<TrackingTargetDefinition, { type: "group" }>;
+
+/**
+ * A dolly is just a package cart (RigCartDefinition). The demo authors its name,
+ * path, and end-of-path behaviour; distance/orientation/offset stay at defaults
+ * and speed rides the global rig speed. This factory fills the rest.
+ */
+export function makeDolly(init: {
+  id: string;
+  name: string;
+  pathId: string;
+  endOfPathInstruction?: EndOfPathInstruction;
+  speed?: number;
+}): RigCartDefinition {
+  return {
+    id: init.id,
+    name: init.name,
+    pathId: init.pathId,
+    distance: 0,
+    speed: init.speed ?? 1,
+    endOfPathInstruction: init.endOfPathInstruction ?? EndOfPathInstruction.Loop,
+    orientationMode: "path-frame",
+    positionOffset: { x: 0, y: 0, z: 0 }
+  };
+}
 
 // Re-exported so demo modules get the composer defaults from one place; the
 // canonical values live in the package, not here.
