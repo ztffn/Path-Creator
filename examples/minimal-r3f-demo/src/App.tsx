@@ -41,7 +41,6 @@ import {
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
 import {
-  createTimeline,
   createTimelinePlayer,
   evaluateTimeline,
   seekTimelinePlayer,
@@ -52,6 +51,12 @@ import {
 } from "@huma/path-creator/timeline";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
 import { TimelineLanes } from "./TimelineLanes";
+import {
+  buildShowTimeline,
+  deserializeScene,
+  serializeScene,
+  type DemoScene
+} from "./scene-io";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
@@ -78,6 +83,9 @@ import {
 
 const STORAGE_KEY = "path-creator:minimal-demo:path";
 const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
+// The scene is persisted as a portable RigDocument; the two keys above are only
+// read for one-time migration of shows saved before this format.
+const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 // A production can run several dollies, all riding the demo's one rail;
@@ -2256,7 +2264,23 @@ function VirtualCameraPanel({
 }
 
 export function App() {
+  // The scene is a portable RigDocument. Load it if present; otherwise migrate a
+  // pre-format show once (read here, rewritten in the new format on first save).
+  const loadedScene = useMemo<DemoScene | null>(() => {
+    try {
+      const raw = localStorage.getItem(SCENE_STORAGE_KEY);
+      return raw ? deserializeScene(raw) : null;
+    } catch {
+      return null;
+    }
+  }, []);
+
   const [bezierPath, setBezierPath] = useState<BezierPath | null>(() => {
+    if (loadedScene) {
+      const active =
+        loadedScene.paths.find((path) => path.id === loadedScene.activePathId) ?? loadedScene.paths[0];
+      return active ? BezierPath.fromJSON(active.bezier) : null;
+    }
     try {
       const rawShow = localStorage.getItem(SHOW_STORAGE_KEY);
       if (rawShow) {
@@ -2288,7 +2312,7 @@ export function App() {
   });
 
   const [pathVersion, setPathVersion] = useState(0);
-  const [speed, setSpeed] = useState(1);
+  const [speed, setSpeed] = useState(() => loadedScene?.dollies[0]?.speed ?? 1);
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
@@ -2299,6 +2323,7 @@ export function App() {
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
   const lookaheadMarkerRef = useRef<HTMLDivElement | null>(null);
   const lookaheadLineRef = useRef<SVGLineElement | null>(null);
+  const importInputRef = useRef<HTMLInputElement | null>(null);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
@@ -2322,7 +2347,7 @@ export function App() {
     }
   }, []);
   const [pointTargets, setPointTargets] = useState<SceneTarget[]>(
-    () => storedShow?.pointTargets?.map(toSceneTarget) ?? INITIAL_POINT_TARGETS
+    () => loadedScene?.targets ?? storedShow?.pointTargets?.map(toSceneTarget) ?? INITIAL_POINT_TARGETS
   );
   const [selectedPointTargetId, setSelectedPointTargetId] = useState<string | null>(null);
 
@@ -2381,6 +2406,7 @@ export function App() {
   }
 
   const [dollies, setDollies] = useState<RigCartDefinition[]>(() =>
+    loadedScene?.dollies ??
     (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => {
       // Legacy saves used `endOfPath`; the package cart uses `endOfPathInstruction`.
       const legacy = dolly as Partial<RigCartDefinition> & { endOfPath?: EndOfPathInstruction };
@@ -2401,10 +2427,11 @@ export function App() {
 
   const [paths, setPaths] = useState<RigPathDefinition[]>(
     () =>
+      loadedScene?.paths ??
       storedShow?.paths ?? [{ id: FALLBACK_PATH_ID, name: "Path 1", bezier: createDefaultBezier().toJSON() }]
   );
   const [activePathId, setActivePathId] = useState<string | null>(
-    () => storedShow?.activePathId ?? paths[0]?.id ?? null
+    () => loadedScene?.activePathId ?? storedShow?.activePathId ?? paths[0]?.id ?? null
   );
   // Keep the active path's serialization current so switching/saving is lossless.
   useEffect(() => {
@@ -2497,16 +2524,19 @@ export function App() {
     []
   );
   const [vcamDefs, setVcamDefs] = useState<VirtualCameraDefinition[]>(() =>
+    loadedScene?.vcamDefs ??
     initialShots.map((view) =>
       vcamDefFromView(view, { noisePreset: view.noisePreset, composerSettings: view.composerSettings })
     )
   );
   const [editorVcams, setEditorVcams] = useState<Record<string, EditorVcam>>(() =>
+    loadedScene?.editorVcams ??
     Object.fromEntries(
       initialShots.map((view) => [view.id, { noisePreset: view.noisePreset, composerSettings: view.composerSettings }])
     )
   );
   const [shotTiming, setShotTiming] = useState<Record<string, ShotTiming>>(() =>
+    loadedScene?.shotTiming ??
     Object.fromEntries(
       initialShots.map((view) => [
         view.id,
@@ -2523,12 +2553,75 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vcamDefs, editorVcams, shotTiming]
   );
+  // Persist the scene as a portable RigDocument. Cart speed carries the global
+  // rig speed so a loaded document plays faithfully.
+  const currentScene: DemoScene = {
+    paths,
+    activePathId,
+    dollies: dollies.map((dolly) => ({ ...dolly, speed })),
+    vcamDefs,
+    editorVcams,
+    shotTiming,
+    targets: pointTargets
+  };
   useEffect(() => {
-    localStorage.setItem(
-      SHOW_STORAGE_KEY,
-      JSON.stringify({ dollies, vcams: virtualCameras, paths, activePathId, pointTargets })
-    );
-  }, [dollies, virtualCameras, paths, activePathId, pointTargets]);
+    localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
+    // currentScene is rebuilt each render from the deps below.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [dollies, vcamDefs, editorVcams, shotTiming, paths, activePathId, pointTargets, speed]);
+
+  // Replaces the whole editing state from a loaded/parsed scene.
+  function applyScene(scene: DemoScene): void {
+    const active = scene.paths.find((path) => path.id === scene.activePathId) ?? scene.paths[0] ?? null;
+    setPaths(scene.paths);
+    setActivePathId(active?.id ?? null);
+    setBezierPath(active ? BezierPath.fromJSON(active.bezier) : null);
+    setDollies(scene.dollies);
+    setSpeed(scene.dollies[0]?.speed ?? 1);
+    setVcamDefs(scene.vcamDefs);
+    setEditorVcams(scene.editorVcams);
+    setShotTiming(scene.shotTiming);
+    setPointTargets(scene.targets);
+    setSelectedVirtualCameraId(null);
+    setSelectedPointTargetId(null);
+    setSelectedMidpointIndex(null);
+    setSelectedHandleIndex(active ? 0 : null);
+    setPathVersion((version) => version + 1);
+  }
+
+  function exportScene(): void {
+    const blob = new Blob([serializeScene(currentScene)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const anchor = document.createElement("a");
+    anchor.href = url;
+    anchor.download = "scene.json";
+    anchor.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importSceneFile(file: File): void {
+    file
+      .text()
+      .then((text) => applyScene(deserializeScene(text)))
+      .catch((error: unknown) => console.error("Scene import failed", error));
+  }
+
+  function newScene(): void {
+    const path: RigPathDefinition = {
+      id: `path-${Date.now()}`,
+      name: "Path 1",
+      bezier: createDefaultBezier().toJSON()
+    };
+    applyScene({
+      paths: [path],
+      activePathId: path.id,
+      dollies: [makeDolly({ id: "dolly-1", name: "Dolly 1", pathId: path.id })],
+      vcamDefs: [],
+      editorVcams: {},
+      shotTiming: {},
+      targets: []
+    });
+  }
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
@@ -2602,51 +2695,14 @@ export function App() {
     )
     .join("|");
   const dollyKey = dollies.map((dolly) => dolly.id).join(",");
-  const demoTimeline = useMemo(() => {
-    if (virtualCameras.length === 0) return null;
-    const ordered = [...virtualCameras].sort((a, b) => a.shotStart - b.shotStart);
-    const blocks = ordered.map((vcam, index) => {
-      // Overlap with the preceding shot is the crossfade window; no overlap
-      // cuts, gaps hold the previous shot (evaluator semantics).
-      const previous = index > 0 ? ordered[index - 1] : undefined;
-      const overlap = previous ? previous.shotEnd - vcam.shotStart : 0;
-      return {
-        id: `block-${vcam.id}`,
-        vcamId: vcam.id,
-        start: vcam.shotStart,
-        end: vcam.shotEnd,
-        ...(overlap > 0.01 && {
-          blendIn: { durationSeconds: overlap, curve: "easeInOut" as const }
-        })
-      };
-    });
-    // Shots that define a dolly move compile to cart-track keys on THEIR
-    // dolly: the camera travels railFrom -> railTo across its block, eased;
-    // between moves the evaluator interpolates toward the next move's start.
-    const cartTracks = dollies.map((dolly) => ({
-      type: "cart" as const,
-      id: `dolly-track-${dolly.id}`,
-      cartId: dolly.id,
-      keys: ordered
-        .filter(
-          (vcam) =>
-            vcam.bodyType === "cart" &&
-            vcam.cartId === dolly.id &&
-            vcam.railFrom !== null &&
-            vcam.railTo !== null
-        )
-        .flatMap((vcam) => [
-          { time: vcam.shotStart, distance: vcam.railFrom ?? 0, easing: "easeInOut" as const },
-          { time: vcam.shotEnd, distance: vcam.railTo ?? 0 }
-        ])
-    })).filter((track) => track.keys.length > 0);
-    return createTimeline({
-      duration: Math.max(...ordered.map((vcam) => vcam.shotEnd)),
-      tracks: [{ type: "camera", id: "camera-track", blocks }, ...cartTracks]
-    });
-    // shotTimingKey + dollyKey cover every field this memo reads.
+  // The show timeline is authored data (blocks + cart-track keys), built by the
+  // shared scene-io helper — the same build used to assemble the saved document.
+  // Keyed on timing so gizmo drags (which change vcamDefs) don't rebuild it.
+  const demoTimeline = useMemo(
+    () => (vcamDefs.length === 0 ? null : buildShowTimeline(vcamDefs, shotTiming, dollies)),
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyKey]);
+    [shotTimingKey, dollyKey]
+  );
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
@@ -3126,6 +3182,25 @@ export function App() {
               </div>
             ))}
             <button onClick={addDolly}>Add Dolly</button>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Scene">
+          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
+            <button onClick={newScene}>New</button>
+            <button onClick={exportScene}>Export JSON</button>
+            <button onClick={() => importInputRef.current?.click()}>Import JSON</button>
+            <input
+              ref={importInputRef}
+              type="file"
+              accept=".json,application/json"
+              style={{ display: "none" }}
+              onChange={(event) => {
+                const file = event.target.files?.[0];
+                if (file) importSceneFile(file);
+                event.currentTarget.value = "";
+              }}
+            />
           </div>
         </SettingsSection>
 
