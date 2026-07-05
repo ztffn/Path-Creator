@@ -697,8 +697,8 @@ function Scene({
   activeTimeline,
   timelinePlayerRef
 }: {
-  bezierPath: BezierPath;
-  vertexPath: VertexPath;
+  bezierPath: BezierPath | null;
+  vertexPath: VertexPath | null;
   pathVersion: number;
   speed: number;
   driveMainCamera: boolean;
@@ -741,7 +741,7 @@ function Scene({
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
 }) {
-  const followMode = bezierPath.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
+  const followMode = bezierPath?.isClosed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
   const follower = usePathFollower({
     path: vertexPath,
     speed,
@@ -809,6 +809,12 @@ function Scene({
     activeTimeline || virtualCameraActivation || selectedVirtualCamera
       ? brainCamera
       : previewCamera;
+  // The rig preview (previewCamera) only has a source while an editable path
+  // drives the follower. With no timeline/shot/selection and no path, nothing
+  // feeds the PiP — the frustum hides and the PiP reads "no output".
+  const hasPipSource = Boolean(
+    activeTimeline || virtualCameraActivation || selectedVirtualCamera || vertexPath
+  );
   // The frustum visualizes whichever camera feeds the PiP (rig, shot brain,
   // or timeline), not just the rig preview — tinted to match the vcam glyph
   // state colors (green live, orange selected, slate rig).
@@ -825,14 +831,15 @@ function Scene({
   }, [frustumHelper, frustumColor]);
 
   const pathLinePoints = useMemo(
-    () => buildPathLinePoints(vertexPath),
+    () => (vertexPath ? buildPathLinePoints(vertexPath) : []),
     [vertexPath, pathVersion]
   );
   const controlLinePositions = useMemo(
-    () => buildControlLinePositions(bezierPath),
+    () => (bezierPath ? buildControlLinePositions(bezierPath) : new Float32Array()),
     [bezierPath, pathVersion]
   );
   const midpointData = useMemo(() => {
+    if (!bezierPath || !vertexPath) return [];
     return Array.from({ length: bezierPath.numSegments }).map((_, segmentIndex) => {
       const midpoint = bezierPath.evaluate(segmentIndex, 0.5);
       const frame = getMidpointFrame(vertexPath, midpoint);
@@ -859,7 +866,7 @@ function Scene({
   const selectedMidpoint =
     selectedMidpointIndex !== null ? midpointData[selectedMidpointIndex] ?? null : null;
   const selectedHandlePoint =
-    selectedHandleIndex !== null ? bezierPath.getPoint(selectedHandleIndex) : null;
+    selectedHandleIndex !== null && bezierPath ? bezierPath.getPoint(selectedHandleIndex) : null;
   const selectedHandleIsAnchor = selectedHandleIndex !== null && selectedHandleIndex % 3 === 0;
   const selectedAnchorScale =
     selectedHandleIsAnchor && selectedHandleIndex !== null
@@ -909,7 +916,7 @@ function Scene({
   }, [handlePivotMatrix, isTransforming, selectedAnchorScale, selectedHandlePoint]);
   useEffect(() => {
     if (isTransforming) return;
-    if (useWorldSpaceGizmo || selectedHandleIndex === null) {
+    if (useWorldSpaceGizmo || selectedHandleIndex === null || !bezierPath || !vertexPath) {
       setHandleGizmoRotation([0, 0, 0]);
       return;
     }
@@ -923,59 +930,107 @@ function Scene({
   useFrame(({ camera, scene }, delta) => {
     for (const dolly of dollies) {
       const cart = liveDollies.get(dolly.id);
-      const dollyPath = vertexPaths.get(dolly.pathId) ?? vertexPath;
-      if (!cart) continue;
+      const dollyPath = vertexPaths.get(dolly.pathId);
+      if (!cart || !dollyPath) continue;
       cart.speed = speed;
       cart.distance = advanceCartDistance(dollyPath, cart, delta);
       dollyFramesRef.current.set(dolly.id, sampleCartFrame(dollyPath, cart));
     }
     const mainCamera = camera as PerspectiveCamera;
-    const followerObject = scene.getObjectByName("follower") as Mesh | null;
-    const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
-    const sample = follower.step(delta);
     const elapsed = performance.now() / 1000;
-    const lookSample = samplePathAtDistance(
-      vertexPath,
-      follower.state.current.distance + composerSettings.pathLookaheadDistance,
-      followMode
-    );
-    const tangent = new Vector3(
-      lookSample.direction.x,
-      lookSample.direction.y,
-      lookSample.direction.z
-    ).normalize();
-    const normal = new Vector3(lookSample.normal.x, lookSample.normal.y, lookSample.normal.z).normalize();
-    const side = new Vector3().crossVectors(tangent, normal).normalize();
-    const lookTarget = {
-      x: lookSample.position.x + side.x * Math.sin(elapsed * 0.85) * 0.75 + normal.x * Math.sin(elapsed * 1.7) * 0.35,
-      y: lookSample.position.y + side.y * Math.sin(elapsed * 0.85) * 0.75 + normal.y * Math.sin(elapsed * 1.7) * 0.35,
-      z: lookSample.position.z + side.z * Math.sin(elapsed * 0.85) * 0.75 + normal.z * Math.sin(elapsed * 1.7) * 0.35
-    };
-    const pathLookTarget = getPathLookTarget(sample.position, lookSample.position, lookTarget);
-    const weightedTarget = getWeightedTarget(pathLookTarget, lookTarget, composerSettings);
-    const aimTarget = aimMode === "look-at-target" || aimMode === "screen-composer"
-      ? weightedTarget
-      : pathLookTarget;
 
-    if (followerObject) {
-      applySampleToObject(followerObject, sample);
+    // The follower, look target, and rig-preview camera all sample the editable
+    // path; the composer demo only runs while one is open. sample/aimTarget stay
+    // null otherwise so the "drive main camera from rig" branch below no-ops.
+    let sample: ReturnType<typeof follower.step> | null = null;
+    let aimTarget: Vec3 | null = null;
+    if (vertexPath) {
+      const followerObject = scene.getObjectByName("follower") as Mesh | null;
+      const lookTargetObject = scene.getObjectByName("look-target") as Mesh | null;
+      sample = follower.step(delta);
+      const lookSample = samplePathAtDistance(
+        vertexPath,
+        follower.state.current.distance + composerSettings.pathLookaheadDistance,
+        followMode
+      );
+      const tangent = new Vector3(
+        lookSample.direction.x,
+        lookSample.direction.y,
+        lookSample.direction.z
+      ).normalize();
+      const normal = new Vector3(lookSample.normal.x, lookSample.normal.y, lookSample.normal.z).normalize();
+      const side = new Vector3().crossVectors(tangent, normal).normalize();
+      const lookTarget = {
+        x: lookSample.position.x + side.x * Math.sin(elapsed * 0.85) * 0.75 + normal.x * Math.sin(elapsed * 1.7) * 0.35,
+        y: lookSample.position.y + side.y * Math.sin(elapsed * 0.85) * 0.75 + normal.y * Math.sin(elapsed * 1.7) * 0.35,
+        z: lookSample.position.z + side.z * Math.sin(elapsed * 0.85) * 0.75 + normal.z * Math.sin(elapsed * 1.7) * 0.35
+      };
+      const pathLookTarget = getPathLookTarget(sample.position, lookSample.position, lookTarget);
+      const weightedTarget = getWeightedTarget(pathLookTarget, lookTarget, composerSettings);
+      aimTarget = aimMode === "look-at-target" || aimMode === "screen-composer"
+        ? weightedTarget
+        : pathLookTarget;
+
+      if (followerObject) {
+        applySampleToObject(followerObject, sample);
+      }
+
+      if (lookTargetObject) {
+        lookTargetObject.position.set(lookTarget.x, lookTarget.y, lookTarget.z);
+      }
+
+      applyCameraPose(previewCamera, poseSource, sample.position, previewCameraPositionTarget, delta);
+      applyCameraAim(
+        previewCamera,
+        aimMode,
+        aimTarget,
+        sample.normal,
+        composerSettings,
+        previewComposerState.current,
+        delta
+      );
+      previewCamera.updateMatrixWorld();
+
+      projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(pipCamera);
+      updateDollyTargetOverlay(
+        dollyTargetMarkerRef.current,
+        dollyTargetLineRef.current,
+        (projectedTarget.x + 1) * 0.5,
+        (1 - projectedTarget.y) * 0.5,
+        projectedTarget.z >= -1 &&
+          projectedTarget.z <= 1 &&
+          projectedTarget.x >= -1 &&
+          projectedTarget.x <= 1 &&
+          projectedTarget.y >= -1 &&
+          projectedTarget.y <= 1
+      );
+      const lookaheadTarget = getComposerLookaheadTarget(
+        aimTarget,
+        composerSettings,
+        previewComposerState.current.smoothedVelocity
+      );
+      projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(pipCamera);
+      updateDollyTargetOverlay(
+        lookaheadMarkerRef.current,
+        lookaheadLineRef.current,
+        (projectedTarget.x + 1) * 0.5,
+        (1 - projectedTarget.y) * 0.5,
+        aimMode === "screen-composer" &&
+          composerSettings.lookaheadTime > 0 &&
+          projectedTarget.z >= -1 &&
+          projectedTarget.z <= 1 &&
+          projectedTarget.x >= -1 &&
+          projectedTarget.x <= 1 &&
+          projectedTarget.y >= -1 &&
+          projectedTarget.y <= 1,
+        "lookahead"
+      );
+    } else {
+      // No editable path: park the composer overlay markers out of sight.
+      updateDollyTargetOverlay(dollyTargetMarkerRef.current, dollyTargetLineRef.current, 0.5, 0.5, false);
+      updateDollyTargetOverlay(lookaheadMarkerRef.current, lookaheadLineRef.current, 0.5, 0.5, false, "lookahead");
     }
 
-    if (lookTargetObject) {
-      lookTargetObject.position.set(lookTarget.x, lookTarget.y, lookTarget.z);
-    }
-
-    applyCameraPose(previewCamera, poseSource, sample.position, previewCameraPositionTarget, delta);
-    applyCameraAim(
-      previewCamera,
-      aimMode,
-      aimTarget,
-      sample.normal,
-      composerSettings,
-      previewComposerState.current,
-      delta
-    );
-    previewCamera.updateMatrixWorld();
     frustumHelper.update();
 
     if (virtualCameraCaptureRequest !== lastCaptureRequestRef.current) {
@@ -988,41 +1043,6 @@ function Scene({
         })
       );
     }
-
-    projectedTarget.set(aimTarget.x, aimTarget.y, aimTarget.z).project(pipCamera);
-    updateDollyTargetOverlay(
-      dollyTargetMarkerRef.current,
-      dollyTargetLineRef.current,
-      (projectedTarget.x + 1) * 0.5,
-      (1 - projectedTarget.y) * 0.5,
-      projectedTarget.z >= -1 &&
-        projectedTarget.z <= 1 &&
-        projectedTarget.x >= -1 &&
-        projectedTarget.x <= 1 &&
-        projectedTarget.y >= -1 &&
-        projectedTarget.y <= 1
-    );
-    const lookaheadTarget = getComposerLookaheadTarget(
-      aimTarget,
-      composerSettings,
-      previewComposerState.current.smoothedVelocity
-    );
-    projectedTarget.set(lookaheadTarget.x, lookaheadTarget.y, lookaheadTarget.z).project(pipCamera);
-    updateDollyTargetOverlay(
-      lookaheadMarkerRef.current,
-      lookaheadLineRef.current,
-      (projectedTarget.x + 1) * 0.5,
-      (1 - projectedTarget.y) * 0.5,
-      aimMode === "screen-composer" &&
-        composerSettings.lookaheadTime > 0 &&
-        projectedTarget.z >= -1 &&
-        projectedTarget.z <= 1 &&
-        projectedTarget.x >= -1 &&
-        projectedTarget.x <= 1 &&
-        projectedTarget.y >= -1 &&
-        projectedTarget.y <= 1,
-      "lookahead"
-    );
 
     if (activeTimeline) {
       stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
@@ -1091,7 +1111,7 @@ function Scene({
         resolveDemoVirtualCamera(selectedVirtualCamera, elapsed)
       );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
-    } else if (driveMainCamera && !isTransforming) {
+    } else if (driveMainCamera && !isTransforming && sample && aimTarget) {
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
       virtualCameraBrainRef.current = createVirtualCameraBrainState();
@@ -1119,7 +1139,7 @@ function Scene({
       <directionalLight position={[2, 3, 4]} intensity={1.2} />
 
       <EditorHelpers>
-      <Line points={pathLinePoints} color="#101828" lineWidth={4} />
+      {vertexPath ? <Line points={pathLinePoints} color="#101828" lineWidth={4} /> : null}
       {[...vertexPaths.entries()]
         .filter(([, path]) => path !== vertexPath)
         .map(([pathId, path]) => (
@@ -1220,7 +1240,9 @@ function Scene({
         </PivotControls>
       ) : null}
 
-      {Array.from({ length: bezierPath.numPoints }).map((_, i) => {
+      {bezierPath &&
+        Array.from({ length: bezierPath.numPoints }).map((_, i) => {
+        if (!bezierPath || !vertexPath) return null;
         const p = bezierPath.getPoint(i);
         const isAnchor = i % 3 === 0;
         const draggable = isAnchor || bezierPath.controlMode !== ControlMode.Automatic;
@@ -1389,7 +1411,7 @@ function Scene({
           anchor={[0, 0, 0]}
           rotation={handleGizmoRotation}
           onDragStart={() => {
-            if (selectedHandleIsAnchor && bezierPath.controlMode !== ControlMode.Automatic) {
+            if (bezierPath && selectedHandleIsAnchor && bezierPath.controlMode !== ControlMode.Automatic) {
               const controlStarts: Array<{ index: number; point: Vec3 }> = [];
               const prevControlIndex = bezierPath.isClosed
                 ? (selectedHandleIndex - 1 + bezierPath.numPoints) % bezierPath.numPoints
@@ -1492,15 +1514,19 @@ function Scene({
       </mesh>
       </EditorHelpers>
 
-      <mesh name="follower" ref={followerRef}>
-        <sphereGeometry args={[0.13, 16, 16]} />
-        <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
-      </mesh>
+      {vertexPath ? (
+        <>
+          <mesh name="follower" ref={followerRef}>
+            <sphereGeometry args={[0.13, 16, 16]} />
+            <meshStandardMaterial color="#3b82f6" emissive="#3b82f6" emissiveIntensity={0.15} />
+          </mesh>
 
-      <mesh name="look-target" ref={lookTargetRef}>
-        <sphereGeometry args={[0.1, 16, 16]} />
-        <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
-      </mesh>
+          <mesh name="look-target" ref={lookTargetRef}>
+            <sphereGeometry args={[0.1, 16, 16]} />
+            <meshStandardMaterial color="#06b6d4" emissive="#083344" emissiveIntensity={0.45} />
+          </mesh>
+        </>
+      ) : null}
 
       <EditorHelpers>
       {virtualCameras.map((virtualCamera) => {
@@ -1579,10 +1605,10 @@ function Scene({
           </group>
         );
       })}
-      {debugFrustum ? <primitive object={frustumHelper} /> : null}
+      {debugFrustum && hasPipSource ? <primitive object={frustumHelper} /> : null}
       </EditorHelpers>
 
-      {showCartRider ? (
+      {showCartRider && vertexPath && bezierPath ? (
         <CartRiderProp
           path={vertexPath}
           isClosed={bezierPath.isClosed}
@@ -1592,17 +1618,24 @@ function Scene({
 
       {showTargetRig ? <TargetRigProp targetRegistry={targetRegistry} /> : null}
 
-      {debugPreview ? <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} /> : null}
+      {debugPreview ? (
+        <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} hasSource={hasPipSource} />
+      ) : null}
     </>
   );
 }
 
+const PIP_NO_SIGNAL_COLOR = new Color("#0a101c");
+const _pipClearScratch = new Color();
+
 function DollyCameraPip({
   camera: dollyCamera,
-  frustumHelper
+  frustumHelper,
+  hasSource
 }: {
   camera: PerspectiveCamera;
   frustumHelper: CameraHelper;
+  hasSource: boolean;
 }) {
   const { gl, scene, size } = useThree();
 
@@ -1620,9 +1653,19 @@ function DollyCameraPip({
     gl.setScissorTest(true);
     gl.setScissor(x, y, width, height);
     gl.setViewport(x, y, width, height);
-    frustumHelper.visible = false;
-    gl.render(scene, dollyCamera);
-    frustumHelper.visible = true;
+    if (hasSource) {
+      frustumHelper.visible = false;
+      gl.render(scene, dollyCamera);
+      frustumHelper.visible = true;
+    } else {
+      // No camera drives the PiP: paint a dark "no signal" panel instead of a
+      // view from an undriven camera.
+      const prevColor = gl.getClearColor(_pipClearScratch);
+      const prevAlpha = gl.getClearAlpha();
+      gl.setClearColor(PIP_NO_SIGNAL_COLOR, 1);
+      gl.clear(true, true, false);
+      gl.setClearColor(prevColor, prevAlpha);
+    }
     gl.setScissorTest(false);
     gl.setViewport(0, 0, size.width, size.height);
   }, 1);
@@ -1755,6 +1798,7 @@ function DollyPreviewChrome({
   composerActive,
   composerSettings,
   label,
+  hasSource,
   targetMarkerRef,
   targetLineRef,
   lookaheadMarkerRef,
@@ -1763,12 +1807,42 @@ function DollyPreviewChrome({
   composerActive: boolean;
   composerSettings: ComposerSettings;
   label: string;
+  hasSource: boolean;
   targetMarkerRef: { current: HTMLDivElement | null };
   targetLineRef: { current: SVGLineElement | null };
   lookaheadMarkerRef: { current: HTMLDivElement | null };
   lookaheadLineRef: { current: SVGLineElement | null };
 }) {
   const zones = getComposerZones(composerSettings);
+
+  // No driving camera: just the framed panel + label; the composer zone/target
+  // overlays would be meaningless without a source.
+  if (!hasSource) {
+    return (
+      <div
+        style={{
+          position: "fixed",
+          right: DOLLY_PIP_MARGIN,
+          bottom: DOLLY_PIP_MARGIN,
+          zIndex: 9,
+          width: "min(360px, max(220px, 28vw))",
+          aspectRatio: "16 / 9",
+          pointerEvents: "none",
+          border: "2px solid rgba(148, 163, 184, 0.35)",
+          boxShadow: "0 18px 44px rgba(15, 23, 42, 0.28)",
+          background: "rgba(10, 16, 28, 0.55)",
+          boxSizing: "border-box",
+          display: "flex",
+          alignItems: "center",
+          justifyContent: "center"
+        }}
+      >
+        <div style={{ color: "#64748b", fontSize: 12, fontWeight: 700, letterSpacing: 1, textTransform: "uppercase" }}>
+          {label}
+        </div>
+      </div>
+    );
+  }
 
   return (
     <div
@@ -2635,7 +2709,7 @@ function VirtualCameraPanel({
 }
 
 export function App() {
-  const [bezierPath, setBezierPath] = useState<BezierPath>(() => {
+  const [bezierPath, setBezierPath] = useState<BezierPath | null>(() => {
     try {
       const rawShow = localStorage.getItem(SHOW_STORAGE_KEY);
       if (rawShow) {
@@ -2643,10 +2717,14 @@ export function App() {
           paths?: DemoPath[];
           activePathId?: string;
         };
-        const active =
-          parsedShow.paths?.find((path) => path.id === parsedShow.activePathId) ??
-          parsedShow.paths?.[0];
-        if (active) return BezierPath.fromJSON(active.bezier);
+        // An explicit paths array (incl. empty) is authoritative: no editable
+        // path is a valid state, so don't fall through to the legacy seed.
+        if (Array.isArray(parsedShow.paths)) {
+          const active =
+            parsedShow.paths.find((path) => path.id === parsedShow.activePathId) ??
+            parsedShow.paths[0];
+          return active ? BezierPath.fromJSON(active.bezier) : null;
+        }
       }
     } catch {
       // fall through to the legacy single-path key
@@ -2711,13 +2789,14 @@ export function App() {
 
   const [paths, setPaths] = useState<DemoPath[]>(
     () =>
-      storedShow?.paths ?? [{ id: FALLBACK_PATH_ID, name: "Path 1", bezier: bezierPath.toJSON() }]
+      storedShow?.paths ?? [{ id: FALLBACK_PATH_ID, name: "Path 1", bezier: createDefaultBezier().toJSON() }]
   );
-  const [activePathId, setActivePathId] = useState<string>(
-    () => storedShow?.activePathId ?? paths[0]?.id ?? FALLBACK_PATH_ID
+  const [activePathId, setActivePathId] = useState<string | null>(
+    () => storedShow?.activePathId ?? paths[0]?.id ?? null
   );
   // Keep the active path's serialization current so switching/saving is lossless.
   useEffect(() => {
+    if (!bezierPath || !activePathId) return;
     setPaths((current) =>
       current.map((path) =>
         path.id === activePathId ? { ...path, bezier: bezierPath.toJSON() } : path
@@ -2738,31 +2817,42 @@ export function App() {
 
   function addPath(): void {
     const id = `path-${Date.now()}`;
+    const bezier = createDefaultBezier();
     setPaths((current) => [
       ...current,
-      { id, name: `Path ${current.length + 1}`, bezier: createDefaultBezier().toJSON() }
+      { id, name: `Path ${current.length + 1}`, bezier: bezier.toJSON() }
     ]);
-  }
-
-  function deletePath(id: string): void {
-    if (paths.length <= 1) return;
-    const remaining = paths.filter((path) => path.id !== id);
-    const fallback = remaining[0];
-    if (!fallback) return;
-    if (id === activePathId) {
-      // Deleting the path being edited: activate the next one first.
-      setActivePathId(fallback.id);
-      setBezierPath(BezierPath.fromJSON(fallback.bezier));
-      setSelectedHandleIndex(null);
+    // First path in an empty world becomes the editable one immediately.
+    if (activePathId === null) {
+      setActivePathId(id);
+      setBezierPath(bezier);
+      setSelectedHandleIndex(0);
       setSelectedMidpointIndex(null);
       setPathVersion((version) => version + 1);
     }
+  }
+
+  function deletePath(id: string): void {
+    const remaining = paths.filter((path) => path.id !== id);
     setPaths(remaining);
-    setDollies((current) =>
-      current.map((dolly) =>
-        dolly.pathId === id ? { ...dolly, pathId: fallback.id } : dolly
-      )
-    );
+    if (id === activePathId) {
+      // Deleting the editable path: activate whatever remains, or clear the
+      // editor entirely (empty world is valid).
+      const fallback = remaining[0] ?? null;
+      setActivePathId(fallback?.id ?? null);
+      setBezierPath(fallback ? BezierPath.fromJSON(fallback.bezier) : null);
+      setSelectedHandleIndex(fallback ? 0 : null);
+      setSelectedMidpointIndex(null);
+      setPathVersion((version) => version + 1);
+    }
+    // Repoint dollies off the deleted rail when another remains; otherwise the
+    // dangling reference is tolerated (the dolly simply produces no frame).
+    const repoint = remaining[0]?.id;
+    if (repoint) {
+      setDollies((current) =>
+        current.map((dolly) => (dolly.pathId === id ? { ...dolly, pathId: repoint } : dolly))
+      );
+    }
   }
   const defaultDollyId = dollies[0]?.id ?? FALLBACK_DOLLY.id;
   const [virtualCameras, setVirtualCameras] = useState<DemoVirtualCamera[]>(() =>
@@ -2788,17 +2878,20 @@ export function App() {
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
-    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop, pathId: activePathId }]);
+    setDollies((current) => [...current, { id, name: `Dolly ${current.length + 1}`, endOfPath: EndOfPathInstruction.Loop, pathId: activePathId ?? paths[0]?.id ?? "" }]);
   }
 
   function deleteDolly(id: string): void {
     setDollies((current) => {
       const next = current.filter((dolly) => dolly.id !== id);
-      if (next.length === 0) return current;
-      // Remount any cameras that were on the deleted dolly.
-      setVirtualCameras((vcams) =>
-        vcams.map((vcam) => (vcam.cartId === id ? { ...vcam, cartId: next[0]?.id ?? FALLBACK_DOLLY.id } : vcam))
-      );
+      // Remount cameras off the deleted dolly onto whatever remains; with no
+      // dolly left the reference dangles (a cart vcam then produces no frame).
+      const remount = next[0]?.id;
+      if (remount) {
+        setVirtualCameras((vcams) =>
+          vcams.map((vcam) => (vcam.cartId === id ? { ...vcam, cartId: remount } : vcam))
+        );
+      }
       return next;
     });
   }
@@ -2821,11 +2914,11 @@ export function App() {
   const lookaheadMarkerRef = useRef<HTMLDivElement | null>(null);
   const lookaheadLineRef = useRef<SVGLineElement | null>(null);
   const [anchorScales, setAnchorScales] = useState<number[]>(
-    () => new Array(bezierPath.numAnchorPoints).fill(1)
+    () => (bezierPath ? new Array(bezierPath.numAnchorPoints).fill(1) : [])
   );
 
   const vertexPath = useMemo(
-    () => new VertexPath(bezierPath, { spacing: 0.03 }),
+    () => (bezierPath ? new VertexPath(bezierPath, { spacing: 0.03 }) : null),
     [bezierPath, pathVersion]
   );
   const vertexPaths = useMemo(
@@ -2833,7 +2926,7 @@ export function App() {
       new Map(
         paths.map((path) => [
           path.id,
-          path.id === activePathId
+          path.id === activePathId && vertexPath
             ? vertexPath
             : new VertexPath(BezierPath.fromJSON(path.bezier), { spacing: 0.05 })
         ])
@@ -2903,13 +2996,20 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shotTimingKey, dollyKey]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
+  // The rig preview only has a source while an editable path drives it; with
+  // no timeline/shot/selection and no path, the PiP shows "no output".
+  const hasPipSource = Boolean(
+    timelineActive || virtualCameraActivation || selectedVirtualCamera || bezierPath
+  );
   const pipLabel = timelineActive
     ? "Timeline"
     : virtualCameraActivation
       ? "Brain Camera"
       : selectedVirtualCamera
         ? selectedVirtualCamera.name
-        : "Rig Camera";
+        : bezierPath
+          ? "Rig Camera"
+          : "No output";
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2921,6 +3021,7 @@ export function App() {
   }
 
   function mutatePath(mutator: (path: BezierPath) => void): void {
+    if (!bezierPath) return;
     mutator(bezierPath);
     setAnchorScales((prev) => normalizeAnchorScales(bezierPath.numAnchorPoints, prev));
     setPathVersion((v) => v + 1);
@@ -2979,10 +3080,12 @@ export function App() {
   }
 
   function savePath(): void {
+    if (!bezierPath) return;
     localStorage.setItem(STORAGE_KEY, JSON.stringify(bezierPath.toJSON()));
   }
 
   function loadPath(): void {
+    if (!activePathId) return;
     const raw = localStorage.getItem(STORAGE_KEY);
     if (!raw) return;
 
@@ -3000,6 +3103,7 @@ export function App() {
   }
 
   function resetPath(): void {
+    if (!activePathId) return;
     const reset = createDefaultBezier();
     setBezierPath(reset);
     setAnchorScales(new Array(reset.numAnchorPoints).fill(1));
@@ -3192,6 +3296,12 @@ export function App() {
         </div>
 
         <SettingsSection title="Path Editing">
+          {!bezierPath ? (
+            <div style={{ fontSize: 12, color: "#94a3b8" }}>
+              No editable path. Add a path below (or right-click the timeline) to start editing.
+            </div>
+          ) : (
+          <>
           {selectedAnchorScaleForUi !== null ? (
             <div style={{ fontSize: 12, color: "#e2e8f0" }}>
               Selected anchor scale: {selectedAnchorScaleForUi.toFixed(2)}
@@ -3249,6 +3359,8 @@ export function App() {
               <option value={ControlMode.Mirrored}>Mirrored</option>
             </select>
           </label>
+          </>
+          )}
         </SettingsSection>
 
         <SettingsSection title="Dollies">
@@ -3283,13 +3395,7 @@ export function App() {
                   <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
                   <option value={EndOfPathInstruction.Stop}>Stop</option>
                 </select>
-                <button
-                  disabled={dollies.length <= 1}
-                  title={dollies.length <= 1 ? "A production needs at least one dolly" : undefined}
-                  onClick={() => deleteDolly(dolly.id)}
-                >
-                  Del
-                </button>
+                <button onClick={() => deleteDolly(dolly.id)}>Del</button>
               </div>
             ))}
             <button onClick={addDolly}>Add Dolly</button>
@@ -3312,17 +3418,7 @@ export function App() {
                   />
                   <span style={{ marginLeft: 6 }}>{path.name}</span>
                 </label>
-                <button
-                  disabled={paths.length <= 1 || path.id === activePathId}
-                  title={
-                    path.id === activePathId
-                      ? "Switch to another path before deleting this one"
-                      : undefined
-                  }
-                  onClick={() => deletePath(path.id)}
-                >
-                  Del
-                </button>
+                <button onClick={() => deletePath(path.id)}>Del</button>
               </div>
             ))}
             <button onClick={addPath}>Add Path</button>
@@ -3521,6 +3617,7 @@ export function App() {
           composerActive={aimMode === "screen-composer"}
           composerSettings={composerSettings}
           label={pipLabel}
+          hasSource={hasPipSource}
           targetMarkerRef={dollyTargetMarkerRef}
           targetLineRef={dollyTargetLineRef}
           lookaheadMarkerRef={lookaheadMarkerRef}
@@ -3592,6 +3689,7 @@ export function App() {
           onUpdateVirtualCameraSnapshot={updateVirtualCameraSnapshot}
           onUpdateCartOffset={(id, cartOffset) => updateVirtualCameraShot(id, { cartOffset })}
           onSetAnchorScale={(anchorIndex, scale) => {
+            if (!bezierPath) return;
             setAnchorScales((prev) => {
               const next = normalizeAnchorScales(bezierPath.numAnchorPoints, prev);
               if (anchorIndex >= 0 && anchorIndex < next.length) next[anchorIndex] = scale;

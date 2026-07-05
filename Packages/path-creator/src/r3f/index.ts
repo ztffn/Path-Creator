@@ -25,18 +25,21 @@ export interface PathSample {
 }
 
 export interface UsePathFollowerOptions {
-  path: VertexPath;
+  /** Null yields a stationary follower (zero sample); lets hosts run the hook before a path is authored. */
+  path: VertexPath | null;
   speed: number;
   mode?: EndOfPathInstruction;
   initialDistance?: number;
 }
 
-export interface UsePathCartOptions extends UsePathFollowerOptions {
+export interface UsePathCartOptions extends Omit<UsePathFollowerOptions, "path"> {
+  path: VertexPath;
   orientationMode?: CartOrientationMode;
   positionOffset?: Vec3;
 }
 
-export interface UseDollyCameraOptions extends UsePathFollowerOptions {
+export interface UseDollyCameraOptions extends Omit<UsePathFollowerOptions, "path"> {
+  path: VertexPath;
   lookAhead?: number;
   damping?: number;
   composer?: ScreenComposerOptions & { target: Vec3 };
@@ -82,6 +85,15 @@ const DEFAULT_SCREEN_COMPOSER = {
 const WORLD_UP = new Vector3(0, 1, 0);
 const WORLD_RIGHT = new Vector3(1, 0, 0);
 const EPSILON = 1e-6;
+
+// Returned by a follower with no path: origin, +Z forward, +Y up. Frozen so
+// the shared instance can never be mutated by a consumer.
+const EMPTY_PATH_SAMPLE: PathSample = Object.freeze({
+  distance: 0,
+  position: Object.freeze({ x: 0, y: 0, z: 0 }),
+  direction: Object.freeze({ x: 0, y: 0, z: 1 }),
+  normal: Object.freeze({ x: 0, y: 1, z: 0 })
+}) as PathSample;
 
 export function updateFollowerState(
   state: FollowerState,
@@ -261,6 +273,7 @@ export function usePathFollower(options: UsePathFollowerOptions): {
 
   const step = useCallback(
     (deltaSeconds: number) => {
+      if (!options.path) return EMPTY_PATH_SAMPLE;
       state.current = updateFollowerState(state.current, options.speed, deltaSeconds, options.path, mode);
       return samplePathAtDistance(options.path, state.current.distance, mode);
     },
