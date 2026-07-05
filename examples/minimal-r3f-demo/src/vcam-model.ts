@@ -74,17 +74,17 @@ export type EditorVcam = { noisePreset: DemoNoisePreset; composerSettings: Compo
 export type ShotTiming = { start: number; end: number };
 
 /**
- * One dolly run: over [start, end] the cart eases from fromDistance to
- * toDistance along its path. Runs are authored per dolly, independent of camera
- * shots; a new run defaults fromDistance to the previous run's toDistance so
+ * One dolly run: over [start, end] the cart eases from fromT to
+ * toT along its path. Runs are authored per dolly, independent of camera
+ * shots; a new run defaults fromT to the previous run's toT so
  * gaps park rather than teleport. No runs on a dolly = free-run at rig speed.
  */
 export type DollyRun = {
   id: string;
   start: number;
   end: number;
-  fromDistance: number;
-  toDistance: number;
+  fromT: number;
+  toT: number;
 };
 
 /**

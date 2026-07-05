@@ -5,6 +5,8 @@
 // noise-preset matching. The scene file is a pure RigDocument; editor-only bits
 // (active path, noise-preset label) are derived or defaulted on load.
 import {
+  BezierPath,
+  VertexPath,
   createRigDocument,
   createTimeline,
   parseRigDocument,
@@ -51,7 +53,9 @@ export interface DemoScene {
 export function buildShowTimeline(
   vcamDefs: VirtualCameraDefinition[],
   shotTiming: Record<string, ShotTiming>,
-  dollyRuns: Record<string, DollyRun[]>
+  dollyRuns: Record<string, DollyRun[]>,
+  // Converts a normalized 0..1 move position to arc-distance for that cart's path.
+  cartLength: (cartId: string) => number
 ): RigTimelineDefinition {
   const shots = vcamDefs
     .map((def) => ({ def, timing: shotTiming[def.id] ?? { start: 0, end: 5 } }))
@@ -70,17 +74,20 @@ export function buildShowTimeline(
   });
 
   const cartTracks: CartTrack[] = Object.entries(dollyRuns)
-    .map(([cartId, runs]) => ({
-      type: "cart" as const,
-      id: `dolly-track-${cartId}`,
-      cartId,
-      keys: [...runs]
-        .sort((a, b) => a.start - b.start)
-        .flatMap((run) => [
-          { time: run.start, distance: run.fromDistance, easing: "easeInOut" as const },
-          { time: run.end, distance: run.toDistance }
-        ])
-    }))
+    .map(([cartId, runs]) => {
+      const length = cartLength(cartId) || 1;
+      return {
+        type: "cart" as const,
+        id: `dolly-track-${cartId}`,
+        cartId,
+        keys: [...runs]
+          .sort((a, b) => a.start - b.start)
+          .flatMap((run) => [
+            { time: run.start, distance: run.fromT * length, easing: "easeInOut" as const },
+            { time: run.end, distance: run.toT * length }
+          ])
+      };
+    })
     .filter((track) => track.keys.length > 0);
 
   const cartEnd = Object.values(dollyRuns)
@@ -110,10 +117,14 @@ function timingFromTimeline(
 }
 
 /** Reverses each cart track's keys into run-blocks (keys come in start/end pairs). */
-function runsFromTimeline(timeline: Timeline | undefined): Record<string, DollyRun[]> {
+function runsFromTimeline(
+  timeline: Timeline | undefined,
+  cartLength: (cartId: string) => number
+): Record<string, DollyRun[]> {
   const runs: Record<string, DollyRun[]> = {};
   for (const track of timeline?.tracks ?? []) {
     if (track.type !== "cart") continue;
+    const length = cartLength(track.cartId) || 1;
     const list: DollyRun[] = [];
     for (let i = 0; i + 1 < track.keys.length; i += 2) {
       const from = track.keys[i];
@@ -123,13 +134,27 @@ function runsFromTimeline(timeline: Timeline | undefined): Record<string, DollyR
         id: `run-${track.cartId}-${i / 2}`,
         start: from.time,
         end: to.time,
-        fromDistance: from.distance,
-        toDistance: to.distance
+        fromT: from.distance / length,
+        toT: to.distance / length
       });
     }
     if (list.length > 0) runs[track.cartId] = list;
   }
   return runs;
+}
+
+/** Arc-length of each cart's path, keyed by cartId (for 0..1 ↔ distance). */
+function cartPathLengths(
+  paths: RigPathDefinition[],
+  carts: RigCartDefinition[]
+): (cartId: string) => number {
+  const pathLength = new Map<string, number>();
+  for (const path of paths) {
+    pathLength.set(path.id, new VertexPath(BezierPath.fromJSON(path.bezier)).length);
+  }
+  const byCart = new Map<string, number>();
+  for (const cart of carts) byCart.set(cart.id, pathLength.get(cart.pathId) ?? 1);
+  return (cartId) => byCart.get(cartId) ?? 1;
 }
 
 /** The noise-preset label whose expansion matches these settings, else "off". */
@@ -149,7 +174,14 @@ export function assembleDocument(scene: DemoScene): RigDocument {
     carts: scene.dollies,
     vcams: scene.vcamDefs,
     targets: scene.targets,
-    timelines: [buildShowTimeline(scene.vcamDefs, scene.shotTiming, scene.dollyRuns)]
+    timelines: [
+      buildShowTimeline(
+        scene.vcamDefs,
+        scene.shotTiming,
+        scene.dollyRuns,
+        cartPathLengths(scene.paths, scene.dollies)
+      )
+    ]
   });
 }
 
@@ -170,7 +202,10 @@ export function hydrateScene(document: RigDocument): DemoScene {
     vcamDefs,
     editorVcams,
     shotTiming: timingFromTimeline(document.timelines?.[0], vcamDefs),
-    dollyRuns: runsFromTimeline(document.timelines?.[0]),
+    dollyRuns: runsFromTimeline(
+      document.timelines?.[0],
+      cartPathLengths(document.paths, document.carts)
+    ),
     targets: (document.targets ?? []).filter(
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
     )

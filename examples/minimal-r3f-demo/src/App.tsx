@@ -2595,19 +2595,17 @@ export function App() {
   // Dolly run-block authoring (per cartId). A new run parks-continues from the
   // previous run's end so it doesn't teleport; the default duration is 3s.
   function addDollyRun(cartId: string, start: number): void {
-    const pathId = dollies.find((dolly) => dolly.id === cartId)?.pathId ?? "";
-    const length = vertexPaths.get(pathId)?.length ?? 1;
     setDollyRuns((current) => {
       const runs = current[cartId] ?? [];
-      // Continue from where the last run parked; traverse toward the far end so a
-      // fresh move visibly covers the rail (distance is arc-length along the path).
-      const from = runs.reduce((last, run) => (run.end <= start ? run.toDistance : last), 0);
+      // Positions are normalized 0..1 along the path. Continue from where the last
+      // run parked, and traverse to the far end so a fresh move covers the rail.
+      const from = runs.reduce((last, run) => (run.end <= start ? run.toT : last), 0);
       const run: DollyRun = {
         id: `run-${cartId}-${Date.now()}`,
         start,
         end: start + 3,
-        fromDistance: from,
-        toDistance: from < length / 2 ? length : 0
+        fromT: from,
+        toT: from < 0.5 ? 1 : 0
       };
       return { ...current, [cartId]: [...runs, run].sort((a, b) => a.start - b.start) };
     });
@@ -2701,7 +2699,7 @@ export function App() {
     .map((vcam) => `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}`)
     .join("|");
   const dollyRunKey = Object.entries(dollyRuns)
-    .map(([cartId, runs]) => `${cartId}:${runs.map((r) => `${r.start},${r.end},${r.fromDistance},${r.toDistance}`).join(";")}`)
+    .map(([cartId, runs]) => `${cartId}:${runs.map((r) => `${r.start},${r.end},${r.fromT},${r.toT}`).join(";")}`)
     .join("|");
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
@@ -2711,7 +2709,13 @@ export function App() {
   const hasTimelineContent =
     vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0);
   const demoTimeline = useMemo(
-    () => (hasTimelineContent ? buildShowTimeline(vcamDefs, shotTiming, dollyRuns) : null),
+    () =>
+      hasTimelineContent
+        ? buildShowTimeline(vcamDefs, shotTiming, dollyRuns, (cartId) => {
+            const dolly = dollies.find((d) => d.id === cartId);
+            return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
+          })
+        : null,
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [shotTimingKey, dollyRunKey]
   );
@@ -3191,11 +3195,11 @@ export function App() {
                       onChange={(event) => updateDollyRun(dolly.id, run.id, { start: Number(event.target.value) })} />
                     <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
                       onChange={(event) => updateDollyRun(dolly.id, run.id, { end: Number(event.target.value) })} />
-                    <input type="number" title="from (dist)" value={run.fromDistance} step={0.5} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { fromDistance: Number(event.target.value) })} />
+                    <input type="number" title="from (0–1 along path)" value={run.fromT} min={0} max={1} step={0.05} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { fromT: Number(event.target.value) })} />
                     <span>→</span>
-                    <input type="number" title="to (dist)" value={run.toDistance} step={0.5} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { toDistance: Number(event.target.value) })} />
+                    <input type="number" title="to (0–1 along path)" value={run.toT} min={0} max={1} step={0.05} style={{ width: 46 }}
+                      onChange={(event) => updateDollyRun(dolly.id, run.id, { toT: Number(event.target.value) })} />
                     <button title="Delete move" onClick={() => deleteDollyRun(dolly.id, run.id)}>×</button>
                   </div>
                 ))}
@@ -3418,7 +3422,7 @@ export function App() {
               dollyName: dollies.find((dolly) => dolly.id === cartId)?.name ?? cartId,
               start: run.start,
               end: run.end,
-              label: `${run.fromDistance.toFixed(1)} → ${run.toDistance.toFixed(1)}`
+              label: `${run.fromT.toFixed(1)} → ${run.toT.toFixed(1)}`
             }))
           )}
           selectedShotId={selectedVirtualCameraId}
