@@ -72,7 +72,9 @@ export function TimelineLanes({
   onTransport,
   onCreateShot,
   onCreateDolly,
-  onCreatePath
+  onCreatePath,
+  onDollyRunTiming,
+  onCreateDollyRun
 }: {
   shots: LaneShot[];
   dollyMoves: LaneDollyMove[];
@@ -87,12 +89,16 @@ export function TimelineLanes({
   onCreateShot: (kind: "capture" | "cart", timeSeconds: number) => void;
   onCreateDolly: () => void;
   onCreatePath: () => void;
+  /** A dolly run block was dragged/resized (ids are the cart and run). */
+  onDollyRunTiming: (cartId: string, runId: string, start: number, end: number) => void;
+  onCreateDollyRun: (cartId: string, timeSeconds: number) => void;
 }) {
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
     time: number;
     onShotTrack: boolean;
+    dollyId?: string;
   } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
   const [playing, setPlaying] = useState(false);
@@ -133,8 +139,8 @@ export function TimelineLanes({
           start: move.start,
           end: move.end,
           effectId: "move",
-          movable: false,
-          flexible: false
+          movable: true,
+          flexible: true
         }))
       }))
     ],
@@ -303,14 +309,16 @@ export function TimelineLanes({
           dragLine
           style={{ width: "100%", height: 48 + (1 + dollyLanes.length) * 36 }}
           onActionMoving={({ action, start, end }) =>
-            wouldFullyContain(action.id, start, end) ? false : undefined
+            // Only shot clips obey Cinemachine's no-containment rule; dolly runs move freely.
+            action.id.startsWith("move-") ? undefined : wouldFullyContain(action.id, start, end) ? false : undefined
           }
           onActionResizing={({ action, start, end }) =>
-            wouldFullyContain(action.id, start, end) ? false : undefined
+            action.id.startsWith("move-") ? undefined : wouldFullyContain(action.id, start, end) ? false : undefined
           }
           onClickRow={(_event, { time }) => onSeek(time)}
           onDoubleClickRow={(_event, { row, time }) => {
             if (row.id === "shot-track") onCreateShot("cart", time);
+            else if (row.id.startsWith("dolly-")) onCreateDollyRun(row.id.slice(6), time);
           }}
           onContextMenuRow={(event, { row, time }) => {
             event.preventDefault();
@@ -318,7 +326,8 @@ export function TimelineLanes({
               x: event.clientX,
               y: event.clientY,
               time,
-              onShotTrack: row.id === "shot-track"
+              onShotTrack: row.id === "shot-track",
+              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) })
             });
           }}
           onContextMenuAction={(event, { row, time }) => {
@@ -327,28 +336,34 @@ export function TimelineLanes({
               x: event.clientX,
               y: event.clientY,
               time,
-              onShotTrack: row.id === "shot-track"
+              onShotTrack: row.id === "shot-track",
+              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) })
             });
           }}
           onChange={(rows) => {
             for (const row of rows) {
+              const cartId = row.id.startsWith("dolly-") ? row.id.slice(6) : null;
               for (const action of row.actions) {
-                const shot = shots.find((item) => item.id === action.id);
-                if (!shot) continue;
                 const start = Math.max(0, Math.round(action.start / SNAP_SECONDS) * SNAP_SECONDS);
-                const end = Math.max(
-                  start + SNAP_SECONDS,
-                  Math.round(action.end / SNAP_SECONDS) * SNAP_SECONDS
-                );
-                if (Math.abs(start - shot.start) > 1e-6 || Math.abs(end - shot.end) > 1e-6) {
+                const end = Math.max(start + SNAP_SECONDS, Math.round(action.end / SNAP_SECONDS) * SNAP_SECONDS);
+                if (cartId && action.id.startsWith("move-")) {
+                  const move = dollyMoves.find((m) => `move-${m.shotId}` === action.id);
+                  if (move && (Math.abs(start - move.start) > 1e-6 || Math.abs(end - move.end) > 1e-6)) {
+                    onDollyRunTiming(cartId, action.id.slice(5), start, end);
+                  }
+                  continue;
+                }
+                const shot = shots.find((item) => item.id === action.id);
+                if (shot && (Math.abs(start - shot.start) > 1e-6 || Math.abs(end - shot.end) > 1e-6)) {
                   onShotTiming(action.id, start, end);
                 }
               }
             }
           }}
-          onClickAction={(_event, { action }) =>
-            onSelectShot(action.id.startsWith("move-") ? action.id.slice(5) : action.id)
-          }
+          onClickAction={(_event, { action }) => {
+            // Dolly runs (move-*) aren't shots; clicking one just seeks (via the row).
+            if (!action.id.startsWith("move-")) onSelectShot(action.id);
+          }}
           onClickTimeArea={(time) => {
             onSeek(time);
             return true;
@@ -474,6 +489,20 @@ export function TimelineLanes({
                       background: "rgba(148, 163, 184, 0.18)"
                     }}
                   />
+                </>
+              ) : null}
+              {contextMenu.dollyId ? (
+                <>
+                  <button
+                    style={{ textAlign: "left" }}
+                    onClick={() => {
+                      if (contextMenu.dollyId) onCreateDollyRun(contextMenu.dollyId, contextMenu.time);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Add dolly run here
+                  </button>
+                  <div style={{ height: 1, margin: "4px 0", background: "rgba(148, 163, 184, 0.18)" }} />
                 </>
               ) : null}
               <button

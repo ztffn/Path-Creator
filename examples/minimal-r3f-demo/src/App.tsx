@@ -3415,6 +3415,10 @@ export function App() {
           onShotTiming={(vcamId, shotStart, shotEnd) =>
             updateVirtualCameraShot(vcamId, { shotStart, shotEnd })
           }
+          onDollyRunTiming={(cartId, runId, start, end) =>
+            updateDollyRun(cartId, runId, { start, end })
+          }
+          onCreateDollyRun={(cartId, time) => addDollyRun(cartId, Math.max(0, Math.round(time * 4) / 4))}
           onSelectShot={selectVirtualCamera}
           onSeek={(time) => {
             seekTimelinePlayer(timelinePlayerRef.current, time);
