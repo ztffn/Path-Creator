@@ -2745,11 +2745,22 @@ export function App() {
   }
 
   function deletePath(id: string): void {
-    if (paths.length <= 1 || id === activePathId) return;
-    setPaths((current) => current.filter((path) => path.id !== id));
+    if (paths.length <= 1) return;
+    const remaining = paths.filter((path) => path.id !== id);
+    const fallback = remaining[0];
+    if (!fallback) return;
+    if (id === activePathId) {
+      // Deleting the path being edited: activate the next one first.
+      setActivePathId(fallback.id);
+      setBezierPath(BezierPath.fromJSON(fallback.bezier));
+      setSelectedHandleIndex(null);
+      setSelectedMidpointIndex(null);
+      setPathVersion((version) => version + 1);
+    }
+    setPaths(remaining);
     setDollies((current) =>
       current.map((dolly) =>
-        dolly.pathId === id ? { ...dolly, pathId: activePathId } : dolly
+        dolly.pathId === id ? { ...dolly, pathId: fallback.id } : dolly
       )
     );
   }
