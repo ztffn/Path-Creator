@@ -12,8 +12,8 @@ export interface TargetGroupMember {
 }
 
 export type TrackingTargetDefinition =
-  | { id: string; name?: string; type: "point"; position: Vec3 }
-  | { id: string; name?: string; type: "cart"; cartId: string }
+  | { id: string; name?: string; type: "point"; position: Vec3; visibleInRender?: boolean }
+  | { id: string; name?: string; type: "cart"; cartId: string; visibleInRender?: boolean }
   | { id: string; name?: string; type: "group"; members: TargetGroupMember[] };
 
 export type TargetSource = () => Vec3 | null;

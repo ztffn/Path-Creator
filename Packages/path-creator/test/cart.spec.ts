@@ -15,10 +15,12 @@ import {
   createPathCart,
   createRigDocument,
   deserializePathCart,
+  parseRigDocument,
   sampleCartFrame,
   sampleCartFrameAtTime,
   serializePathCart,
   serializeRigCart,
+  serializeRigDocument,
   serializeRigPath,
   vec3,
   type Vec3
@@ -220,6 +222,25 @@ describe("rig document", () => {
   it("rejects unknown schema versions", () => {
     const document = { ...createRigDocument(), schemaVersion: 99 };
     expect(() => buildRigRuntime(document as never)).toThrow(/schema version/);
+  });
+
+  it("round-trips a document through serialize/parse, preserving target visibleInRender", () => {
+    const document = createRigDocument({
+      paths: [serializeRigPath("path-a", bezier)],
+      targets: [
+        { id: "hero", type: "point", position: { x: 1, y: 0, z: 0 }, visibleInRender: false },
+        { id: "mark", type: "point", position: { x: 2, y: 0, z: 0 } }
+      ]
+    });
+    const restored = parseRigDocument(serializeRigDocument(document));
+    expect(restored).toEqual(document);
+    expect(restored.targets?.[0]).toMatchObject({ id: "hero", visibleInRender: false });
+    expect(restored.targets?.[1].visibleInRender).toBeUndefined();
+  });
+
+  it("parse rejects an unsupported schema version", () => {
+    const json = JSON.stringify({ ...createRigDocument(), schemaVersion: 99 });
+    expect(() => parseRigDocument(json)).toThrow(/schema version/);
   });
 
   it("preserves a track aim through the runtime (target refs resolve at runtime, not build)", () => {

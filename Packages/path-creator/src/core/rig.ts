@@ -65,6 +65,29 @@ export function createRigDocument(
   };
 }
 
+/** Serializes a rig document to JSON — the portable scene file. */
+export function serializeRigDocument(document: RigDocument): string {
+  return JSON.stringify(document);
+}
+
+/**
+ * Parses a rig document from JSON, validating the schema version (and leaving a
+ * hook for migrating older versions). Cross-reference validation — dangling
+ * cart/vcam/target ids — happens in buildRigRuntime, not here.
+ */
+export function parseRigDocument(json: string): RigDocument {
+  const parsed = JSON.parse(json) as RigDocument;
+  if (typeof parsed?.schemaVersion !== "number") {
+    throw new Error("Invalid rig document: missing schemaVersion");
+  }
+  if (parsed.schemaVersion < 1 || parsed.schemaVersion > RIG_SCHEMA_VERSION) {
+    throw new Error(
+      `Unsupported rig schema version ${String(parsed.schemaVersion)}; expected 1..${RIG_SCHEMA_VERSION}`
+    );
+  }
+  return parsed;
+}
+
 export function serializeRigPath(
   id: string,
   path: BezierPath,
