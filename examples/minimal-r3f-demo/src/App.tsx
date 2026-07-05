@@ -103,6 +103,11 @@ type DemoShotPatch = Partial<
 
 const COMPOSER_UP = new Vector3(0, 1, 0);
 
+// Fallbacks for a vcam whose sidecar entry is missing (shouldn't happen, but
+// keeps the derived view total). Stable identities, so hoisted out of render.
+const DEFAULT_EDITOR_VCAM: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
+const DEFAULT_SHOT_TIMING: ShotTiming = { start: 0, end: 5, railFrom: null, railTo: null };
+
 // Reframe a camera so the tracked target lands in the composer's screen zones
 // (dead/soft) with damping. Stateful, so it runs on live preview cameras only
 // (not in pure timeline evaluation) — see the package composer notes.
@@ -2449,7 +2454,6 @@ export function App() {
           shotEnd: index * 5 + 5,
           railFrom: null,
           railTo: null,
-          composerSettings: DEFAULT_COMPOSER_SETTINGS,
           ...vcam
         } as DemoVirtualCamera;
         return { ...base, composerSettings: { ...DEFAULT_COMPOSER_SETTINGS, ...base.composerSettings } };
@@ -2476,13 +2480,11 @@ export function App() {
       ])
     )
   );
-  const defaultEditorVcam: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
-  const defaultShotTiming: ShotTiming = { start: 0, end: 5, railFrom: null, railTo: null };
   // The UI-facing view is a pure projection of the authoritative model.
   const virtualCameras = useMemo<DemoVirtualCamera[]>(
     () =>
       vcamDefs.map((def) =>
-        toVcamView(def, editorVcams[def.id] ?? defaultEditorVcam, shotTiming[def.id] ?? defaultShotTiming)
+        toVcamView(def, editorVcams[def.id] ?? DEFAULT_EDITOR_VCAM, shotTiming[def.id] ?? DEFAULT_SHOT_TIMING)
       ),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vcamDefs, editorVcams, shotTiming]
@@ -2817,7 +2819,7 @@ export function App() {
       patch.railTo !== undefined
     ) {
       setShotTiming((current) => {
-        const prev = current[id] ?? defaultShotTiming;
+        const prev = current[id] ?? DEFAULT_SHOT_TIMING;
         return {
           ...current,
           [id]: {
@@ -2833,20 +2835,13 @@ export function App() {
       const preset = patch.noisePreset;
       setEditorVcams((current) => ({
         ...current,
-        [id]: { ...(current[id] ?? defaultEditorVcam), noisePreset: preset }
+        [id]: { ...(current[id] ?? DEFAULT_EDITOR_VCAM), noisePreset: preset }
       }));
-      setVcamDefs((current) =>
-        current.map((def) => {
-          if (def.id !== id) return def;
-          const next: VirtualCameraDefinition = { ...def };
-          const noise = expandNoisePreset(preset);
-          if (noise) next.noise = noise;
-          else delete next.noise;
-          return next;
-        })
-      );
     }
+    // Every definition-shaped field (noise expansion, aim, dutch, cart) in one
+    // pass over vcamDefs; the editor-sidecar write above stays separate.
     if (
+      patch.noisePreset !== undefined ||
       patch.trackTargetId !== undefined ||
       patch.dutchDeg !== undefined ||
       patch.cartId !== undefined ||
@@ -2856,10 +2851,15 @@ export function App() {
         current.map((def) => {
           if (def.id !== id) return def;
           const next: VirtualCameraDefinition = { ...def };
+          if (patch.noisePreset !== undefined) {
+            const noise = expandNoisePreset(patch.noisePreset);
+            if (noise) next.noise = noise;
+            else delete next.noise;
+          }
           if (patch.trackTargetId !== undefined) {
             if (patch.trackTargetId) {
               next.aim = {
-                type: "screen-composer",
+                type: "track",
                 target: { targetId: patch.trackTargetId },
                 settings: editorVcams[id]?.composerSettings ?? DEFAULT_COMPOSER_SETTINGS
               };
@@ -2889,11 +2889,11 @@ export function App() {
   function updateVirtualCameraComposer(id: string, settings: ComposerSettings): void {
     setEditorVcams((current) => ({
       ...current,
-      [id]: { ...(current[id] ?? defaultEditorVcam), composerSettings: settings }
+      [id]: { ...(current[id] ?? DEFAULT_EDITOR_VCAM), composerSettings: settings }
     }));
     setVcamDefs((current) =>
       current.map((def) =>
-        def.id === id && def.aim?.type === "screen-composer"
+        def.id === id && def.aim?.type === "track"
           ? { ...def, aim: { ...def.aim, settings } }
           : def
       )

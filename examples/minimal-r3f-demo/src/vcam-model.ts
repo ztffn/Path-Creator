@@ -1,16 +1,21 @@
 // Authoritative demo virtual-camera model: a real package VirtualCameraDefinition
-// (body / lens / noise / screen-composer aim) plus editor-only sidecars (noise
+// (body / lens / noise / track aim) plus editor-only sidecars (noise
 // preset, composer settings) and shot timing. Projects to/from the flat
 // DemoVirtualCamera "view" the authoring UI reads, so the source of truth is the
 // portable package type, not a lossy demo superset. Timing stays a sidecar here;
 // a later step lifts it into an authored timeline.
 import {
+  DEFAULT_COMPOSER_SETTINGS,
   type ComposerSettings,
   type Vec3,
   type VirtualCameraDefinition,
   type VirtualCameraNoiseSettings,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/core";
+
+// Re-exported so demo modules get the composer defaults from one place; the
+// canonical values live in the package, not here.
+export { DEFAULT_COMPOSER_SETTINGS };
 
 export type DemoNoisePreset = "off" | "subtle" | "rough";
 
@@ -30,24 +35,6 @@ export const NOISE_PRESETS: Record<DemoNoisePreset, VirtualCameraNoiseSettings |
     rotationAmplitudeDeg: 2.4,
     rotationFrequencyDeg: 1.6
   }
-};
-
-export const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
-  screenX: 0,
-  screenY: 0,
-  deadWidth: 0.18,
-  deadHeight: 0.14,
-  softWidth: 0.55,
-  softHeight: 0.45,
-  dampingX: 6,
-  dampingY: 8,
-  targetOffsetX: 0,
-  targetOffsetY: 0,
-  targetOffsetZ: 0,
-  lookaheadTime: 0.2,
-  lookaheadSmoothing: 8,
-  lookaheadIgnoreY: false,
-  centerOnActivate: false
 };
 
 /** Editor-only extras keyed to a vcam id; not part of the portable definition. */
@@ -83,9 +70,9 @@ export function expandNoisePreset(preset: DemoNoisePreset): VirtualCameraNoiseSe
   return NOISE_PRESETS[preset];
 }
 
-/** The tracked target id of a screen-composer aim, or null for a body aim. */
+/** The tracked target id of a track aim, or null for a body aim. */
 export function vcamTrackTargetId(def: VirtualCameraDefinition): string | null {
-  return def.aim?.type === "screen-composer" && "targetId" in def.aim.target
+  return def.aim?.type === "track" && "targetId" in def.aim.target
     ? def.aim.target.targetId
     : null;
 }
@@ -98,13 +85,15 @@ export function toVcamView(
 ): DemoVirtualCamera {
   const dutchDeg = def.lens?.dutchDeg ?? 0;
   const name = def.name ?? def.id;
-  const snapshot: VirtualCameraSnapshot =
-    def.body.type === "static"
-      ? { name, position: def.body.position, quaternion: def.body.quaternion, ...(def.lens && { lens: def.lens }) }
-      : { name, position: { x: 0, y: 0, z: 0 }, quaternion: { ...IDENTITY_QUAT }, ...(def.lens && { lens: def.lens }) };
+  const snapshot: VirtualCameraSnapshot = {
+    name,
+    position: def.body.type === "static" ? def.body.position : { x: 0, y: 0, z: 0 },
+    quaternion: def.body.type === "static" ? def.body.quaternion : { ...IDENTITY_QUAT },
+    ...(def.lens && { lens: def.lens })
+  };
   return {
     id: def.id,
-    name: def.name ?? def.id,
+    name,
     bodyType: def.body.type,
     cartId: def.body.type === "cart" ? def.body.cartId : "",
     cartOffset: def.body.type === "cart" ? def.body.positionOffset ?? { x: 0, y: 0, z: 0 } : { x: 0, y: 0, z: 0 },
@@ -122,8 +111,9 @@ export function toVcamView(
 
 /**
  * Assembles a definition from the flat view + its editor sidecar. Used on load
- * (migrating the stored view shape) and when adding a camera. The screen-composer
- * aim carries the composer settings so the definition stays self-contained.
+ * (migrating the stored view shape) and when adding a camera. The demo always
+ * frames tracked targets through the damped composer, so the track aim carries
+ * composer settings and the definition stays self-contained.
  */
 export function vcamDefFromView(
   view: DemoVirtualCamera,
@@ -144,7 +134,7 @@ export function vcamDefFromView(
   };
   if (view.trackTargetId) {
     def.aim = {
-      type: "screen-composer",
+      type: "track",
       target: { targetId: view.trackTargetId },
       settings: editor.composerSettings
     };
