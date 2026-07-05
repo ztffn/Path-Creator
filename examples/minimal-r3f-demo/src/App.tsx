@@ -7,7 +7,6 @@ import {
   PathSpace,
   TargetRegistry,
   VertexPath,
-  advanceCartDistance,
   createPathCart,
   sampleCartFrame,
   type CartFrame,
@@ -833,14 +832,6 @@ function Scene({
   }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
   useFrame(({ camera }, delta) => {
-    for (const dolly of dollies) {
-      const cart = liveDollies.get(dolly.id);
-      const dollyPath = vertexPaths.get(dolly.pathId);
-      if (!cart || !dollyPath) continue;
-      cart.speed = speed;
-      cart.distance = advanceCartDistance(dollyPath, cart, delta);
-      dollyFramesRef.current.set(dolly.id, sampleCartFrame(dollyPath, cart));
-    }
     const mainCamera = camera as PerspectiveCamera;
     const elapsed = performance.now() / 1000;
 
@@ -852,15 +843,31 @@ function Scene({
       onVirtualCameraCaptured(captureVirtualCameraSnapshot(mainCamera));
     }
 
+    // Carts follow the SHOW CLOCK, not wall-clock: advance the player only while
+    // playing, then position every dolly from the timeline at that time. With no
+    // active timeline (shots mode) the dollies park at the rail start — they no
+    // longer drift on their own before playback.
+    let timelineSample: ReturnType<typeof evaluateTimeline> | null = null;
+    if (activeTimeline) {
+      if (timelinePlayerRef.current.playing) {
+        stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
+      }
+      timelineSample = evaluateTimeline(activeTimeline, timelineContext, timelinePlayerRef.current.time);
+      for (const [dollyId, frame] of timelineSample.cartFrames) {
+        dollyFramesRef.current.set(dollyId, frame);
+      }
+    } else {
+      for (const dolly of dollies) {
+        const dollyPath = vertexPaths.get(dolly.pathId);
+        const cart = liveDollies.get(dolly.id);
+        if (dollyPath && cart) dollyFramesRef.current.set(dolly.id, sampleCartFrame(dollyPath, cart, 0));
+      }
+    }
+
     // Which vcam drives the PiP this frame, for the composer overlay below.
     let composerVcam: DemoVirtualCamera | null = null;
-    if (activeTimeline) {
-      stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
-      const sample = evaluateTimeline(
-        activeTimeline,
-        timelineContext,
-        timelinePlayerRef.current.time
-      );
+    if (activeTimeline && timelineSample) {
+      const sample = timelineSample;
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
         // Live composer post-step so playback frames like the preview: position
@@ -879,9 +886,6 @@ function Scene({
       } else {
         // Released gap (no camera): the PiP holds the last pose.
         composerVcamIdRef.current = null;
-      }
-      for (const [dollyId, frame] of sample.cartFrames) {
-        dollyFramesRef.current.set(dollyId, frame);
       }
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
@@ -2591,15 +2595,19 @@ export function App() {
   // Dolly run-block authoring (per cartId). A new run parks-continues from the
   // previous run's end so it doesn't teleport; the default duration is 3s.
   function addDollyRun(cartId: string, start: number): void {
+    const pathId = dollies.find((dolly) => dolly.id === cartId)?.pathId ?? "";
+    const length = vertexPaths.get(pathId)?.length ?? 1;
     setDollyRuns((current) => {
       const runs = current[cartId] ?? [];
+      // Continue from where the last run parked; traverse toward the far end so a
+      // fresh move visibly covers the rail (distance is arc-length along the path).
       const from = runs.reduce((last, run) => (run.end <= start ? run.toDistance : last), 0);
       const run: DollyRun = {
         id: `run-${cartId}-${Date.now()}`,
         start,
         end: start + 3,
         fromDistance: from,
-        toDistance: from + 1
+        toDistance: from < length / 2 ? length : 0
       };
       return { ...current, [cartId]: [...runs, run].sort((a, b) => a.start - b.start) };
     });
