@@ -2698,8 +2698,12 @@ export function App() {
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
   // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.
+  // Built whenever there's ANY content — cameras OR dolly moves — so a dolly-only
+  // (or object-only) show still plays; the timeline is not vcam-coupled.
+  const hasTimelineContent =
+    vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0);
   const demoTimeline = useMemo(
-    () => (vcamDefs.length === 0 ? null : buildShowTimeline(vcamDefs, shotTiming, dollyRuns)),
+    () => (hasTimelineContent ? buildShowTimeline(vcamDefs, shotTiming, dollyRuns) : null),
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [shotTimingKey, dollyRunKey]
   );

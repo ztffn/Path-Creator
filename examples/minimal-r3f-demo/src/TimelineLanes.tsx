@@ -244,11 +244,11 @@ export function TimelineLanes({
             alignItems: "center",
             gap: 8,
             fontSize: 12,
-            marginBottom: shots.length > 0 ? 8 : 0
+            marginBottom: duration > 0 ? 8 : 0
           }}
         >
           <span style={{ fontSize: 13, fontWeight: 800 }}>Timeline</span>
-          {shots.length > 0 ? (
+          {duration > 0 ? (
             <>
               <button
                 onClick={() => {
@@ -283,7 +283,7 @@ export function TimelineLanes({
             </>
           ) : (
             <span style={{ marginLeft: "auto", fontSize: 11, color: "#94a3b8" }}>
-              Add vcams to build the show
+              Add a shot or a dolly move to build the show
             </span>
           )}
         </div>
