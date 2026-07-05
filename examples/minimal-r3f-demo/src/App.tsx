@@ -24,7 +24,6 @@ import {
   usePathCart,
   usePathFollower,
   useEditorHelpersVisible,
-  useObjectTargets,
   useRegisteredTargets,
   useTrackingTarget
 } from "@huma/path-creator/r3f";
@@ -624,32 +623,122 @@ function CartRiderProp({
   );
 }
 
-// Targets are cyan across the demo (look-target ball, buoys).
-const TARGET_RIG_BUOYS = [
-  { name: "Buoy-A", position: [0.9, 0, 0] as const },
-  { name: "Buoy-B", position: [-0.45, 0.35, 0.78] as const },
-  { name: "Buoy-C", position: [-0.45, -0.2, -0.78] as const }
+// Targets are cyan across the demo (look-target ball, point targets). Point
+// targets are authored, deletable entities: a fixed world position registered
+// under an id that vcam aims can track. `visibleInRender` controls whether the
+// sphere shows in the PiP (the stand-in for the real, non-authoring renderer) —
+// off makes it an invisible aim point, still manipulable in the authoring view.
+type DemoPointTarget = { id: string; name: string; position: Vec3; visibleInRender: boolean };
+
+const INITIAL_POINT_TARGETS: DemoPointTarget[] = [
+  { id: "target-1", name: "Target 1", position: { x: 3.3, y: 0.8, z: 0 }, visibleInRender: true },
+  { id: "target-2", name: "Target 2", position: { x: 1.95, y: 1.15, z: 0.78 }, visibleInRender: true },
+  { id: "target-3", name: "Target 3", position: { x: 1.95, y: 0.6, z: -0.78 }, visibleInRender: true }
 ];
 
-function TargetRigProp({ targetRegistry }: { targetRegistry: TargetRegistry }) {
-  const groupRef = useRef<Group>(null);
-  useObjectTargets(groupRef, { pattern: /^Buoy/, idPrefix: "rig" }, targetRegistry);
+// Next "Target N" that doesn't collide with an existing trailing number, so
+// names stay stable after deletes.
+function nextTargetName(current: DemoPointTarget[]): string {
+  const highest = current.reduce((max, t) => {
+    const match = /(\d+)$/.exec(t.name);
+    return match ? Math.max(max, Number(match[1])) : max;
+  }, 0);
+  return `Target ${highest + 1}`;
+}
 
-  useFrame(({ clock }) => {
-    groupRef.current?.rotation.set(0, clock.elapsedTime * 0.4, 0);
-  });
+// Authored point targets: each a live pull-source in the registry, rendered as a
+// cyan sphere. The sphere sits on layer 0 (seen by the PiP/render) when visible,
+// or on the editor-helpers layer (authoring-only) when hidden. The selection
+// ring and move gizmo are always authoring-only. Registration keys on the
+// id/name set, so a drag moves the source via ref without re-registering.
+function PointTargets({
+  targets,
+  registry,
+  selectedId,
+  onSelect,
+  onMove,
+  onTransformingChange
+}: {
+  targets: DemoPointTarget[];
+  registry: TargetRegistry;
+  selectedId: string | null;
+  onSelect: (id: string | null) => void;
+  onMove: (id: string, position: Vec3) => void;
+  onTransformingChange: (isTransforming: boolean) => void;
+}) {
+  const targetsRef = useRef(targets);
+  targetsRef.current = targets;
+  const membershipKey = targets.map((t) => `${t.id}:${t.name}`).join("|");
+
+  useEffect(() => {
+    const unregister = targets.map((t) =>
+      registry.register(
+        t.id,
+        () => targetsRef.current.find((x) => x.id === t.id)?.position ?? t.position,
+        t.name
+      )
+    );
+    return () => unregister.forEach((fn) => fn());
+    // Positions are read live via targetsRef; only re-register when the set changes.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [membershipKey, registry]);
 
   return (
-    <group ref={groupRef} name="TargetRig" position={[2.4, 0.8, 0]}>
-      {TARGET_RIG_BUOYS.map((buoy) => (
-        <group key={buoy.name} name={buoy.name} position={buoy.position}>
-          <mesh>
-            <sphereGeometry args={[0.09, 12, 12]} />
-            <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={0.3} />
-          </mesh>
-        </group>
-      ))}
-    </group>
+    <>
+      {targets.map((t) => {
+        const isSelected = t.id === selectedId;
+        const sphere = (
+          <group position={[t.position.x, t.position.y, t.position.z]}>
+            <mesh
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                onSelect(isSelected ? null : t.id);
+              }}
+            >
+              <sphereGeometry args={[0.1, 16, 16]} />
+              <meshStandardMaterial
+                color="#06b6d4"
+                emissive="#06b6d4"
+                emissiveIntensity={isSelected ? 0.55 : 0.3}
+              />
+            </mesh>
+          </group>
+        );
+        return (
+          <group key={t.id}>
+            {t.visibleInRender ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
+            {isSelected ? (
+              <EditorHelpers>
+                <group position={[t.position.x, t.position.y, t.position.z]}>
+                  <Billboard>
+                    <mesh>
+                      <ringGeometry args={[0.16, 0.19, 28]} />
+                      <meshBasicMaterial color="#06b6d4" transparent opacity={0.85} depthTest={false} />
+                    </mesh>
+                  </Billboard>
+                </group>
+                <PivotControls
+                  {...VCAM_PIVOT_PROPS}
+                  matrix={new Matrix4().makeTranslation(t.position.x, t.position.y, t.position.z)}
+                  disableRotations
+                  disableScaling
+                  onDragStart={() => onTransformingChange(true)}
+                  onDragEnd={() => onTransformingChange(false)}
+                  onDrag={(matrix) =>
+                    onMove(t.id, { x: matrix.elements[12], y: matrix.elements[13], z: matrix.elements[14] })
+                  }
+                >
+                  <mesh>
+                    <sphereGeometry args={[0.001, 4, 4]} />
+                    <meshBasicMaterial transparent opacity={0} />
+                  </mesh>
+                </PivotControls>
+              </EditorHelpers>
+            ) : null}
+          </group>
+        );
+      })}
+    </>
   );
 }
 
@@ -665,7 +754,6 @@ function Scene({
   debugPreview,
   debugFrustum,
   showCartRider,
-  showTargetRig,
   selectedHandleIndex,
   selectedMidpointIndex,
   anchorScales,
@@ -708,7 +796,6 @@ function Scene({
   debugPreview: boolean;
   debugFrustum: boolean;
   showCartRider: boolean;
-  showTargetRig: boolean;
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
   anchorScales: number[];
@@ -1615,8 +1702,6 @@ function Scene({
           targetRegistry={targetRegistry}
         />
       ) : null}
-
-      {showTargetRig ? <TargetRigProp targetRegistry={targetRegistry} /> : null}
 
       {debugPreview ? (
         <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} hasSource={hasPipSource} />
@@ -2748,7 +2833,6 @@ export function App() {
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   const [showCartRider, setShowCartRider] = useState(false);
-  const [showTargetRig, setShowTargetRig] = useState(false);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
@@ -2766,12 +2850,58 @@ export function App() {
             vcams?: Partial<DemoVirtualCamera>[];
             paths?: DemoPath[];
             activePathId?: string;
+            pointTargets?: DemoPointTarget[];
           };
       return Array.isArray(parsed) ? { vcams: parsed } : parsed;
     } catch {
       return null;
     }
   }, []);
+  const [pointTargets, setPointTargets] = useState<DemoPointTarget[]>(
+    () =>
+      // Default visibleInRender for targets persisted before the field existed.
+      storedShow?.pointTargets?.map((t) => ({ ...t, visibleInRender: t.visibleInRender ?? true })) ??
+      INITIAL_POINT_TARGETS
+  );
+  const [selectedPointTargetId, setSelectedPointTargetId] = useState<string | null>(null);
+
+  function selectPointTarget(id: string | null): void {
+    setSelectedPointTargetId(id);
+    if (id !== null) {
+      setSelectedHandleIndex(null);
+      setSelectedMidpointIndex(null);
+      setSelectedVirtualCameraId(null);
+    }
+  }
+
+  function addPointTarget(): void {
+    const id = `target-${Date.now()}`;
+    setPointTargets((current) => [
+      ...current,
+      { id, name: nextTargetName(current), position: { x: 2.4, y: 0.8, z: 0 }, visibleInRender: true }
+    ]);
+    selectPointTarget(id);
+  }
+
+  function deletePointTarget(id: string): void {
+    setPointTargets((current) => current.filter((t) => t.id !== id));
+    if (selectedPointTargetId === id) setSelectedPointTargetId(null);
+  }
+
+  function movePointTarget(id: string, position: Vec3): void {
+    setPointTargets((current) => current.map((t) => (t.id === id ? { ...t, position } : t)));
+  }
+
+  function renamePointTarget(id: string, name: string): void {
+    setPointTargets((current) => current.map((t) => (t.id === id ? { ...t, name } : t)));
+  }
+
+  function togglePointTargetVisible(id: string): void {
+    setPointTargets((current) =>
+      current.map((t) => (t.id === id ? { ...t, visibleInRender: !t.visibleInRender } : t))
+    );
+  }
+
   const [dollies, setDollies] = useState<DemoDolly[]>(() =>
     (storedShow?.dollies ?? INITIAL_DOLLIES).map((dolly) => ({
       ...FALLBACK_DOLLY,
@@ -2813,6 +2943,10 @@ export function App() {
     setSelectedHandleIndex(null);
     setSelectedMidpointIndex(null);
     setPathVersion((version) => version + 1);
+  }
+
+  function renamePath(id: string, name: string): void {
+    setPaths((current) => current.map((path) => (path.id === id ? { ...path, name } : path)));
   }
 
   function addPath(): void {
@@ -2872,9 +3006,9 @@ export function App() {
   useEffect(() => {
         localStorage.setItem(
       SHOW_STORAGE_KEY,
-      JSON.stringify({ dollies, vcams: virtualCameras, paths, activePathId })
+      JSON.stringify({ dollies, vcams: virtualCameras, paths, activePathId, pointTargets })
     );
-  }, [dollies, virtualCameras, paths, activePathId]);
+  }, [dollies, virtualCameras, paths, activePathId, pointTargets]);
 
   function addDolly(): void {
     const id = `dolly-${Date.now()}`;
@@ -3242,6 +3376,7 @@ export function App() {
     if (id !== null) {
       setSelectedHandleIndex(null);
       setSelectedMidpointIndex(null);
+      setSelectedPointTargetId(null);
       setPipDriver("shots");
       timelinePlayerRef.current.playing = false;
     }
@@ -3370,7 +3505,13 @@ export function App() {
                 key={dolly.id}
                 style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
               >
-                <span style={{ flex: 1 }}>{dolly.name}</span>
+                <input
+                  type="text"
+                  value={dolly.name}
+                  aria-label="Dolly name"
+                  onChange={(event) => updateDolly(dolly.id, { name: event.target.value })}
+                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+                />
                 <select
                   title="Which path this dolly rides"
                   value={dolly.pathId}
@@ -3409,21 +3550,79 @@ export function App() {
                 key={path.id}
                 style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
               >
-                <label style={{ flex: 1 }}>
-                  <input
-                    type="radio"
-                    name="active-path"
-                    checked={path.id === activePathId}
-                    onChange={() => switchPath(path.id)}
-                  />
-                  <span style={{ marginLeft: 6 }}>{path.name}</span>
-                </label>
+                <input
+                  type="radio"
+                  name="active-path"
+                  title="Edit this path in the viewport"
+                  checked={path.id === activePathId}
+                  onChange={() => switchPath(path.id)}
+                />
+                <input
+                  type="text"
+                  value={path.name}
+                  aria-label="Path name"
+                  onChange={(event) => renamePath(path.id, event.target.value)}
+                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+                />
                 <button onClick={() => deletePath(path.id)}>Del</button>
               </div>
             ))}
             <button onClick={addPath}>Add Path</button>
             <div style={{ fontSize: 11, color: "#94a3b8" }}>
               The selected path is editable in the viewport; others render dashed.
+            </div>
+          </div>
+        </SettingsSection>
+
+        <SettingsSection title="Targets">
+          <div style={{ display: "grid", gap: 4 }}>
+            {pointTargets.map((target) => (
+              <div
+                key={target.id}
+                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
+              >
+                <input
+                  type="radio"
+                  name="selected-target"
+                  title="Select this target"
+                  checked={target.id === selectedPointTargetId}
+                  onChange={() => selectPointTarget(target.id)}
+                />
+                <input
+                  type="text"
+                  value={target.name}
+                  aria-label="Target name"
+                  onChange={(event) => renamePointTarget(target.id, event.target.value)}
+                  onFocus={() => selectPointTarget(target.id)}
+                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+                />
+                <button
+                  title={
+                    target.visibleInRender
+                      ? "Visible in render — click to hide (invisible aim point)"
+                      : "Hidden in render — click to show"
+                  }
+                  aria-label={target.visibleInRender ? "Hide target in render" : "Show target in render"}
+                  onClick={() => togglePointTargetVisible(target.id)}
+                  style={{
+                    width: 28,
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    fontSize: 13,
+                    opacity: target.visibleInRender ? 1 : 0.4,
+                    textDecoration: target.visibleInRender ? "none" : "line-through"
+                  }}
+                >
+                  👁
+                </button>
+                <button onClick={() => deletePointTarget(target.id)}>Del</button>
+              </div>
+            ))}
+            <button onClick={addPointTarget}>Add Target</button>
+            <div style={{ fontSize: 11, color: "#94a3b8" }}>
+              Point targets a vcam aim can track. Drag the selected one to place it; the eye
+              hides it from the render (still an aim point).
             </div>
           </div>
         </SettingsSection>
@@ -3500,15 +3699,6 @@ export function App() {
               onChange={(e) => setShowCartRider(e.target.checked)}
             />
             <span style={{ marginLeft: 6 }}>Show cart rider prop</span>
-          </label>
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={showTargetRig}
-              onChange={(e) => setShowTargetRig(e.target.checked)}
-            />
-            <span style={{ marginLeft: 6 }}>Show target rig (named nodes)</span>
           </label>
 
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
@@ -3651,7 +3841,6 @@ export function App() {
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
           showCartRider={showCartRider}
-          showTargetRig={showTargetRig}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
           anchorScales={anchorScales}
@@ -3661,6 +3850,7 @@ export function App() {
             setSelectedHandleIndex(idx);
             if (idx !== null) {
               setSelectedMidpointIndex(null);
+              setSelectedPointTargetId(null);
             }
           }}
           onSelectMidpoint={(idx) => {
@@ -3699,6 +3889,14 @@ export function App() {
           onMovePoint={(index, point) => {
             mutatePath((path) => path.movePoint(index, point));
           }}
+        />
+        <PointTargets
+          targets={pointTargets}
+          registry={targetRegistry}
+          selectedId={selectedPointTargetId}
+          onSelect={selectPointTarget}
+          onMove={movePointTarget}
+          onTransformingChange={setIsTransforming}
         />
       </Canvas>
     </div>
