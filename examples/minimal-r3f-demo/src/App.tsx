@@ -2997,6 +2997,8 @@ export function App() {
     setPathVersion((v) => v + 1);
   }
 
+  const pendingShotTimeRef = useRef<number | null>(null);
+
   function captureVirtualCamera(): void {
     setVirtualCameraCaptureRequest((request) => request + 1);
   }
@@ -3004,11 +3006,13 @@ export function App() {
   function addDemoVcam(
     bodyType: DemoVirtualCamera["bodyType"],
     namePrefix: string,
-    snapshot: Omit<VirtualCameraSnapshot, "name" | "settings">
+    snapshot: Omit<VirtualCameraSnapshot, "name" | "settings">,
+    startTime?: number | null
   ): void {
     const id = `vcam-${Date.now()}-${virtualCameras.length + 1}`;
     const name = `${namePrefix} ${virtualCameras.length + 1}`;
-    const shotStart = virtualCameras.reduce((end, vcam) => Math.max(end, vcam.shotEnd), 0);
+    const shotStart =
+      startTime ?? virtualCameras.reduce((end, vcam) => Math.max(end, vcam.shotEnd), 0);
     setSelectedVirtualCameraId(id);
     setVirtualCameras((current) => [
       ...current,
@@ -3038,15 +3042,21 @@ export function App() {
   }
 
   function addCapturedVirtualCamera(snapshot: VirtualCameraSnapshot): void {
-    addDemoVcam("static", "VCam", snapshot);
+    addDemoVcam("static", "VCam", snapshot, pendingShotTimeRef.current);
+    pendingShotTimeRef.current = null;
   }
 
-  function addCartVirtualCamera(): void {
-    addDemoVcam("cart", "Cart VCam", {
-      position: { x: 0, y: 0, z: 0 },
-      quaternion: { x: 0, y: 0, z: 0, w: 1 },
-      lens: { fov: 45 }
-    });
+  function addCartVirtualCamera(startTime?: number | null): void {
+    addDemoVcam(
+      "cart",
+      "Cart VCam",
+      {
+        position: { x: 0, y: 0, z: 0 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 },
+        lens: { fov: 45 }
+      },
+      startTime
+    );
   }
 
   function activateVirtualCamera(id: string): void {
@@ -3480,6 +3490,17 @@ export function App() {
             setPipDriver("timeline");
           }}
           onTransport={() => setPipDriver("timeline")}
+          onCreateShot={(kind, time) => {
+            const snapped = Math.max(0, Math.round(time * 4) / 4);
+            if (kind === "cart") {
+              addCartVirtualCamera(snapped);
+            } else {
+              pendingShotTimeRef.current = snapped;
+              captureVirtualCamera();
+            }
+          }}
+          onCreateDolly={addDolly}
+          onCreatePath={addPath}
         />
       </div>
       {debugPreview ? (

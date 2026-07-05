@@ -69,7 +69,10 @@ export function TimelineLanes({
   onShotTiming,
   onSelectShot,
   onSeek,
-  onTransport
+  onTransport,
+  onCreateShot,
+  onCreateDolly,
+  onCreatePath
 }: {
   shots: LaneShot[];
   dollyMoves: LaneDollyMove[];
@@ -81,7 +84,16 @@ export function TimelineLanes({
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
   onTransport: () => void;
+  onCreateShot: (kind: "capture" | "cart", timeSeconds: number) => void;
+  onCreateDolly: () => void;
+  onCreatePath: () => void;
 }) {
+  const [contextMenu, setContextMenu] = useState<{
+    x: number;
+    y: number;
+    time: number;
+    onShotTrack: boolean;
+  } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
@@ -252,12 +264,7 @@ export function TimelineLanes({
           )}
         </div>
 
-        {shots.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#94a3b8" }}>
-            Clips land on one shot track — overlap two clips to crossfade, touch for a
-            cut, drag in empty track space to scrub.
-          </div>
-        ) : (
+        {(
           <div style={{ display: "flex", alignItems: "stretch", gap: 4 }}>
             <div
               style={{
@@ -302,6 +309,27 @@ export function TimelineLanes({
             wouldFullyContain(action.id, start, end) ? false : undefined
           }
           onClickRow={(_event, { time }) => onSeek(time)}
+          onDoubleClickRow={(_event, { row, time }) => {
+            if (row.id === "shot-track") onCreateShot("cart", time);
+          }}
+          onContextMenuRow={(event, { row, time }) => {
+            event.preventDefault();
+            setContextMenu({
+              x: event.clientX,
+              y: event.clientY,
+              time,
+              onShotTrack: row.id === "shot-track"
+            });
+          }}
+          onContextMenuAction={(event, { row, time }) => {
+            event.preventDefault();
+            setContextMenu({
+              x: event.clientX,
+              y: event.clientY,
+              time,
+              onShotTrack: row.id === "shot-track"
+            });
+          }}
           onChange={(rows) => {
             for (const row of rows) {
               for (const action of row.actions) {
@@ -393,6 +421,82 @@ export function TimelineLanes({
           </div>
         )}
 
+
+        {contextMenu ? (
+          <div
+            style={{ position: "fixed", inset: 0, zIndex: 30 }}
+            onClick={() => setContextMenu(null)}
+            onContextMenu={(event) => {
+              event.preventDefault();
+              setContextMenu(null);
+            }}
+          >
+            <div
+              style={{
+                position: "fixed",
+                left: contextMenu.x,
+                top: contextMenu.y,
+                display: "grid",
+                minWidth: 200,
+                padding: 4,
+                borderRadius: 6,
+                background: "rgba(10, 16, 28, 0.98)",
+                border: "1px solid rgba(148, 163, 184, 0.22)",
+                fontSize: 12,
+                zIndex: 31
+              }}
+              onClick={(event) => event.stopPropagation()}
+            >
+              {contextMenu.onShotTrack ? (
+                <>
+                  <button
+                    style={{ textAlign: "left" }}
+                    onClick={() => {
+                      onCreateShot("capture", contextMenu.time);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Add camera here (capture viewport)
+                  </button>
+                  <button
+                    style={{ textAlign: "left" }}
+                    onClick={() => {
+                      onCreateShot("cart", contextMenu.time);
+                      setContextMenu(null);
+                    }}
+                  >
+                    Add cart camera here
+                  </button>
+                  <div
+                    style={{
+                      height: 1,
+                      margin: "4px 0",
+                      background: "rgba(148, 163, 184, 0.18)"
+                    }}
+                  />
+                </>
+              ) : null}
+              <button
+                style={{ textAlign: "left" }}
+                onClick={() => {
+                  onCreateDolly();
+                  setContextMenu(null);
+                }}
+              >
+                Add dolly
+              </button>
+              <button
+                style={{ textAlign: "left" }}
+                onClick={() => {
+                  onCreatePath();
+                  setContextMenu(null);
+                }}
+              >
+                Add path
+              </button>
+            </div>
+          </div>
+        ) : null}
       </div>
     </LaneErrorBoundary>
   );
