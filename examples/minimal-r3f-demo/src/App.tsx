@@ -16,6 +16,8 @@ import {
   type Vec3
 } from "@huma/path-creator/core";
 import {
+  applyScreenComposerAim,
+  createScreenComposerState,
   EditorHelpers,
   useEditorHelpersVisible,
   useRegisteredTargets
@@ -137,7 +139,7 @@ type DemoVirtualCamera = {
   railFrom: number | null;
   railTo: number | null;
   snapshot: VirtualCameraSnapshot;
-  /** Retained authored aim tuning for a future screen-composer aim mode. */
+  /** Screen-composer framing for the tracked target (dead/soft/hard zones). */
   composerSettings: ComposerSettings;
 };
 
@@ -156,6 +158,38 @@ type DemoShotPatch = Partial<
   >
 >;
 
+const COMPOSER_UP = new Vector3(0, 1, 0);
+
+// Reframe a camera so the tracked target lands in the composer's screen zones
+// (dead/soft/hard) with damping. Stateful, so it runs on live preview cameras
+// only (not in pure timeline evaluation) — see the package composer notes.
+function applyComposerAim(
+  camera: PerspectiveCamera,
+  target: Vec3,
+  settings: ComposerSettings,
+  state: ReturnType<typeof createScreenComposerState>,
+  deltaSeconds: number
+): void {
+  applyScreenComposerAim(
+    camera,
+    target,
+    COMPOSER_UP,
+    state,
+    {
+      screenPosition: { x: settings.screenX, y: settings.screenY },
+      deadZone: { width: settings.deadWidth, height: settings.deadHeight },
+      softZone: { width: settings.softWidth, height: settings.softHeight },
+      hardLimits: { width: settings.hardWidth, height: settings.hardHeight },
+      damping: { x: settings.dampingX, y: settings.dampingY },
+      lookaheadTime: settings.lookaheadTime,
+      lookaheadSmoothing: settings.lookaheadSmoothing,
+      lookaheadIgnoreY: settings.lookaheadIgnoreY,
+      centerOnActivate: settings.centerOnActivate
+    },
+    deltaSeconds
+  );
+}
+
 function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition {
   const noise = NOISE_PRESETS[vcam.noisePreset];
   const lens = {
@@ -173,9 +207,8 @@ function toDemoVcamDefinition(vcam: DemoVirtualCamera): VirtualCameraDefinition 
             position: vcam.snapshot.position,
             quaternion: vcam.snapshot.quaternion
           },
-    ...(vcam.trackTargetId && {
-      aim: { type: "look-at" as const, target: { targetId: vcam.trackTargetId } }
-    }),
+    // Aiming at a tracked target is done by the live screen-composer stage
+    // (damped, zone-aware), not a pure look-at that would pin it dead-centre.
     ...(noise && { noise }),
     ...(Object.keys(lens).length > 0 && { lens }),
     ...(vcam.snapshot.settings && { settings: vcam.snapshot.settings })
@@ -194,6 +227,23 @@ type VirtualCameraResolved = {
   progress: number;
   done: boolean;
 };
+
+function getComposerZones(settings: ComposerSettings) {
+  return {
+    deadZone: { width: settings.deadWidth, height: settings.deadHeight },
+    softZone: { width: settings.softWidth, height: settings.softHeight },
+    hardLimits: { width: settings.hardWidth, height: settings.hardHeight }
+  };
+}
+
+function getComposerLookaheadTarget(target: Vec3, settings: ComposerSettings, velocity?: Vec3): Vec3 {
+  if (!velocity || settings.lookaheadTime <= 0) return target;
+  return {
+    x: target.x + velocity.x * settings.lookaheadTime,
+    y: target.y + velocity.y * settings.lookaheadTime,
+    z: target.z + velocity.z * settings.lookaheadTime
+  };
+}
 
 const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
   pathLookaheadDistance: 0.85,
@@ -457,16 +507,24 @@ function shotRowLabelStyle(columns: string): CSSProperties {
 }
 
 // Targets are cyan across the demo (look-target ball, point targets). Point
-// targets are authored, deletable entities: a fixed world position registered
-// under an id that vcam aims can track. `visibleInRender` controls whether the
-// sphere shows in the PiP (the stand-in for the real, non-authoring renderer) —
-// off makes it an invisible aim point, still manipulable in the authoring view.
-type DemoPointTarget = { id: string; name: string; position: Vec3; visibleInRender: boolean };
+// targets are authored, deletable entities: a world position registered under an
+// id that vcam aims can track. `visibleInRender` controls whether the sphere
+// shows in the PiP (the stand-in for the real renderer) — off makes it an
+// invisible aim point, still manipulable in the authoring view. `cartId` mounts
+// the target on a dolly (it then rides the rail); null = static at `position`.
+type DemoPointTarget = {
+  id: string;
+  name: string;
+  position: Vec3;
+  cartId: string | null;
+  visibleInRender: boolean;
+};
 
 const INITIAL_POINT_TARGETS: DemoPointTarget[] = [
-  { id: "target-1", name: "Target 1", position: { x: 3.3, y: 0.8, z: 0 }, visibleInRender: true },
-  { id: "target-2", name: "Target 2", position: { x: 1.95, y: 1.15, z: 0.78 }, visibleInRender: true },
-  { id: "target-3", name: "Target 3", position: { x: 1.95, y: 0.6, z: -0.78 }, visibleInRender: true }
+  { id: "target-1", name: "Target 1", position: { x: 3.3, y: 0.8, z: 0 }, cartId: null, visibleInRender: true },
+  { id: "target-2", name: "Target 2", position: { x: 1.95, y: 1.15, z: 0.78 }, cartId: null, visibleInRender: true },
+  // Seeded cart-mounted, to demonstrate a moving aim point authored as data.
+  { id: "target-3", name: "Target 3", position: { x: 1.95, y: 0.6, z: -0.78 }, cartId: FALLBACK_DOLLY.id, visibleInRender: true }
 ];
 
 // Next "Target N" that doesn't collide with an existing trailing number, so
@@ -479,14 +537,103 @@ function nextTargetName(current: DemoPointTarget[]): string {
   return `Target ${highest + 1}`;
 }
 
-// Authored point targets: each a live pull-source in the registry, rendered as a
-// cyan sphere. The sphere sits on layer 0 (seen by the PiP/render) when visible,
-// or on the editor-helpers layer (authoring-only) when hidden. The selection
-// ring and move gizmo are always authoring-only. Registration keys on the
-// id/name set, so a drag moves the source via ref without re-registering.
+// One target: a cyan sphere on layer 0 (seen by the PiP/render) when visible,
+// else on the editor-helpers layer (authoring-only). Selection ring + move
+// gizmo are always authoring-only. A cart-mounted target follows the live cart
+// frame each tick and isn't draggable; a static one is positioned from state.
+function TargetView({
+  target,
+  isSelected,
+  framesRef,
+  onSelect,
+  onMove,
+  onTransformingChange
+}: {
+  target: DemoPointTarget;
+  isSelected: boolean;
+  framesRef: { current: Map<string, CartFrame> };
+  onSelect: (id: string | null) => void;
+  onMove: (id: string, position: Vec3) => void;
+  onTransformingChange: (isTransforming: boolean) => void;
+}) {
+  const groupRef = useRef<Group>(null);
+  const isCart = target.cartId !== null;
+
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!isCart || !group) return;
+    const frame = framesRef.current.get(target.cartId as string);
+    group.visible = frame != null;
+    if (frame) group.position.set(frame.position.x, frame.position.y, frame.position.z);
+  });
+
+  const sphere = (
+    <mesh
+      onPointerDown={(event) => {
+        event.stopPropagation();
+        onSelect(isSelected ? null : target.id);
+      }}
+    >
+      <sphereGeometry args={[0.1, 16, 16]} />
+      <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={isSelected ? 0.55 : 0.3} />
+    </mesh>
+  );
+  const body = (
+    <>
+      {target.visibleInRender ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
+      {isSelected ? (
+        <EditorHelpers>
+          <Billboard>
+            <mesh>
+              <ringGeometry args={[0.16, 0.19, 28]} />
+              <meshBasicMaterial color="#06b6d4" transparent opacity={0.85} depthTest={false} />
+            </mesh>
+          </Billboard>
+        </EditorHelpers>
+      ) : null}
+    </>
+  );
+
+  if (isCart) {
+    // Position driven each frame from the cart frame; not draggable.
+    return <group ref={groupRef}>{body}</group>;
+  }
+
+  return (
+    <>
+      <group position={[target.position.x, target.position.y, target.position.z]}>{body}</group>
+      {isSelected ? (
+        <EditorHelpers>
+          <PivotControls
+            {...VCAM_PIVOT_PROPS}
+            matrix={new Matrix4().makeTranslation(target.position.x, target.position.y, target.position.z)}
+            disableRotations
+            disableScaling
+            onDragStart={() => onTransformingChange(true)}
+            onDragEnd={() => onTransformingChange(false)}
+            onDrag={(matrix) =>
+              onMove(target.id, { x: matrix.elements[12], y: matrix.elements[13], z: matrix.elements[14] })
+            }
+          >
+            <mesh>
+              <sphereGeometry args={[0.001, 4, 4]} />
+              <meshBasicMaterial transparent opacity={0} />
+            </mesh>
+          </PivotControls>
+        </EditorHelpers>
+      ) : null}
+    </>
+  );
+}
+
+// Authored targets: each a live pull-source in the registry. A cart-mounted
+// target resolves to the live cart frame; a static one to its position (read
+// via ref so a drag moves it without re-registering). Registration keys on the
+// id/name/mount set.
 function PointTargets({
   targets,
   registry,
+  framesRef,
   selectedId,
   onSelect,
   onMove,
@@ -494,6 +641,7 @@ function PointTargets({
 }: {
   targets: DemoPointTarget[];
   registry: TargetRegistry;
+  framesRef: { current: Map<string, CartFrame> };
   selectedId: string | null;
   onSelect: (id: string | null) => void;
   onMove: (id: string, position: Vec3) => void;
@@ -501,76 +649,33 @@ function PointTargets({
 }) {
   const targetsRef = useRef(targets);
   targetsRef.current = targets;
-  const membershipKey = targets.map((t) => `${t.id}:${t.name}`).join("|");
+  const membershipKey = targets.map((t) => `${t.id}:${t.name}:${t.cartId ?? ""}`).join("|");
 
   useEffect(() => {
-    const unregister = targets.map((t) =>
-      registry.register(
-        t.id,
-        () => targetsRef.current.find((x) => x.id === t.id)?.position ?? t.position,
-        t.name
-      )
-    );
+    const unregister = targets.map((t) => {
+      const source = t.cartId
+        ? () => framesRef.current.get(t.cartId as string)?.position ?? null
+        : () => targetsRef.current.find((x) => x.id === t.id)?.position ?? t.position;
+      return registry.register(t.id, source, t.name);
+    });
     return () => unregister.forEach((fn) => fn());
-    // Positions are read live via targetsRef; only re-register when the set changes.
+    // Positions/frames are read live; only re-register when the id/name/mount set changes.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [membershipKey, registry]);
 
   return (
     <>
-      {targets.map((t) => {
-        const isSelected = t.id === selectedId;
-        const sphere = (
-          <group position={[t.position.x, t.position.y, t.position.z]}>
-            <mesh
-              onPointerDown={(event) => {
-                event.stopPropagation();
-                onSelect(isSelected ? null : t.id);
-              }}
-            >
-              <sphereGeometry args={[0.1, 16, 16]} />
-              <meshStandardMaterial
-                color="#06b6d4"
-                emissive="#06b6d4"
-                emissiveIntensity={isSelected ? 0.55 : 0.3}
-              />
-            </mesh>
-          </group>
-        );
-        return (
-          <group key={t.id}>
-            {t.visibleInRender ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
-            {isSelected ? (
-              <EditorHelpers>
-                <group position={[t.position.x, t.position.y, t.position.z]}>
-                  <Billboard>
-                    <mesh>
-                      <ringGeometry args={[0.16, 0.19, 28]} />
-                      <meshBasicMaterial color="#06b6d4" transparent opacity={0.85} depthTest={false} />
-                    </mesh>
-                  </Billboard>
-                </group>
-                <PivotControls
-                  {...VCAM_PIVOT_PROPS}
-                  matrix={new Matrix4().makeTranslation(t.position.x, t.position.y, t.position.z)}
-                  disableRotations
-                  disableScaling
-                  onDragStart={() => onTransformingChange(true)}
-                  onDragEnd={() => onTransformingChange(false)}
-                  onDrag={(matrix) =>
-                    onMove(t.id, { x: matrix.elements[12], y: matrix.elements[13], z: matrix.elements[14] })
-                  }
-                >
-                  <mesh>
-                    <sphereGeometry args={[0.001, 4, 4]} />
-                    <meshBasicMaterial transparent opacity={0} />
-                  </mesh>
-                </PivotControls>
-              </EditorHelpers>
-            ) : null}
-          </group>
-        );
-      })}
+      {targets.map((t) => (
+        <TargetView
+          key={t.id}
+          target={t}
+          isSelected={t.id === selectedId}
+          framesRef={framesRef}
+          onSelect={onSelect}
+          onMove={onMove}
+          onTransformingChange={onTransformingChange}
+        />
+      ))}
     </>
   );
 }
@@ -593,6 +698,10 @@ function Scene({
   onSetAnchorScale,
   onRotateMidpointNormal,
   onTransformingChange,
+  dollyTargetMarkerRef,
+  dollyTargetLineRef,
+  lookaheadMarkerRef,
+  lookaheadLineRef,
   virtualCameraCaptureRequest,
   virtualCameraActivation,
   virtualCameras,
@@ -603,6 +712,7 @@ function Scene({
   onUpdateVirtualCameraSnapshot,
   onUpdateCartOffset,
   targetRegistry,
+  dollyFramesRef,
   dollies,
   vertexPaths,
   activeTimeline,
@@ -625,6 +735,10 @@ function Scene({
   onSetAnchorScale: (anchorIndex: number, scale: number) => void;
   onRotateMidpointNormal: (segmentIndex: number, deltaDegrees: number) => void;
   onTransformingChange: (isTransforming: boolean) => void;
+  dollyTargetMarkerRef: { current: HTMLDivElement | null };
+  dollyTargetLineRef: { current: SVGLineElement | null };
+  lookaheadMarkerRef: { current: HTMLDivElement | null };
+  lookaheadLineRef: { current: SVGLineElement | null };
   virtualCameraCaptureRequest: number;
   virtualCameraActivation: VirtualCameraActivation | null;
   virtualCameras: DemoVirtualCamera[];
@@ -635,6 +749,8 @@ function Scene({
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   onUpdateCartOffset: (id: string, offset: Vec3) => void;
   targetRegistry: TargetRegistry;
+  /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
+  dollyFramesRef: { current: Map<string, CartFrame> };
   dollies: DemoDolly[];
   vertexPaths: Map<string, VertexPath>;
   /** Non-null while the timeline owns the PiP. */
@@ -648,7 +764,6 @@ function Scene({
     () => new Map(dollies.map((dolly) => [dolly.id, createPathCart({ endOfPathInstruction: dolly.endOfPath })])),
     [dollies]
   );
-  const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
     getCartFrame: (id) => dollyFramesRef.current.get(id) ?? null,
     getTargetPosition: (id) => targetRegistry.resolve(id),
@@ -748,7 +863,40 @@ function Scene({
   const activeVirtualCameraKeyRef = useRef<number | null>(null);
   const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
   const virtualCameraBrainRef = useRef(createVirtualCameraBrainState());
+  // Live screen-composer state for the previewed vcam; reset when the vcam changes.
+  const composerStateRef = useRef(createScreenComposerState());
+  const composerVcamIdRef = useRef<string | null>(null);
+  // The composer OWNS orientation and must persist it across frames to damp; the
+  // brain resets orientation each frame, so we keep the composed quaternion here
+  // and restore it before the composer runs.
+  const composedQuatRef = useRef(new Quaternion());
+  const projectedTarget = useMemo(() => new Vector3(), []);
   const { gl } = useThree();
+
+  // Frame the tracked target through the vcam's screen-composer zones (damped).
+  // Orientation persists in composedQuatRef so damping accumulates instead of
+  // snapping — the brain only provides position (+ a throwaway orientation).
+  const applyPreviewComposer = (vcam: DemoVirtualCamera, deltaSeconds: number): void => {
+    if (!vcam.trackTargetId) {
+      composerVcamIdRef.current = null;
+      return;
+    }
+    const target = targetRegistry.resolve(vcam.trackTargetId);
+    if (!target) {
+      composerVcamIdRef.current = null;
+      return;
+    }
+    if (composerVcamIdRef.current !== vcam.id) {
+      // New shot: start the composed orientation from the brain's current
+      // (body) orientation, then let it damp toward the framing.
+      composerVcamIdRef.current = vcam.id;
+      composerStateRef.current = createScreenComposerState();
+      composedQuatRef.current.copy(brainCamera.quaternion);
+    }
+    brainCamera.quaternion.copy(composedQuatRef.current);
+    applyComposerAim(brainCamera, target, vcam.composerSettings, composerStateRef.current, deltaSeconds);
+    composedQuatRef.current.copy(brainCamera.quaternion);
+  };
 
   useEffect(() => {
     const onContextMenu = (e: Event) => e.preventDefault();
@@ -805,6 +953,8 @@ function Scene({
       );
     }
 
+    // Which vcam drives the PiP this frame, for the composer overlay below.
+    let composerVcam: DemoVirtualCamera | null = null;
     if (activeTimeline) {
       stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
       const sample = evaluateTimeline(
@@ -814,9 +964,23 @@ function Scene({
       );
       if (sample.camera) {
         applyVirtualCameraSnapshot(brainCamera, sample.camera);
+        // Live composer post-step so playback frames like the preview: position
+        // comes from the (blended) evaluator, orientation from the composer.
+        let activeVcam: DemoVirtualCamera | undefined;
+        if (sample.activeBlock) {
+          const vcamId = sample.activeBlock.block.vcamId;
+          activeVcam = virtualCameras.find((camera) => camera.id === vcamId);
+        }
+        if (activeVcam) {
+          applyPreviewComposer(activeVcam, delta);
+        } else {
+          composerVcamIdRef.current = null;
+        }
+        composerVcam = activeVcam ?? null;
+      } else {
+        // Released gap (no camera): the PiP holds the last pose.
+        composerVcamIdRef.current = null;
       }
-      // Released gap (no camera): the PiP holds the last pose; there is no
-      // separate live rig camera in the authored model.
       for (const [dollyId, frame] of sample.cartFrames) {
         dollyFramesRef.current.set(dollyId, frame);
       }
@@ -859,6 +1023,8 @@ function Scene({
             }
           }
         }
+        applyPreviewComposer(liveVcam, delta);
+        composerVcam = liveVcam;
       }
     } else if (selectedVirtualCamera) {
       activeVirtualCameraKeyRef.current = null;
@@ -867,10 +1033,53 @@ function Scene({
         resolveDemoVirtualCamera(selectedVirtualCamera, elapsed)
       );
       applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
+      applyPreviewComposer(selectedVirtualCamera, delta);
+      composerVcam = selectedVirtualCamera;
     } else {
       activeVirtualCameraKeyRef.current = null;
       resolvedVirtualCameraKeyRef.current = null;
       virtualCameraBrainRef.current = createVirtualCameraBrainState();
+      composerVcamIdRef.current = null;
+    }
+
+    // Composer overlay: project the driving vcam's tracked target (and its
+    // lookahead) onto the PiP camera so the zone markers track it live.
+    const composerTarget = composerVcam?.trackTargetId
+      ? targetRegistry.resolve(composerVcam.trackTargetId)
+      : null;
+    if (composerVcam && composerTarget) {
+      projectedTarget.set(composerTarget.x, composerTarget.y, composerTarget.z).project(pipCamera);
+      const inFrame =
+        projectedTarget.z >= -1 && projectedTarget.z <= 1 &&
+        projectedTarget.x >= -1 && projectedTarget.x <= 1 &&
+        projectedTarget.y >= -1 && projectedTarget.y <= 1;
+      updateDollyTargetOverlay(
+        dollyTargetMarkerRef.current,
+        dollyTargetLineRef.current,
+        (projectedTarget.x + 1) * 0.5,
+        (1 - projectedTarget.y) * 0.5,
+        inFrame
+      );
+      const lookahead = getComposerLookaheadTarget(
+        composerTarget,
+        composerVcam.composerSettings,
+        composerStateRef.current.smoothedVelocity
+      );
+      projectedTarget.set(lookahead.x, lookahead.y, lookahead.z).project(pipCamera);
+      updateDollyTargetOverlay(
+        lookaheadMarkerRef.current,
+        lookaheadLineRef.current,
+        (projectedTarget.x + 1) * 0.5,
+        (1 - projectedTarget.y) * 0.5,
+        composerVcam.composerSettings.lookaheadTime > 0 &&
+          projectedTarget.z >= -1 && projectedTarget.z <= 1 &&
+          projectedTarget.x >= -1 && projectedTarget.x <= 1 &&
+          projectedTarget.y >= -1 && projectedTarget.y <= 1,
+        "lookahead"
+      );
+    } else {
+      updateDollyTargetOverlay(dollyTargetMarkerRef.current, dollyTargetLineRef.current, 0.5, 0.5, false);
+      updateDollyTargetOverlay(lookaheadMarkerRef.current, lookaheadLineRef.current, 0.5, 0.5, false, "lookahead");
     }
   });
 
@@ -1511,10 +1720,49 @@ function VirtualCameraGlyph({
   );
 }
 
-// The PiP overlay chrome: just a framed panel + label. The camera view is
-// rendered into this screen region by DollyCameraPip; a slate border/label
-// reads "no output" when nothing drives it.
-function DollyPreviewChrome({ label, hasSource }: { label: string; hasSource: boolean }) {
+// The PiP overlay chrome: the composer zone overview (dead/soft/hard) plus the
+// tracked-target and lookahead markers, drawn over the camera view that
+// DollyCameraPip renders into this region. With no source it's a slate "no
+// output" panel; the zones/markers only show when a composer vcam drives the PiP.
+function DollyPreviewChrome({
+  label,
+  hasSource,
+  composerActive,
+  composerSettings,
+  targetMarkerRef,
+  targetLineRef,
+  lookaheadMarkerRef,
+  lookaheadLineRef
+}: {
+  label: string;
+  hasSource: boolean;
+  composerActive: boolean;
+  composerSettings: ComposerSettings;
+  targetMarkerRef: { current: HTMLDivElement | null };
+  targetLineRef: { current: SVGLineElement | null };
+  lookaheadMarkerRef: { current: HTMLDivElement | null };
+  lookaheadLineRef: { current: SVGLineElement | null };
+}) {
+  const zones = getComposerZones(composerSettings);
+  const labelChip = (
+    <div
+      style={{
+        position: "absolute",
+        top: 8,
+        left: 8,
+        padding: "3px 7px",
+        borderRadius: 4,
+        background: "rgba(15, 23, 42, 0.72)",
+        color: hasSource ? "#f8fafc" : "#64748b",
+        fontSize: 11,
+        fontWeight: 700,
+        fontFamily: "ui-sans-serif, system-ui, sans-serif"
+      }}
+    >
+      {label}
+    </div>
+  );
+
   return (
     <div
       style={{
@@ -1531,23 +1779,143 @@ function DollyPreviewChrome({ label, hasSource }: { label: string; hasSource: bo
         boxSizing: "border-box"
       }}
     >
-      <div
-        style={{
-          position: "absolute",
-          top: 8,
-          left: 8,
-          padding: "3px 7px",
-          borderRadius: 4,
-          background: "rgba(15, 23, 42, 0.72)",
-          color: hasSource ? "#f8fafc" : "#64748b",
-          fontSize: 11,
-          fontWeight: 700,
-          fontFamily: "ui-sans-serif, system-ui, sans-serif"
-        }}
-      >
-        {label}
-      </div>
+      {composerActive ? (
+        <>
+          <DollyPipZone
+            width={zones.softZone.width}
+            height={zones.softZone.height}
+            centerX={composerSettings.screenX}
+            centerY={composerSettings.screenY}
+            color="rgba(6, 182, 212, 0.78)"
+            fill="rgba(6, 182, 212, 0.035)"
+          />
+          <DollyPipZone
+            width={zones.deadZone.width}
+            height={zones.deadZone.height}
+            centerX={composerSettings.screenX}
+            centerY={composerSettings.screenY}
+            color="rgba(249, 115, 22, 0.92)"
+            fill="rgba(249, 115, 22, 0.04)"
+          />
+          <svg
+            viewBox="0 0 100 100"
+            preserveAspectRatio="none"
+            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" }}
+          >
+            <line ref={targetLineRef} x1="50" y1="50" x2="50" y2="50" stroke="rgba(6, 182, 212, 0.72)" strokeWidth="0.55" vectorEffect="non-scaling-stroke" />
+            <line ref={lookaheadLineRef} x1="50" y1="50" x2="50" y2="50" stroke="rgba(250, 204, 21, 0)" strokeWidth="0.55" strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />
+          </svg>
+          <div
+            ref={targetMarkerRef}
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              width: 14,
+              height: 14,
+              transform: "translate(-50%, -50%)",
+              borderRadius: 999,
+              background: "#06b6d4",
+              border: "2px solid rgba(248, 250, 252, 0.95)",
+              boxShadow: "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)",
+              boxSizing: "border-box"
+            }}
+          />
+          <div
+            ref={lookaheadMarkerRef}
+            style={{
+              position: "absolute",
+              left: "50%",
+              top: "50%",
+              width: 10,
+              height: 10,
+              transform: "translate(-50%, -50%) rotate(45deg)",
+              background: "rgba(250, 204, 21, 0)",
+              border: "2px solid rgba(250, 204, 21, 0)",
+              boxShadow: "0 0 0 3px rgba(250, 204, 21, 0)",
+              boxSizing: "border-box"
+            }}
+          />
+        </>
+      ) : null}
+      {labelChip}
     </div>
+  );
+}
+
+function updateDollyTargetOverlay(
+  marker: HTMLDivElement | null,
+  line: SVGLineElement | null,
+  x: number,
+  y: number,
+  visible: boolean,
+  kind: "target" | "lookahead" = "target"
+): void {
+  const clampedX = Math.max(0.02, Math.min(0.98, x));
+  const clampedY = Math.max(0.02, Math.min(0.98, y));
+  const xPercent = clampedX * 100;
+  const yPercent = clampedY * 100;
+
+  if (marker) {
+    marker.style.left = `${xPercent}%`;
+    marker.style.top = `${yPercent}%`;
+    if (kind === "lookahead") {
+      marker.style.opacity = visible ? "1" : "0";
+      marker.style.background = visible ? "rgba(250, 204, 21, 0.95)" : "rgba(250, 204, 21, 0)";
+      marker.style.borderColor = visible ? "rgba(15, 23, 42, 0.8)" : "rgba(250, 204, 21, 0)";
+      marker.style.boxShadow = visible
+        ? "0 0 0 3px rgba(250, 204, 21, 0.24), 0 0 16px rgba(250, 204, 21, 0.75)"
+        : "0 0 0 3px rgba(250, 204, 21, 0)";
+    } else {
+      marker.style.opacity = visible ? "1" : "0.42";
+      marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
+      marker.style.boxShadow = visible
+        ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
+        : "0 0 0 4px rgba(6, 182, 212, 0.12)";
+    }
+  }
+
+  if (line) {
+    line.setAttribute("x2", xPercent.toFixed(3));
+    line.setAttribute("y2", yPercent.toFixed(3));
+    line.setAttribute(
+      "stroke",
+      kind === "lookahead"
+        ? visible ? "rgba(250, 204, 21, 0.72)" : "rgba(250, 204, 21, 0)"
+        : visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
+    );
+  }
+}
+
+function DollyPipZone({
+  width,
+  height,
+  centerX,
+  centerY,
+  color,
+  fill
+}: {
+  width: number;
+  height: number;
+  centerX: number;
+  centerY: number;
+  color: string;
+  fill: string;
+}) {
+  return (
+    <div
+      style={{
+        position: "absolute",
+        left: `${50 + centerX * 100}%`,
+        top: `${50 - centerY * 100}%`,
+        width: `${width * 100}%`,
+        height: `${height * 100}%`,
+        transform: "translate(-50%, -50%)",
+        border: `1.5px solid ${color}`,
+        background: fill,
+        boxSizing: "border-box"
+      }}
+    />
   );
 }
 
@@ -1615,6 +1983,84 @@ function NumberSlider({
   );
 }
 
+// Per-vcam screen-composer framing editor: screen position, dead/soft/hard
+// zones, damping, and lookahead. Edits VirtualCameraDefinition.settings.
+function RigSettingsPanel({
+  settings,
+  onChange,
+  onClose,
+  onReset
+}: {
+  settings: ComposerSettings;
+  onChange: (next: ComposerSettings) => void;
+  onClose: () => void;
+  onReset: () => void;
+}) {
+  function setValue<K extends keyof ComposerSettings>(key: K, value: ComposerSettings[K]): void {
+    onChange({ ...settings, [key]: value });
+  }
+
+  return (
+    <div
+      style={{
+        width: "100%",
+        boxSizing: "border-box",
+        padding: 10,
+        borderRadius: 6,
+        background: "rgba(10, 16, 28, 0.92)",
+        border: "1px solid rgba(148, 163, 184, 0.22)"
+      }}
+    >
+      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
+        <div style={{ fontSize: 12, fontWeight: 800 }}>Screen composer</div>
+        <div style={{ display: "flex", gap: 6 }}>
+          <button onClick={onReset}>Reset</button>
+          <button onClick={onClose}>Close</button>
+        </div>
+      </div>
+
+      <SettingsSection title="Screen">
+        <button onClick={() => onChange({ ...settings, screenX: 0, screenY: 0 })}>Center screen</button>
+        <NumberSlider label="Screen X" value={settings.screenX} min={-0.4} max={0.4} step={0.01} onChange={(v) => setValue("screenX", v)} />
+        <NumberSlider label="Screen Y" value={settings.screenY} min={-0.4} max={0.4} step={0.01} onChange={(v) => setValue("screenY", v)} />
+      </SettingsSection>
+
+      <SettingsSection title="Zones">
+        <NumberSlider label="Dead W" value={settings.deadWidth} min={0} max={1} step={0.01} onChange={(v) => setValue("deadWidth", v)} />
+        <NumberSlider label="Dead H" value={settings.deadHeight} min={0} max={1} step={0.01} onChange={(v) => setValue("deadHeight", v)} />
+        <NumberSlider label="Soft W" value={settings.softWidth} min={0} max={1} step={0.01} onChange={(v) => setValue("softWidth", v)} />
+        <NumberSlider label="Soft H" value={settings.softHeight} min={0} max={1} step={0.01} onChange={(v) => setValue("softHeight", v)} />
+      </SettingsSection>
+
+      <SettingsSection title="Damping">
+        <NumberSlider label="Horizontal" value={settings.dampingX} min={0} max={20} step={0.1} onChange={(v) => setValue("dampingX", v)} />
+        <NumberSlider label="Vertical" value={settings.dampingY} min={0} max={20} step={0.1} onChange={(v) => setValue("dampingY", v)} />
+      </SettingsSection>
+
+      <SettingsSection title="Lookahead">
+        <NumberSlider label="Time" value={settings.lookaheadTime} min={0} max={1.5} step={0.01} unit="s" onChange={(v) => setValue("lookaheadTime", v)} />
+        <NumberSlider label="Smoothing" value={settings.lookaheadSmoothing} min={0} max={20} step={0.1} onChange={(v) => setValue("lookaheadSmoothing", v)} />
+        <label style={{ display: "block", fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={settings.lookaheadIgnoreY}
+            onChange={(event) => setValue("lookaheadIgnoreY", event.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Ignore Y</span>
+        </label>
+        <label style={{ display: "block", fontSize: 12 }}>
+          <input
+            type="checkbox"
+            checked={settings.centerOnActivate}
+            onChange={(event) => setValue("centerOnActivate", event.target.checked)}
+          />
+          <span style={{ marginLeft: 6 }}>Center on activate</span>
+        </label>
+      </SettingsSection>
+    </div>
+  );
+}
+
 function VirtualCameraPanel({
   cameras,
   activeId,
@@ -1632,6 +2078,7 @@ function VirtualCameraPanel({
   onRelease,
   trackTargets,
   onUpdateShot,
+  onUpdateComposer,
   dollies
 }: {
   cameras: DemoVirtualCamera[];
@@ -1650,8 +2097,10 @@ function VirtualCameraPanel({
   onRelease: () => void;
   trackTargets: RegisteredTarget[];
   onUpdateShot: (id: string, patch: DemoShotPatch) => void;
+  onUpdateComposer: (id: string, settings: ComposerSettings) => void;
   dollies: DemoDolly[];
 }) {
+  const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
     <div
       style={{
@@ -1808,6 +2257,25 @@ function VirtualCameraPanel({
                       ))}
                     </select>
                   </label>
+                  <div
+                    onClick={(event) => event.stopPropagation()}
+                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
+                  >
+                    <button
+                      style={{ fontSize: 11, textAlign: "left" }}
+                      onClick={() => setComposerOpenId(composerOpenId === camera.id ? null : camera.id)}
+                    >
+                      {composerOpenId === camera.id ? "▾ Composer settings" : "▸ Composer settings"}
+                    </button>
+                    {composerOpenId === camera.id ? (
+                      <RigSettingsPanel
+                        settings={camera.composerSettings}
+                        onChange={(settings) => onUpdateComposer(camera.id, settings)}
+                        onClose={() => setComposerOpenId(null)}
+                        onReset={() => onUpdateComposer(camera.id, DEFAULT_COMPOSER_SETTINGS)}
+                      />
+                    ) : null}
+                  </div>
                   <label
                     onClick={(event) => event.stopPropagation()}
                     style={shotRowLabelStyle("48px 1fr 44px 52px")}
@@ -1931,6 +2399,13 @@ export function App() {
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
+  // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
+  const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
+  // Composer overlay markers on the PiP, driven imperatively from Scene's frame loop.
+  const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
+  const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
+  const lookaheadMarkerRef = useRef<HTMLDivElement | null>(null);
+  const lookaheadLineRef = useRef<SVGLineElement | null>(null);
   const registeredTargets = useRegisteredTargets(targetRegistry);
   const [pipDriver, setPipDriver] = useState<"shots" | "timeline">("shots");
   const timelinePlayerRef = useRef<TimelinePlayer>(createTimelinePlayer());
@@ -1955,9 +2430,12 @@ export function App() {
   }, []);
   const [pointTargets, setPointTargets] = useState<DemoPointTarget[]>(
     () =>
-      // Default visibleInRender for targets persisted before the field existed.
-      storedShow?.pointTargets?.map((t) => ({ ...t, visibleInRender: t.visibleInRender ?? true })) ??
-      INITIAL_POINT_TARGETS
+      // Default cartId/visibleInRender for targets persisted before those fields.
+      storedShow?.pointTargets?.map((t) => ({
+        ...t,
+        cartId: t.cartId ?? null,
+        visibleInRender: t.visibleInRender ?? true
+      })) ?? INITIAL_POINT_TARGETS
   );
   const [selectedPointTargetId, setSelectedPointTargetId] = useState<string | null>(null);
 
@@ -1974,9 +2452,13 @@ export function App() {
     const id = `target-${Date.now()}`;
     setPointTargets((current) => [
       ...current,
-      { id, name: nextTargetName(current), position: { x: 2.4, y: 0.8, z: 0 }, visibleInRender: true }
+      { id, name: nextTargetName(current), position: { x: 2.4, y: 0.8, z: 0 }, cartId: null, visibleInRender: true }
     ]);
     selectPointTarget(id);
+  }
+
+  function setPointTargetMount(id: string, cartId: string | null): void {
+    setPointTargets((current) => current.map((t) => (t.id === id ? { ...t, cartId } : t)));
   }
 
   function deletePointTarget(id: string): void {
@@ -2096,6 +2578,7 @@ export function App() {
       shotEnd: index * 5 + 5,
       railFrom: null,
       railTo: null,
+      composerSettings: DEFAULT_COMPOSER_SETTINGS,
       ...vcam
     })) as DemoVirtualCamera[]
   );
@@ -2222,18 +2705,21 @@ export function App() {
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
-  const hasPipSource = Boolean(
-    timelineActive || virtualCameraActivation || selectedVirtualCamera || bezierPath
-  );
+  const hasPipSource = Boolean(timelineActive || virtualCameraActivation || selectedVirtualCamera);
   const pipLabel = timelineActive
     ? "Timeline"
     : virtualCameraActivation
       ? "Brain Camera"
       : selectedVirtualCamera
         ? selectedVirtualCamera.name
-        : bezierPath
-          ? "Rig Camera"
-          : "No output";
+        : "No output";
+  // Composer zone overlay reflects the previewed vcam (selected or activated).
+  const activatedVcam = virtualCameraActivation
+    ? virtualCameras.find((camera) => camera.id === virtualCameraActivation.toId) ?? null
+    : null;
+  const composerChromeVcam = selectedVirtualCamera ?? activatedVcam;
+  const composerChromeActive = Boolean(composerChromeVcam?.trackTargetId);
+  const composerChromeSettings = composerChromeVcam?.composerSettings ?? DEFAULT_COMPOSER_SETTINGS;
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2416,6 +2902,23 @@ export function App() {
   function updateVirtualCameraShot(id: string, patch: DemoShotPatch): void {
     setVirtualCameras((current) =>
       current.map((camera) => (camera.id === id ? { ...camera, ...patch } : camera))
+    );
+  }
+
+  function updateVirtualCameraComposer(id: string, settings: ComposerSettings): void {
+    setVirtualCameras((current) =>
+      current.map((camera) =>
+        camera.id === id
+          ? {
+              ...camera,
+              composerSettings: settings,
+              snapshot: {
+                ...camera.snapshot,
+                settings: composerSettingsToVirtualCameraSettings(settings)
+              }
+            }
+          : camera
+      )
     );
   }
 
@@ -2659,6 +3162,18 @@ export function App() {
                   onFocus={() => selectPointTarget(target.id)}
                   style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
                 />
+                <select
+                  title="Mount: static, or ride a dolly"
+                  value={target.cartId ?? ""}
+                  onChange={(event) => setPointTargetMount(target.id, event.target.value || null)}
+                >
+                  <option value="">Static</option>
+                  {dollies.map((dolly) => (
+                    <option key={dolly.id} value={dolly.id}>
+                      {dolly.name}
+                    </option>
+                  ))}
+                </select>
                 <button
                   title={
                     target.visibleInRender
@@ -2684,8 +3199,8 @@ export function App() {
             ))}
             <button onClick={addPointTarget}>Add Target</button>
             <div style={{ fontSize: 11, color: "#94a3b8" }}>
-              Point targets a vcam aim can track. Drag the selected one to place it; the eye
-              hides it from the render (still an aim point).
+              A vcam aim can track any target. Static targets drag to place; mount one on a
+              dolly to ride the rail. The eye hides it from the render (still an aim point).
             </div>
           </div>
         </SettingsSection>
@@ -2753,6 +3268,7 @@ export function App() {
           onAddCart={addCartVirtualCamera}
           trackTargets={registeredTargets}
           onUpdateShot={updateVirtualCameraShot}
+          onUpdateComposer={updateVirtualCameraComposer}
           dollies={dollies}
           onSelect={selectVirtualCamera}
           onActivate={activateVirtualCamera}
@@ -2816,7 +3332,16 @@ export function App() {
         />
       </div>
       {debugPreview ? (
-        <DollyPreviewChrome label={pipLabel} hasSource={hasPipSource} />
+        <DollyPreviewChrome
+          label={pipLabel}
+          hasSource={hasPipSource}
+          composerActive={composerChromeActive}
+          composerSettings={composerChromeSettings}
+          targetMarkerRef={dollyTargetMarkerRef}
+          targetLineRef={dollyTargetLineRef}
+          lookaheadMarkerRef={lookaheadMarkerRef}
+          lookaheadLineRef={lookaheadLineRef}
+        />
       ) : null}
 
       <Canvas style={{ width: "100%", height: "100%" }} camera={{ position: [0, 0, 6], fov: 45 }}>
@@ -2832,6 +3357,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
+          dollyFramesRef={dollyFramesRef}
           dollies={dollies}
           vertexPaths={vertexPaths}
           activeTimeline={timelineActive ? demoTimeline : null}
@@ -2860,6 +3386,10 @@ export function App() {
           }}
           onTransformingChange={setIsTransforming}
           onRotateMidpointNormal={rotateMidpointNormal}
+          dollyTargetMarkerRef={dollyTargetMarkerRef}
+          dollyTargetLineRef={dollyTargetLineRef}
+          lookaheadMarkerRef={lookaheadMarkerRef}
+          lookaheadLineRef={lookaheadLineRef}
           virtualCameraCaptureRequest={virtualCameraCaptureRequest}
           virtualCameraActivation={virtualCameraActivation}
           virtualCameras={virtualCameras}
@@ -2886,6 +3416,7 @@ export function App() {
         <PointTargets
           targets={pointTargets}
           registry={targetRegistry}
+          framesRef={dollyFramesRef}
           selectedId={selectedPointTargetId}
           onSelect={selectPointTarget}
           onMove={movePointTarget}
