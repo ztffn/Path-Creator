@@ -134,7 +134,7 @@ describe("r3f runtime helpers", () => {
     expect(screen.y).toBeCloseTo(-0.1, 2);
   });
 
-  it("screen composer clamps hard-limit breaches immediately", () => {
+  it("screen composer clamps soft-zone breaches immediately", () => {
     const camera = new PerspectiveCamera(60, 1, 0.1, 100);
     const target = targetAtScreen(camera, { x: 0.7, y: 0 });
 
@@ -145,7 +145,7 @@ describe("r3f runtime helpers", () => {
       createScreenComposerState(),
       {
         deadZone: { width: 0.2, height: 0.2 },
-        hardLimits: { width: 0.8, height: 0.8 },
+        softZone: { width: 0.8, height: 0.8 },
         damping: { x: 0.000001, y: 0.000001 }
       },
       1 / 60

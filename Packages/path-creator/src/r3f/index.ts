@@ -177,7 +177,9 @@ export function applyScreenComposerAim(
 
   const screenPosition = options.screenPosition ?? DEFAULT_SCREEN_COMPOSER.screenPosition;
   const deadZone = options.deadZone ?? DEFAULT_SCREEN_COMPOSER.deadZone;
-  const hardLimits = options.hardLimits ?? DEFAULT_SCREEN_COMPOSER.hardLimits;
+  // The soft zone is the working boundary: inside dead = no move, dead..soft =
+  // damped, beyond soft = clamped back to the soft edge. (No separate hard zone.)
+  const softZone = options.softZone ?? DEFAULT_SCREEN_COMPOSER.softZone;
   const damping = options.damping ?? DEFAULT_SCREEN_COMPOSER.damping;
   const delta = Math.max(0, deltaSeconds);
 
@@ -209,8 +211,8 @@ export function applyScreenComposerAim(
   const offsetY = screenY - screenPosition.y;
   const deadHalfX = clampHalfSize(deadZone.width);
   const deadHalfY = clampHalfSize(deadZone.height);
-  const hardHalfX = Math.max(deadHalfX, clampHalfSize(hardLimits.width));
-  const hardHalfY = Math.max(deadHalfY, clampHalfSize(hardLimits.height));
+  const softHalfX = Math.max(deadHalfX, clampHalfSize(softZone.width));
+  const softHalfY = Math.max(deadHalfY, clampHalfSize(softZone.height));
 
   const firstFrame = !state.initialized;
   state.initialized = true;
@@ -218,7 +220,7 @@ export function applyScreenComposerAim(
   const correctionX = getScreenCorrection(
     offsetX,
     deadHalfX,
-    hardHalfX,
+    softHalfX,
     damping.x,
     delta,
     firstFrame && options.centerOnActivate === true
@@ -226,7 +228,7 @@ export function applyScreenComposerAim(
   const correctionY = getScreenCorrection(
     offsetY,
     deadHalfY,
-    hardHalfY,
+    softHalfY,
     damping.y,
     delta,
     firstFrame && options.centerOnActivate === true
@@ -451,7 +453,7 @@ function applyLookahead(
 function getScreenCorrection(
   offset: number,
   deadHalf: number,
-  hardHalf: number,
+  softHalf: number,
   damping: number,
   deltaSeconds: number,
   centerImmediately: boolean
@@ -462,12 +464,14 @@ function getScreenCorrection(
   const magnitude = Math.abs(offset);
   if (magnitude <= deadHalf) return 0;
 
-  const hardCorrection = Math.max(0, magnitude - hardHalf);
-  const afterHard = magnitude - hardCorrection;
-  const dampedCorrection = Math.max(0, afterHard - deadHalf);
+  // Beyond the soft edge, clamp back to it immediately; inside the soft zone
+  // (dead..soft), correct toward the dead edge with damping.
+  const clampCorrection = Math.max(0, magnitude - softHalf);
+  const withinSoft = magnitude - clampCorrection;
+  const dampedCorrection = Math.max(0, withinSoft - deadHalf);
   const alpha = damping > 0 ? 1 - Math.exp(-damping * deltaSeconds) : 1;
 
-  return sign * (hardCorrection + dampedCorrection * alpha);
+  return sign * (clampCorrection + dampedCorrection * alpha);
 }
 
 function getCameraFov(camera: Camera): { horizontal: number; vertical: number } | null {
