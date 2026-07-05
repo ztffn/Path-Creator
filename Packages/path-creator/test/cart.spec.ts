@@ -10,6 +10,7 @@ import {
   EndOfPathInstruction,
   VertexPath,
   advanceCartDistance,
+  DEFAULT_COMPOSER_SETTINGS,
   buildRigRuntime,
   createPathCart,
   createRigDocument,
@@ -219,6 +220,34 @@ describe("rig document", () => {
   it("rejects unknown schema versions", () => {
     const document = { ...createRigDocument(), schemaVersion: 99 };
     expect(() => buildRigRuntime(document as never)).toThrow(/schema version/);
+  });
+
+  it("rejects a screen-composer aim referencing an undeclared target", () => {
+    const document = createRigDocument({
+      vcams: [
+        {
+          id: "vcam-1",
+          body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+          aim: { type: "screen-composer", target: { targetId: "ghost" }, settings: DEFAULT_COMPOSER_SETTINGS }
+        }
+      ]
+    });
+    expect(() => buildRigRuntime(document)).toThrow(/unknown target "ghost"/);
+  });
+
+  it("accepts a screen-composer aim framing a declared target", () => {
+    const document = createRigDocument({
+      targets: [{ id: "hero", type: "point", position: { x: 1, y: 0, z: 0 } }],
+      vcams: [
+        {
+          id: "vcam-1",
+          body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+          aim: { type: "screen-composer", target: { targetId: "hero" }, settings: DEFAULT_COMPOSER_SETTINGS }
+        }
+      ]
+    });
+    const runtime = buildRigRuntime(JSON.parse(JSON.stringify(document)) as typeof document);
+    expect(runtime.vcams.get("vcam-1")?.aim?.type).toBe("screen-composer");
   });
 });
 

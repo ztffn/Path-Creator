@@ -82,9 +82,58 @@ export type VirtualCameraBodyDefinition =
   | { type: "static"; position: Vec3; quaternion: QuaternionLike }
   | { type: "cart"; cartId: string; positionOffset?: Vec3 };
 
+/**
+ * Screen-composer framing: dead/soft zones as frame fractions (0..1), per-axis
+ * damping heaviness (larger = slower reframe), a world-space target offset, and
+ * lookahead. Consumed by the live, stateful composer stage in the drive-loop;
+ * there is no "hard zone" — the soft edge is the clamp boundary.
+ */
+export interface ComposerSettings {
+  /** Framing anchor in normalized screen space (0 = centre). */
+  screenX: number;
+  screenY: number;
+  deadWidth: number;
+  deadHeight: number;
+  softWidth: number;
+  softHeight: number;
+  /** Per-axis damping heaviness (larger = slower); alpha = 1 - e^(-(12/damping)·dt). */
+  dampingX: number;
+  dampingY: number;
+  /** World-space offset added to the tracked target before framing. */
+  targetOffsetX: number;
+  targetOffsetY: number;
+  targetOffsetZ: number;
+  lookaheadTime: number;
+  lookaheadSmoothing: number;
+  lookaheadIgnoreY: boolean;
+  centerOnActivate: boolean;
+}
+
+export const DEFAULT_COMPOSER_SETTINGS: ComposerSettings = {
+  screenX: 0,
+  screenY: 0,
+  deadWidth: 0.18,
+  deadHeight: 0.14,
+  softWidth: 0.55,
+  softHeight: 0.45,
+  dampingX: 6,
+  dampingY: 8,
+  targetOffsetX: 0,
+  targetOffsetY: 0,
+  targetOffsetZ: 0,
+  lookaheadTime: 0.2,
+  lookaheadSmoothing: 8,
+  lookaheadIgnoreY: false,
+  centerOnActivate: false
+};
+
 export type VirtualCameraAimDefinition =
   | { type: "body" }
-  | { type: "look-at"; target: Vec3 | { targetId: string } };
+  | { type: "look-at"; target: Vec3 | { targetId: string } }
+  // Live, stateful screen-space framing owned by the drive-loop composer stage.
+  // Pure resolution (resolveVirtualCameraDefinition) leaves body orientation —
+  // the composer is a post-stage, outside deterministic resolution.
+  | { type: "screen-composer"; target: Vec3 | { targetId: string }; settings: ComposerSettings };
 
 export interface VirtualCameraDefinition {
   id: string;

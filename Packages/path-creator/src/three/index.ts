@@ -414,6 +414,9 @@ export function resolveVirtualCameraDefinition(
     bodyUp = frame.up;
   }
 
+  // A "screen-composer" aim is intentionally not handled here: it is a live,
+  // stateful post-stage owned by the drive-loop, so pure resolution leaves the
+  // body orientation untouched (deterministic snapshot = body pose).
   if (definition.aim?.type === "look-at") {
     const aimTarget =
       "targetId" in definition.aim.target

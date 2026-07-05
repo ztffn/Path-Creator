@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { Group, PerspectiveCamera, Quaternion, Vector3 } from "three";
-import { VertexPath, createPathCart, sampleCartFrame } from "../src/core";
+import { DEFAULT_COMPOSER_SETTINGS, VertexPath, createPathCart, sampleCartFrame } from "../src/core";
 import {
   activateVirtualCameraBrain,
   applyVirtualCameraBrain,
@@ -302,6 +302,27 @@ describe("virtual camera bodies", () => {
     expect(look.x).toBeCloseTo(1);
     expect(look.y).toBeCloseTo(0);
     expect(look.z).toBeCloseTo(0);
+  });
+
+  it("leaves body orientation for a screen-composer aim (composer is a live post-stage)", () => {
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "vcam-composer",
+        body: {
+          type: "static",
+          position: { x: 0, y: 0, z: 0 },
+          quaternion: { x: 0, y: 0, z: 0, w: 1 }
+        },
+        aim: {
+          type: "screen-composer",
+          target: { x: 10, y: 0, z: 0 },
+          settings: DEFAULT_COMPOSER_SETTINGS
+        }
+      },
+      { getTargetPosition: () => ({ x: 10, y: 0, z: 0 }) }
+    );
+
+    expect(snapshot?.quaternion).toEqual({ x: 0, y: 0, z: 0, w: 1 });
   });
 
   it("returns null when the referenced cart is unavailable", () => {
