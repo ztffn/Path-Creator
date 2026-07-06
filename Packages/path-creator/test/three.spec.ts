@@ -16,6 +16,7 @@ import {
   applyVirtualCameraSnapshot,
   applyVirtualCameraTransition,
   blendVirtualCameraSnapshots,
+  buildDollyRailLines,
   buildRoadMeshBuffers,
   buildTubeMeshBuffers,
   captureVirtualCameraSnapshot,
@@ -75,6 +76,25 @@ describe("three geometry builders", () => {
     expect(mesh.indices.length % 3).toBe(0);
     expect(mesh.normals?.length).toBe(mesh.positions.length);
     expect(mesh.uvs?.length).toBe((mesh.positions.length / 3) * 2);
+  });
+
+  it("buildDollyRailLines produces symmetric rails and paired ties", () => {
+    const rail = buildDollyRailLines(path, { gauge: 0.2, tieSpacing: 0.5, segmentsPerUnit: 8 });
+
+    expect(rail.left.length).toBe(rail.right.length);
+    expect(rail.left.length).toBeGreaterThan(2);
+    // Ties come in endpoint pairs (segment geometry).
+    expect(rail.ties.length % 2).toBe(0);
+    expect(rail.ties.length).toBeGreaterThanOrEqual(2);
+
+    // Each rail sample straddles the centre by the half-gauge; left and right
+    // are mirror images about the centreline, so their midpoint is the centre.
+    for (let i = 0; i < rail.left.length; i += 1) {
+      const l = rail.left[i];
+      const r = rail.right[i];
+      const gap = Math.hypot(l.x - r.x, l.y - r.y, l.z - r.z);
+      expect(gap).toBeCloseTo(0.2, 6);
+    }
   });
 });
 

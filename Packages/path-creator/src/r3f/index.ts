@@ -265,8 +265,11 @@ export function useDollyCamera(options: UseDollyCameraOptions): {
 
 export * from "./targets";
 export * from "./editor";
+export * from "./rig-line";
+export * from "./path-visual";
 export * from "./path-editor";
 export * from "./point-targets";
+export * from "./cart-gizmo";
 export * from "./rig-drive";
 
 export function vec3Distance(a: Vec3, b: Vec3): number {

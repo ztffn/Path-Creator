@@ -3,7 +3,7 @@
 // gizmos, anchor/handle glyphs, and the drag/rotate PivotControls. Themable via
 // PathEditorProps.theme. The subtree renders inside <EditorHelpers>, so hosts
 // must call useEditorHelpersVisible(editing) on their viewport camera to see it.
-import { Billboard, Line, PivotControls, Text } from "@react-three/drei";
+import { Billboard, PivotControls, Text } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Euler, Matrix4, Quaternion, Vector3 } from "three";
 import {
@@ -13,12 +13,18 @@ import {
   type Vec3,
   type VertexPath
 } from "../core";
+import { type DollyRailOptions } from "../three";
 import { EditorHelpers } from "./editor";
+import { PathVisual, buildPathLinePoints } from "./path-visual";
+import { RigLine } from "./rig-line";
 
 export interface PathEditorTheme {
   activeLine?: string;
   inactiveLine?: string;
   controlLine?: string;
+  /** Dolly-rail (two rails + cross-ties) for the active path. */
+  rail?: string;
+  tie?: string;
   anchor?: string;
   anchorSelected?: string;
   handle?: string;
@@ -38,6 +44,11 @@ export interface PathEditorProps {
   anchorScales?: number[];
   useWorldSpaceGizmo?: boolean;
   theme?: PathEditorTheme;
+  /** Active-path rendering: a single centre line ("line", default) or a
+   *  Cinemachine-style dolly rail with two rails + cross-ties ("rail"). */
+  pathStyle?: "line" | "rail";
+  /** Tuning for the "rail" style. */
+  railOptions?: DollyRailOptions;
   onSelectHandle: (index: number | null) => void;
   onSelectMidpoint: (index: number | null) => void;
   onMovePoint: (index: number, point: Vec3) => void;
@@ -52,6 +63,8 @@ const DEFAULT_THEME: Required<PathEditorTheme> = {
   activeLine: "#101828",
   inactiveLine: "#475569",
   controlLine: "#8b8f97",
+  rail: "#101828",
+  tie: "#334155",
   anchor: "#f97316",
   anchorSelected: "#ffffff",
   handle: "#2563eb",
@@ -60,15 +73,6 @@ const DEFAULT_THEME: Required<PathEditorTheme> = {
   midpoint: "#06b6d4",
   label: "#f97316"
 };
-
-export function buildPathLinePoints(path: VertexPath): [number, number, number][] {
-  const values: [number, number, number][] = [];
-  for (let i = 0; i < path.numPoints; i += 1) {
-    const p = path.getPoint(i);
-    values.push([p.x, p.y, p.z]);
-  }
-  return values;
-}
 
 export function buildControlLinePositions(path: BezierPath): Float32Array {
   const values: number[] = [];
@@ -214,6 +218,8 @@ export function PathEditor({
   anchorScales = [],
   useWorldSpaceGizmo = false,
   theme,
+  pathStyle = "line",
+  railOptions,
   onSelectHandle,
   onSelectMidpoint,
   onMovePoint,
@@ -240,11 +246,6 @@ export function PathEditor({
     controlStarts: Array<{ index: number; point: Vec3 }>;
   } | null>(null);
 
-  const pathLinePoints = useMemo(
-    () => buildPathLinePoints(vertexPath),
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-    [vertexPath, pathVersion]
-  );
   const controlLinePositions = useMemo(
     () => buildControlLinePositions(bezierPath),
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -309,9 +310,18 @@ export function PathEditor({
 
   return (
     <EditorHelpers>
-      <Line points={pathLinePoints} color={t.activeLine} lineWidth={4} />
+      <PathVisual
+        vertexPath={vertexPath}
+        version={pathVersion}
+        style={pathStyle}
+        {...(railOptions && { railOptions })}
+        color={pathStyle === "rail" ? t.rail : t.activeLine}
+        tieColor={t.tie}
+        lineWidth={pathStyle === "rail" ? 2 : 4}
+        tieWidth={2}
+      />
       {otherPaths.map(({ id, vertexPath: other }) => (
-        <Line
+        <RigLine
           key={id}
           points={buildPathLinePoints(other)}
           color={t.inactiveLine}
@@ -333,16 +343,19 @@ export function PathEditor({
         <lineBasicMaterial color={t.controlLine} />
       </lineSegments>
 
-      <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[midpointNormalPositions, 3]}
-            count={midpointNormalPositions.length / 3}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color={t.midpointNormal} />
-      </lineSegments>
+      {/* The rail already shows banking, so the normal indicators are redundant there. */}
+      {pathStyle === "rail" ? null : (
+        <lineSegments>
+          <bufferGeometry>
+            <bufferAttribute
+              attach="attributes-position"
+              args={[midpointNormalPositions, 3]}
+              count={midpointNormalPositions.length / 3}
+            />
+          </bufferGeometry>
+          <lineBasicMaterial color={t.midpointNormal} />
+        </lineSegments>
+      )}
 
       {midpointData.map((m) => {
         return (

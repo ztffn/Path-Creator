@@ -1,6 +1,7 @@
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
 import {
   DEFAULT_COMPOSER_SETTINGS,
+  EndOfPathInstruction,
   PathSpace,
   evaluateVirtualCameraBlendCurve,
   offsetAlongBasis,
@@ -353,6 +354,73 @@ export function buildTubeMeshBuffers(path: VertexPath, options: TubeMeshOptions 
   }
 
   return { positions, normals, uvs, indices };
+}
+
+export interface DollyRailOptions {
+  /** Full separation between the two rails, in scene units. */
+  gauge?: number;
+  /** Spacing between cross-ties along the rail, in scene units. */
+  tieSpacing?: number;
+  /** Rail sampling density (samples per unit length). */
+  segmentsPerUnit?: number;
+}
+
+/**
+ * Builds a Cinemachine-style dolly-rail visualization from a path: two parallel
+ * rail polylines offset along the across-axis (tangent x normal, so the rails
+ * bank with the path normal) plus evenly spaced cross-ties. Pure geometry — the
+ * r3f editor renders these as thick lines to read curvature and banking at a
+ * glance. `ties` is a flat list of endpoint pairs (segment geometry).
+ *
+ * Sampled by arc-length (not path time) so spacing stays even through anchors,
+ * and with Stop mode on an open path so the ends do not wrap back to the start;
+ * a closed loop uses Loop mode and closes the rail polylines.
+ */
+export function buildDollyRailLines(
+  path: VertexPath,
+  options: DollyRailOptions = {}
+): { left: Vec3[]; right: Vec3[]; ties: Vec3[] } {
+  const halfGauge = Math.max(0.001, options.gauge ?? 0.18) / 2;
+  const tieSpacing = Math.max(0.02, options.tieSpacing ?? 0.18);
+  const segmentsPerUnit = Math.max(0.5, options.segmentsPerUnit ?? 16);
+  const length = path.length;
+  const closed = path.isClosedLoop;
+  const mode = closed ? EndOfPathInstruction.Loop : EndOfPathInstruction.Stop;
+
+  const railAcross = (distance: number): { center: Vec3; across: Vec3 } => {
+    const center = path.getPointAtDistance(distance, mode);
+    const dir = vec3.normalize(path.getDirectionAtDistance(distance, mode));
+    const normal = vec3.normalize(path.getNormalAtDistance(distance, mode));
+    let across = vec3.cross(dir, normal);
+    if (vec3.magnitude(across) < 1e-6) across = { x: 1, y: 0, z: 0 };
+    return { center, across: vec3.normalize(across) };
+  };
+
+  const left: Vec3[] = [];
+  const right: Vec3[] = [];
+  const rings = Math.max(2, Math.round(length * segmentsPerUnit) + 1);
+  for (let s = 0; s < rings; s += 1) {
+    const { center, across } = railAcross((s / (rings - 1)) * length);
+    left.push(vec3.add(center, vec3.scale(across, -halfGauge)));
+    right.push(vec3.add(center, vec3.scale(across, halfGauge)));
+  }
+  // Only a looped path joins end-to-start; an open path must not.
+  if (closed) {
+    left.push(left[0]);
+    right.push(right[0]);
+  }
+
+  const ties: Vec3[] = [];
+  const tieCount = Math.max(1, Math.round(length / tieSpacing));
+  for (let i = 0; i <= tieCount; i += 1) {
+    // On a loop the final tie coincides with the first — skip the duplicate.
+    if (closed && i === tieCount) break;
+    const { center, across } = railAcross((i / tieCount) * length);
+    ties.push(vec3.add(center, vec3.scale(across, -halfGauge)));
+    ties.push(vec3.add(center, vec3.scale(across, halfGauge)));
+  }
+
+  return { left, right, ties };
 }
 
 const _bodyForward = new Vector3();
