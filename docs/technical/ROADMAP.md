@@ -59,11 +59,14 @@ Follow-ups:
   material `opacity` (matrix/uniform updates, no buffer churn). Rule for this package:
   **never vary a mesh's geometry `args` per-interaction on a WebGPU render path — vary
   scale/opacity/color instead.**
-- **WebGPU-safe text/labels (RigLabel).** CONFIRMED broken: troika `<Text>` crashes
-  the WebGPU renderer (infinite `drawIndexed` device loss). Labels are gated off on
-  WebGPU for now (PathEditor anchor numbers via useIsWebGPURenderer). Build a
-  WebGPU-safe `RigLabel` (Sprite + CanvasTexture, auto-maps both backends) and route
-  all label usages (PathEditor, CartGizmo, VirtualCameraGlyph, PointTargets) through it.
+- **WebGPU-safe text/labels (RigLabel).** *DONE.* troika `<Text>` doesn't crash on
+  current three but renders a silent garbage white quad on the WebGPU node renderer
+  (its SDF atlas doesn't sample there). `RigLabel` (`src/r3f/rig-label.tsx`) draws the
+  text to a 2D canvas on a camera-facing Sprite (SpriteMaterial auto-maps both
+  backends); PathEditor anchor numbers, CartGizmo, and VirtualCameraGlyph all route
+  through it, and the WebGPU label gates are removed. Validated rendering real glyphs
+  on WebGPU (Metal-3) and no WebGL regression. (PointTargets has no label; its gizmo
+  routing is the remaining seam item below.)
 - **WebGPU validation example (debrief P0.3).** *DONE.* `examples/webgpu-check` now
   mounts the full `PathEditor` under `WebGPURenderer` and is render + select + drag
   interactive (validated headless & headed on Apple Metal-3 via a Playwright oracle
