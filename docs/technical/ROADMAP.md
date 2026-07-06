@@ -45,20 +45,26 @@ Follow-ups:
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
-- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *DONE — translate + rotate.*
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *DONE — full combined gizmo.*
   `RigGizmo` (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo`
-  default + `TransformGizmo`. Since three's `TransformControls` is single-mode,
-  TransformGizmo **stacks two** on one object (translate arrows + rotate rings shown
-  together — the PivotControls "all handles at once" feel, but LineBasicMaterial axes
-  that auto-map on WebGPU); the idle one yields mid-drag and it reports the drag delta
-  so a rotate drag swings an anchor's control points. Rotate is dropped when
-  `disableRotations` (control handles / point targets → translate only). Both
-  `PathEditor` and `PointTargets` route through the seam; validated on WebGPU
-  (translate moves, rotate ring rotates + co-moves handles, no device loss). Enables
-  all layers on the picking raycaster so it stays grabbable under EditorHelpers.
-  Remaining: midpoint normal-rotation pivot still uses drei PivotControls (gated off
-  on WebGPU) — route it through the seam too (rotation-only) to close the last gate;
-  optional scale mode (anchor scale) is a further add.
+  (drei, WebGL default) + `TransformGizmo`. **First tried stacking two three
+  `TransformControls` (translate+rotate); abandoned** — the rotate gizmo's invisible
+  free-rotate sphere (`XYZE`) overlaps the translate arrows and mis-grabs constantly.
+  `TransformGizmo` is now a **vendored fork of drei PivotControls** (`src/r3f/pivot/`)
+  with the one WebGPU liability swapped out: its fat `LineMaterial` axis/ring lines
+  (drei `<Line>`/three-stdlib) are replaced by `PivotLine` (a thin `THREE.Line` +
+  `LineBasicMaterial` via `<primitive>`), and the rotator's fat invisible hit-line by
+  an invisible `TubeGeometry` proxy. Everything else (per-handle mesh pickers → no
+  mis-grab, `fixed` screen-constant px sizing, `onDrag(local, deltaLocal)`,
+  disable* props) is drei's, unchanged. Gives the full move+rotate+(plane)+scale
+  gizmo. Both `PathEditor` and `PointTargets` inject it; validated on WebGPU (Metal-3):
+  arrow=translate / arc=rotate cleanly isolated, anchor-rotate swings control handles,
+  screen-constant, no device loss. WebGL keeps drei PivotControls (fat lines).
+  Notes: lines are thin on WebGPU (no fat node-line yet — same tradeoff as RigLine;
+  `Line2NodeMaterial` upgrade is a follow-up). When drei v11 (WebGPU) ships stable,
+  this fork can be dropped for `@react-three/drei/webgpu`. Midpoint normal-rotation
+  pivot still uses drei PivotControls (gated off on WebGPU) — route it through the seam
+  too to close the last gate.
 - **Glyph-geometry churn on WebGPU — FIXED.** Clicking an anchor lost the WebGPU
   device (`DrawIndexed(168)`, "vertex buffer slot 0 not set"). Root cause: PathEditor's
   handle rings/circles changed their `ringGeometry`/`circleGeometry` **args** (and
