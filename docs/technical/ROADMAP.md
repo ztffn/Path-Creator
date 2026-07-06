@@ -39,9 +39,13 @@ WebGPU, thick on WebGL.** drei stays an *optional* peer, touched only on the
 WebGL branch — the seam localizes every follow-up below to one file.
 
 Follow-ups:
-- **Node-material thickness on WebGPU.** RigLine's WebGPU branch renders thin;
-  upgrade it to `Line2NodeMaterial` (fat, WebGPU-native) so lines are thick on
-  both backends. Dashed lines are also dropped on the WebGPU branch until then.
+- **Node-material thickness on WebGPU (DEFERRED — not a small change).** RigLine's
+  WebGPU branch + the gizmo's `PivotLine` render thin. Fat lines need
+  `Line2NodeMaterial`, which lives in `three/webgpu` — a renderer-agnostic package
+  can't import it without pulling the WebGPU build into every consumer (breaks
+  WebGL-only consumers and the CJS build). Needs a conditional/dynamic-import seam or
+  a peer-optional `three/webgpu` split first. Thin-but-safe is the consistent policy
+  until then. Dashed lines are likewise dropped on the WebGPU branch.
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
@@ -60,11 +64,11 @@ Follow-ups:
   gizmo. Both `PathEditor` and `PointTargets` inject it; validated on WebGPU (Metal-3):
   arrow=translate / arc=rotate cleanly isolated, anchor-rotate swings control handles,
   screen-constant, no device loss. WebGL keeps drei PivotControls (fat lines).
-  Notes: lines are thin on WebGPU (no fat node-line yet — same tradeoff as RigLine;
-  `Line2NodeMaterial` upgrade is a follow-up). When drei v11 (WebGPU) ships stable,
-  this fork can be dropped for `@react-three/drei/webgpu`. Midpoint normal-rotation
-  pivot still uses drei PivotControls (gated off on WebGPU) — route it through the seam
-  too to close the last gate.
+  Notes: lines are thin on WebGPU — see the deferred fat-line item below. When drei v11
+  (WebGPU) ships stable, this fork can be dropped for `@react-three/drei/webgpu`.
+  Midpoint normal-rotation pivot now also routes through the seam (rotation-only via a
+  new `disableTranslation` prop → `disableAxes`+`disableSliders`); its WebGPU gate is
+  removed, so rotation works on WebGPU everywhere. That closes the last gizmo gate.
 - **Glyph-geometry churn on WebGPU — FIXED.** Clicking an anchor lost the WebGPU
   device (`DrawIndexed(168)`, "vertex buffer slot 0 not set"). Root cause: PathEditor's
   handle rings/circles changed their `ringGeometry`/`circleGeometry` **args** (and
@@ -101,10 +105,9 @@ own camera + loop, no r3f. The demo consumes `useRigDrive`; the twin can drop it
 hand-written `PathRigDriver.useFrame`. `applyScreenComposerAim`/`getScreenCorrection`
 already moved to `/three`; `vcamTrackTargetId` already in `core/virtual-camera.ts`.
 
-Remaining 3c-4 cleanup (minor, deferred from the /simplify altitude pass):
-- Reconcile the two composer-config shapes: flat `ComposerSettings` (core) vs nested
-  `ScreenComposerOptions` (r3f). Have the composer consume `ComposerSettings` directly
-  (or make one extend the other) so consumers stop hand-mapping flat→nested.
+Remaining 3c-4 cleanup: *none.* The composer-config reconciliation is DONE —
+`ScreenComposerOptions` is gone; the composer consumes flat `ComposerSettings`
+throughout (no consumer-side flat→nested mapping).
 
 ### F3 — dolly motion as an editable speed curve
 Replace discrete dolly move-blocks with a per-dolly **motion curve** (keyframes of
