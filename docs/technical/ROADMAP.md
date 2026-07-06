@@ -90,23 +90,21 @@ Follow-ups:
   ungated troika text is what first surfaced the device-loss chain).
 
 ### 3c-4 — extract the drive-loop into the package  ·  = debrief P1.1
-**Integration-validated:** the twin reinvented this loop by hand
-(`PathRigDriver.useFrame`) because it wasn't extracted — confirming the need.
-The per-frame orchestration (step player → `evaluateTimeline` → position carts →
-drive camera brain → composer) currently lives in `examples/minimal-r3f-demo/src/App.tsx`
-`Scene.useFrame`. Extract a framework-agnostic `driveRig`/`stepRig` (state holder:
-brain + composer state + composed quaternion + cart stepping) into `/three` (needs
-only a three `Camera`, no r3f), with a thin `useRigDrive` `useFrame` wrapper in `/r3f`.
-Makes rig playback reusable by the twin/elastiq without r3f. This is the modularity endgame.
+**DONE.** The per-frame orchestration is extracted and framework-agnostic:
+`driveTimeline` (`/timeline`) steps the player → `evaluateTimeline` → publishes cart
+frames → parks the pose + runs the composer; `driveActivation` + `createRigDriveState`
+(`/three`) hold the shared brain + composer state; and **`driveRig(state, camera,
+intent, dt)` (`/timeline`)** dispatches idle/timeline/activation with one call. The
+r3f `useRigDrive` (`/r3f`) is now a thin `useRef`+`useCallback` wrapper over `driveRig`
+— so a non-r3f runtime (headless render, elastiq) drives the rig identically with its
+own camera + loop, no r3f. The demo consumes `useRigDrive`; the twin can drop its
+hand-written `PathRigDriver.useFrame`. `applyScreenComposerAim`/`getScreenCorrection`
+already moved to `/three`; `vcamTrackTargetId` already in `core/virtual-camera.ts`.
 
-Rolled into 3c-4 (deferred from the /simplify altitude pass):
-- Move the composer function (`applyScreenComposerAim`, `getScreenCorrection`) from
-  `/r3f` to `/three` — it's pure three.js (takes a `Camera`), misfiled in r3f.
+Remaining 3c-4 cleanup (minor, deferred from the /simplify altitude pass):
 - Reconcile the two composer-config shapes: flat `ComposerSettings` (core) vs nested
   `ScreenComposerOptions` (r3f). Have the composer consume `ComposerSettings` directly
   (or make one extend the other) so consumers stop hand-mapping flat→nested.
-- Move `vcamTrackTargetId` (pure accessor over `VirtualCameraDefinition`) into
-  `core/virtual-camera.ts` — it belongs with the aim, not in the demo.
 
 ### F3 — dolly motion as an editable speed curve
 Replace discrete dolly move-blocks with a per-dolly **motion curve** (keyframes of
