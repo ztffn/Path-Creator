@@ -18,26 +18,20 @@ import {
   type Vec3
 } from "@huma/path-creator/core";
 import {
-  applyScreenComposerAim,
-  createScreenComposerState,
+  CartGizmo,
   EditorHelpers,
   PathEditor,
   PointTargets,
   getSuggestedNextAnchor,
   normalizeAnchorScales,
   useEditorHelpersVisible,
-  useRegisteredTargets
+  useRegisteredTargets,
+  useRigDrive,
+  type RigDriveIntent
 } from "@huma/path-creator/r3f";
 import {
-  activateVirtualCameraBrain,
   applyCartFrameToObject,
-  applyVirtualCameraBrain,
-  applyVirtualCameraSnapshot,
   captureVirtualCameraSnapshot,
-  createVirtualCameraBrainState,
-  driveVirtualCameraBrain,
-  getVirtualCameraBrainProgress,
-  resolveVirtualCameraDefinition,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraResolveContext,
@@ -45,9 +39,7 @@ import {
 } from "@huma/path-creator/three";
 import {
   createTimelinePlayer,
-  evaluateTimeline,
   seekTimelinePlayer,
-  stepTimelinePlayer,
   type Timeline,
   type TimelinePlayer,
   type TimelineRigContext
@@ -106,25 +98,10 @@ type DemoShotPatch = Partial<
   >
 >;
 
-const COMPOSER_UP = new Vector3(0, 1, 0);
-
 // Fallbacks for a vcam whose sidecar entry is missing (shouldn't happen, but
 // keeps the derived view total). Stable identities, so hoisted out of render.
 const DEFAULT_EDITOR_VCAM: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
 const DEFAULT_SHOT_TIMING: ShotTiming = { start: 0, end: 5 };
-
-// Reframe a camera so the tracked target lands in the composer's screen zones
-// (dead/soft) with damping. Stateful, so it runs on live preview cameras only
-// (not in pure timeline evaluation) — see the package composer notes.
-function applyComposerAim(
-  camera: PerspectiveCamera,
-  target: Vec3,
-  settings: ComposerSettings,
-  state: ReturnType<typeof createScreenComposerState>,
-  deltaSeconds: number
-): void {
-  applyScreenComposerAim(camera, target, COMPOSER_UP, state, settings, deltaSeconds);
-}
 
 type VirtualCameraActivation = {
   key: number;
@@ -277,6 +254,7 @@ function Scene({
   speed,
   debugPreview,
   debugFrustum,
+  pathStyle,
   selectedHandleIndex,
   selectedMidpointIndex,
   anchorScales,
@@ -315,6 +293,7 @@ function Scene({
   speed: number;
   debugPreview: boolean;
   debugFrustum: boolean;
+  pathStyle: "line" | "rail";
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
   anchorScales: number[];
@@ -367,11 +346,6 @@ function Scene({
     () => new Map(vcamDefs.map((def) => [def.id, def])),
     [vcamDefs]
   );
-  const resolveVcamDef = (
-    def: VirtualCameraDefinition,
-    elapsedSeconds: number
-  ): VirtualCameraSnapshot | null =>
-    resolveVirtualCameraDefinition(def, demoResolveContext(elapsedSeconds));
   const timelineContext = useMemo<TimelineRigContext>(
     () => ({
       rig: {
@@ -393,9 +367,6 @@ function Scene({
   const selectedVirtualCamera = selectedVirtualCameraId
     ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
     : null;
-  const selectedVcamDef = selectedVirtualCameraId
-    ? vcamDefById.get(selectedVirtualCameraId) ?? null
-    : null;
   // The PiP shows an authored camera: timeline output, an activated shot, or
   // the selected shot. Otherwise nothing drives it ("no output").
   const pipCamera = brainCamera;
@@ -411,43 +382,13 @@ function Scene({
   }, [frustumHelper, frustumColor]);
 
   const lastCaptureRequestRef = useRef(virtualCameraCaptureRequest);
-  const activeVirtualCameraKeyRef = useRef<number | null>(null);
+  // Dedup for the resolved-shot callback (fire while blending, then once on done).
   const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
-  const virtualCameraBrainRef = useRef(createVirtualCameraBrainState());
-  // Live screen-composer state for the previewed vcam; reset when the vcam changes.
-  const composerStateRef = useRef(createScreenComposerState());
-  const composerVcamIdRef = useRef<string | null>(null);
-  // The composer OWNS orientation and must persist it across frames to damp; the
-  // brain resets orientation each frame, so we keep the composed quaternion here
-  // and restore it before the composer runs.
-  const composedQuatRef = useRef(new Quaternion());
+  // The extracted drive-loop: one shared brain + composer stage, driven each
+  // frame via a neutral intent. Replaces the hand-rolled brain/composer refs.
+  const rigDrive = useRigDrive();
   const projectedTarget = useMemo(() => new Vector3(), []);
   const { gl } = useThree();
-
-  // Frame the tracked target through the vcam's screen-composer zones (damped).
-  // Orientation persists in composedQuatRef so damping accumulates instead of
-  // snapping — the brain only provides position (+ a throwaway orientation).
-  const applyPreviewComposer = (vcam: DemoVirtualCamera, deltaSeconds: number): void => {
-    if (!vcam.trackTargetId) {
-      composerVcamIdRef.current = null;
-      return;
-    }
-    const target = targetRegistry.resolve(vcam.trackTargetId);
-    if (!target) {
-      composerVcamIdRef.current = null;
-      return;
-    }
-    if (composerVcamIdRef.current !== vcam.id) {
-      // New shot: start the composed orientation from the brain's current
-      // (body) orientation, then let it damp toward the framing.
-      composerVcamIdRef.current = vcam.id;
-      composerStateRef.current = createScreenComposerState();
-      composedQuatRef.current.copy(brainCamera.quaternion);
-    }
-    brainCamera.quaternion.copy(composedQuatRef.current);
-    applyComposerAim(brainCamera, target, vcam.composerSettings, composerStateRef.current, deltaSeconds);
-    composedQuatRef.current.copy(brainCamera.quaternion);
-  };
 
   useEffect(() => {
     const onContextMenu = (e: Event) => e.preventDefault();
@@ -463,28 +404,15 @@ function Scene({
     const mainCamera = camera as PerspectiveCamera;
     const elapsed = performance.now() / 1000;
 
-    frustumHelper.update();
-
     if (virtualCameraCaptureRequest !== lastCaptureRequestRef.current) {
       lastCaptureRequestRef.current = virtualCameraCaptureRequest;
       // Capture the main viewport (orbit) camera as a new static vcam.
       onVirtualCameraCaptured(captureVirtualCameraSnapshot(mainCamera));
     }
 
-    // Carts follow the SHOW CLOCK, not wall-clock: advance the player only while
-    // playing, then position every dolly from the timeline at that time. With no
-    // active timeline (shots mode) the dollies park at the rail start — they no
-    // longer drift on their own before playback.
-    let timelineSample: ReturnType<typeof evaluateTimeline> | null = null;
-    if (activeTimeline) {
-      if (timelinePlayerRef.current.playing) {
-        stepTimelinePlayer(timelinePlayerRef.current, activeTimeline, delta);
-      }
-      timelineSample = evaluateTimeline(activeTimeline, timelineContext, timelinePlayerRef.current.time);
-      for (const [dollyId, frame] of timelineSample.cartFrames) {
-        dollyFramesRef.current.set(dollyId, frame);
-      }
-    } else {
+    // Shots mode parks every dolly at its rail start (a constant frame);
+    // driveTimeline overwrites these with evaluated frames while it owns the PiP.
+    if (!activeTimeline) {
       for (const dolly of dollies) {
         const dollyPath = vertexPaths.get(dolly.pathId);
         const cart = liveDollies.get(dolly.id);
@@ -492,93 +420,67 @@ function Scene({
       }
     }
 
-    // Which vcam drives the PiP this frame, for the composer overlay below.
-    let composerVcam: DemoVirtualCamera | null = null;
-    if (activeTimeline && timelineSample) {
-      const sample = timelineSample;
-      if (sample.camera) {
-        applyVirtualCameraSnapshot(brainCamera, sample.camera);
-        // Live composer post-step so playback frames like the preview: position
-        // comes from the (blended) evaluator, orientation from the composer.
-        let activeVcam: DemoVirtualCamera | undefined;
-        if (sample.activeBlock) {
-          const vcamId = sample.activeBlock.block.vcamId;
-          activeVcam = virtualCameras.find((camera) => camera.id === vcamId);
-        }
-        if (activeVcam) {
-          applyPreviewComposer(activeVcam, delta);
-        } else {
-          composerVcamIdRef.current = null;
-        }
-        composerVcam = activeVcam ?? null;
-      } else {
-        // Released gap (no camera): the PiP holds the last pose.
-        composerVcamIdRef.current = null;
-      }
-      activeVirtualCameraKeyRef.current = null;
-      resolvedVirtualCameraKeyRef.current = null;
-    } else if (virtualCameraActivation && !isTransforming) {
+    // Map editor state to a neutral drive intent, then drive the PiP brain:
+    // timeline plays the show; an activated or selected shot previews through the
+    // activation driver (blend vs cut); otherwise idle ("no output").
+    const isActivationPreview = Boolean(virtualCameraActivation && !isTransforming);
+    let intent: RigDriveIntent;
+    if (activeTimeline) {
+      intent = {
+        mode: "timeline",
+        timeline: activeTimeline,
+        player: timelinePlayerRef.current,
+        context: timelineContext,
+        cartFrames: dollyFramesRef.current
+      };
+    } else if (isActivationPreview && virtualCameraActivation) {
       const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
-      const liveDef = vcamDefById.get(virtualCameraActivation.toId);
-      if (liveVcam && liveDef) {
-        if (activeVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
-          activeVirtualCameraKeyRef.current = virtualCameraActivation.key;
-          resolvedVirtualCameraKeyRef.current = null;
-          activateVirtualCameraBrain(
-            virtualCameraBrainRef.current,
-            resolveVcamDef(liveDef, elapsed) ?? liveVcam.snapshot,
-            {
-              durationSeconds: virtualCameraActivation.durationSeconds,
-              curve: virtualCameraActivation.curve
-            }
-          );
-        }
-
-        const resolvedSnapshot = driveVirtualCameraBrain(
-          brainCamera,
-          virtualCameraBrainRef.current,
-          liveDef,
-          demoResolveContext(elapsed),
-          delta
-        );
-        if (resolvedSnapshot) {
-          const done = !virtualCameraBrainRef.current.isBlending;
-          const progress = getVirtualCameraBrainProgress(virtualCameraBrainRef.current);
-          if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
-            onVirtualCameraResolved({
-              snapshot: resolvedSnapshot,
-              progress,
-              done
-            });
-            if (done) {
-              resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
-            }
-          }
-        }
-        applyPreviewComposer(liveVcam, delta);
-        composerVcam = liveVcam;
-      }
+      intent = {
+        mode: "activation",
+        activeVcamId: virtualCameraActivation.toId,
+        vcams: vcamDefById,
+        context: demoResolveContext(elapsed),
+        blend: {
+          durationSeconds: virtualCameraActivation.durationSeconds,
+          curve: virtualCameraActivation.curve
+        },
+        activationKey: virtualCameraActivation.key,
+        ...(liveVcam && { fallbackSnapshot: liveVcam.snapshot })
+      };
     } else if (selectedVirtualCamera) {
-      activeVirtualCameraKeyRef.current = null;
-      resolvedVirtualCameraKeyRef.current = null;
-      virtualCameraBrainRef.current = createVirtualCameraBrainState(
-        (selectedVcamDef ? resolveVcamDef(selectedVcamDef, elapsed) : null) ?? selectedVirtualCamera.snapshot
-      );
-      applyVirtualCameraBrain(brainCamera, virtualCameraBrainRef.current, 0);
-      applyPreviewComposer(selectedVirtualCamera, delta);
-      composerVcam = selectedVirtualCamera;
+      // Cut (no blend): park on the selected shot, re-resolving as it moves.
+      intent = {
+        mode: "activation",
+        activeVcamId: selectedVirtualCamera.id,
+        vcams: vcamDefById,
+        context: demoResolveContext(elapsed),
+        fallbackSnapshot: selectedVirtualCamera.snapshot
+      };
     } else {
-      activeVirtualCameraKeyRef.current = null;
-      resolvedVirtualCameraKeyRef.current = null;
-      virtualCameraBrainRef.current = createVirtualCameraBrainState();
-      composerVcamIdRef.current = null;
+      intent = { mode: "idle" };
     }
 
-    // Composer overlay: project the driving vcam's tracked target (and its
+    const result = rigDrive.drive(brainCamera, intent, delta);
+    frustumHelper.update();
+
+    // Report the activated shot's resolved pose/progress to the panels — only for
+    // a real activation, not the selected-shot preview.
+    if (isActivationPreview && virtualCameraActivation && result.cameraSnapshot) {
+      const done = result.blendDone;
+      if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
+        onVirtualCameraResolved({ snapshot: result.cameraSnapshot, progress: result.blendProgress, done });
+        if (done) resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
+      }
+    } else {
+      resolvedVirtualCameraKeyRef.current = null;
+    }
+
+    // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
-    const composerTarget = composerVcam?.trackTargetId
-      ? targetRegistry.resolve(composerVcam.trackTargetId)
+    const composerVcam = result.activeVcamId
+      ? virtualCameras.find((item) => item.id === result.activeVcamId) ?? null
       : null;
+    const composerTarget = result.composerTarget;
     if (composerVcam && composerTarget) {
       projectedTarget.set(composerTarget.x, composerTarget.y, composerTarget.z).project(pipCamera);
       const inFrame =
@@ -595,7 +497,7 @@ function Scene({
       const lookahead = getComposerLookaheadTarget(
         composerTarget,
         composerVcam.composerSettings,
-        composerStateRef.current.smoothedVelocity
+        rigDrive.state.current.composer.aim.smoothedVelocity
       );
       projectedTarget.set(lookahead.x, lookahead.y, lookahead.z).project(pipCamera);
       updateDollyTargetOverlay(
@@ -625,6 +527,7 @@ function Scene({
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           pathVersion={pathVersion}
+          pathStyle={pathStyle}
           otherPaths={[...vertexPaths.entries()]
             .filter(([, path]) => path !== vertexPath)
             .map(([id, path]) => ({ id, vertexPath: path }))}
@@ -647,6 +550,14 @@ function Scene({
       ) : null}
 
       <EditorHelpers>
+      {dollies.map((dolly) => (
+        <CartGizmo
+          key={dolly.id}
+          framesRef={dollyFramesRef}
+          cartId={dolly.id}
+          name={dolly.name ?? dolly.id}
+        />
+      ))}
       {virtualCameras.map((virtualCamera) => {
         const isSelected = virtualCamera.id === selectedVirtualCameraId;
         const isActive = virtualCamera.id === virtualCameraActivation?.toId;
@@ -1940,6 +1851,7 @@ export function App() {
   const [virtualCameraBlendDuration, setVirtualCameraBlendDuration] = useState(1.2);
   const [virtualCameraTransitionProgress, setVirtualCameraTransitionProgress] = useState(1);
   const [useWorldSpaceGizmo, setUseWorldSpaceGizmo] = useState(false);
+  const [pathStyle, setPathStyle] = useState<"line" | "rail">("rail");
   const [isTransforming, setIsTransforming] = useState(false);
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
   const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
@@ -2635,6 +2547,15 @@ export function App() {
             <span style={{ marginLeft: 6 }}>Show camera frustum</span>
           </label>
 
+          <label style={{ display: "block", fontSize: 12 }}>
+            <input
+              type="checkbox"
+              checked={pathStyle === "rail"}
+              onChange={(e) => setPathStyle(e.target.checked ? "rail" : "line")}
+            />
+            <span style={{ marginLeft: 6 }}>Path as dolly rail</span>
+          </label>
+
           <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
             Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
           </div>
@@ -2768,6 +2689,7 @@ export function App() {
           speed={speed}
           debugPreview={debugPreview}
           debugFrustum={debugFrustum}
+          pathStyle={pathStyle}
           selectedHandleIndex={selectedHandleIndex}
           selectedMidpointIndex={selectedMidpointIndex}
           anchorScales={anchorScales}
