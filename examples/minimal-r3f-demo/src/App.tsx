@@ -24,13 +24,13 @@ import {
   PointTargets,
   getSuggestedNextAnchor,
   normalizeAnchorScales,
+  useCartFrameFollow,
   useEditorHelpersVisible,
   useRegisteredTargets,
   useRigDrive,
   type RigDriveIntent
 } from "@huma/path-creator/r3f";
 import {
-  applyCartFrameToObject,
   captureVirtualCameraSnapshot,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
@@ -715,16 +715,10 @@ function CartVcamGlyphRig({
     [offset.x, offset.y, offset.z]
   );
 
-  // The rig group sits ON the rail with the cart's frame basis as its local
-  // axes (x=right, y=up, z=forward), so the pivot's local translation IS the
-  // rail-local offset the cart body applies.
-  useFrame(() => {
-    const frame = framesRef.current.get(cartId) ?? null;
-    const group = groupRef.current;
-    if (!frame || !group) return;
-    applyCartFrameToObject(group, frame);
-    group.position.set(frame.railPosition.x, frame.railPosition.y, frame.railPosition.z);
-  });
+  // The rig group sits ON the rail with the cart's frame basis as its local axes
+  // (x=right, y=up, z=forward), so the pivot's local translation IS the rail-local
+  // offset the cart body applies.
+  useCartFrameFollow(groupRef, framesRef, cartId);
 
   // Camera glyphs face -Z; the frame's forward is local +Z here.
   const glyph = <group rotation={[0, Math.PI, 0]}>{children}</group>;

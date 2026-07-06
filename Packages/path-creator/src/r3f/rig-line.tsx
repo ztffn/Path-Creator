@@ -33,6 +33,41 @@ export function RigLine({
   gapSize
 }: RigLineProps) {
   const gl = useThree((state) => state.gl);
+
+  if (points.length < 2) return null;
+
+  // WebGPU (or any non-WebGL backend): thin core line — no drei, no LineMaterial.
+  if (isWebGPURenderer(gl)) {
+    return <ThinLine points={points} color={color} segments={segments} />;
+  }
+
+  // WebGL: drei's fat line (the only place the package touches drei for lines).
+  return (
+    <Line
+      points={points as [number, number, number][]}
+      color={color}
+      lineWidth={lineWidth}
+      segments={segments}
+      dashed={dashed}
+      {...(dashSize !== undefined && { dashSize })}
+      {...(gapSize !== undefined && { gapSize })}
+    />
+  );
+}
+
+// LineBasicMaterial auto-maps to a node material on WebGPU, so no LineMaterial
+// incompatibility. Thickness and dashing are dropped here until the node-material
+// upgrade (ROADMAP). Its own component so the Float32Array is built only on the
+// WebGPU backend, not wasted on every WebGL render.
+function ThinLine({
+  points,
+  color,
+  segments
+}: {
+  points: ReadonlyArray<[number, number, number]>;
+  color: string;
+  segments: boolean;
+}) {
   const flat = useMemo(() => {
     const array = new Float32Array(points.length * 3);
     for (let i = 0; i < points.length; i += 1) {
@@ -43,26 +78,6 @@ export function RigLine({
     return array;
   }, [points]);
 
-  if (points.length < 2) return null;
-
-  // WebGL: drei's fat line (the only place the package touches drei for lines).
-  if (!isWebGPURenderer(gl)) {
-    return (
-      <Line
-        points={points as [number, number, number][]}
-        color={color}
-        lineWidth={lineWidth}
-        segments={segments}
-        dashed={dashed}
-        {...(dashSize !== undefined && { dashSize })}
-        {...(gapSize !== undefined && { gapSize })}
-      />
-    );
-  }
-
-  // WebGPU (or any non-WebGL backend): thin core line. LineBasicMaterial
-  // auto-maps to a node material, so no LineMaterial incompatibility. Thickness
-  // and dashing are dropped here until the node-material upgrade (ROADMAP).
   const geometry = (
     <bufferGeometry>
       <bufferAttribute attach="attributes-position" args={[flat, 3]} count={points.length} />

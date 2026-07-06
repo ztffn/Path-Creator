@@ -10,7 +10,10 @@ import { RigLine } from "./rig-line";
 
 export type PathVisualStyle = "line" | "rail";
 
-/** The path's centre polyline as drei Line points. */
+const toPoints = (pts: Vec3[]): [number, number, number][] =>
+  pts.map((p) => [p.x, p.y, p.z]);
+
+/** The path's centre polyline as line points. */
 export function buildPathLinePoints(path: VertexPath): [number, number, number][] {
   const values: [number, number, number][] = [];
   for (let i = 0; i < path.numPoints; i += 1) {
@@ -44,9 +47,6 @@ export function PathVisual({
   tieWidth = 2,
   railOptions
 }: PathVisualProps) {
-  const toPoints = (pts: Vec3[]): [number, number, number][] =>
-    pts.map((p) => [p.x, p.y, p.z]);
-
   const railLines = useMemo(() => {
     if (style !== "rail") return null;
     const rail = buildDollyRailLines(vertexPath, railOptions ?? {});
