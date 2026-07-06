@@ -45,11 +45,13 @@ Follow-ups:
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
-- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *Seam + TransformGizmo DONE.*
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *DONE.*
   `RigGizmo` (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo`
-  default + `TransformGizmo` (three `TransformControls`, WebGPU-safe). `PathEditor`'s
-  handle pivot is routed through the seam and validated editable on WebGPU. Remaining:
-  route `PointTargets`' pivot through the seam too.
+  default + `TransformGizmo` (three `TransformControls`, WebGPU-safe). Both `PathEditor`
+  (handle pivot) and `PointTargets` (target pivot) route through the seam and are
+  validated editable on WebGPU (select + drag move real data, no device loss).
+  Note: TransformGizmo enables all layers on its picking raycaster so it stays
+  grabbable when a host parks it on the reserved EditorHelpers layer.
 - **Glyph-geometry churn on WebGPU — FIXED.** Clicking an anchor lost the WebGPU
   device (`DrawIndexed(168)`, "vertex buffer slot 0 not set"). Root cause: PathEditor's
   handle rings/circles changed their `ringGeometry`/`circleGeometry` **args** (and
