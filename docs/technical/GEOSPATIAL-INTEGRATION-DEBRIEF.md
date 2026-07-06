@@ -150,13 +150,23 @@ reference implementation to generalize.
   true; extract only the loop).
 - Accept: the demo and the twin can both drop their hand-written loop.
 
-**P1.2 — Camera-follow through arbitrary parent.** *(S–M)*
-Provide a snapshot-apply that composes correctly through a transformed parent
-(no roll), and/or a documented world-space aim helper. Root-cause the up-vector
-assumption in `applyVirtualCameraSnapshot`/`resolveVirtualCameraDefinition`.
-- Surface: `/three` camera apply/resolve.
-- Accept: a rig under a rotated/translated parent group frames its target with a
-  level horizon — no consumer-side `lookAt` bypass needed.
+**P1.2 — Camera-follow through arbitrary parent.** *DONE.*
+Root cause: `applyVirtualCameraSnapshot` set the camera's *local* pose from a
+rig-space snapshot, and `stepComposerAim` mixed local `camera.position/quaternion`
+with a world-space target + used a rig-space up — all correct only when the driven
+camera is at world root. Fix: thread an optional `rigMatrix` (the rig root's world
+matrix) through the drive params (`RigTimelineParams`/`RigActivationParams` →
+`driveRig`/`useRigDrive`). When set, the snapshot is composed through it
+(`world = rig · local`, decomposed onto the world-root camera) and the composer's
+target (point) + up (direction) are transformed to world (`applyMatrix4` /
+`transformDirection`) — so the horizon levels to the rig's up, not world-Y. Omit it
+(or pass identity) and behaviour is byte-identical to before (the current demo).
+- Surface: `/three` (`applyVirtualCameraSnapshot`, `applyVirtualCameraBrain`,
+  `driveVirtualCameraBrain`, `stepComposerAim`, `driveActivation`), `/timeline`
+  (`driveTimeline`). Host passes its rig group's `matrixWorld` as `rigMatrix`.
+- Accept: met. Unit-tested (rotated+translated + rolled parents: correct world
+  pose, level horizon via screen-right ⟂ rig-up, world-space composer target).
+  No consumer-side `lookAt` bypass needed.
 
 **P1.3 — Georeferencing / anchoring helper + doc.** *(M)*
 A small `<RigAnchor frame={...}>` (or a transform util) that mounts a rig in a
