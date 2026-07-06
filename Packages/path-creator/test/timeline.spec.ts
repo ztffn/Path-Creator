@@ -4,6 +4,7 @@
 // event collection windows, and the player's edge-triggered event firing.
 // These semantics are the contract the twin's tours and elastiq build on.
 import { describe, expect, it } from "vitest";
+import { PerspectiveCamera } from "three";
 import {
   BezierPath,
   TargetRegistry,
@@ -14,11 +15,14 @@ import {
   createTimeline,
   serializeRigCart,
   serializeRigPath,
+  type CartFrame,
   type VirtualCameraDefinition
 } from "../src/core";
+import { createRigDriveState, driveActivation } from "../src/three";
 import {
   collectTimelineEvents,
   createTimelinePlayer,
+  driveTimeline,
   evaluateTimeline,
   seekTimelinePlayer,
   stepTimelinePlayer,
@@ -393,5 +397,85 @@ describe("gap mode", () => {
     expect(evaluateTimeline(holding, context, 5).camera).not.toBeNull();
     expect(evaluateTimeline(releasing, context, 5).camera).toBeNull();
     expect(evaluateTimeline(releasing, context, 2).camera).not.toBeNull();
+  });
+});
+
+describe("driveTimeline playback driver", () => {
+  const context = buildContext();
+
+  it("parks the evaluated pose in the shared brain and publishes cart frames", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+    const player = createTimelinePlayer({ time: 3 });
+    const cartFrames = new Map<string, CartFrame>();
+
+    const result = driveTimeline(state, { camera, timeline: showTimeline, player, context, cartFrames }, 0);
+
+    expect(result.activeVcamId).toBe("wide");
+    expect(camera.position.z).toBeCloseTo(20);
+    // The brain holds the timeline pose — it is the single live-pose holder.
+    expect(state.brain.live?.position.z).toBeCloseTo(20);
+    expect(cartFrames.has("dolly")).toBe(true);
+  });
+
+  it("advances the clock only while playing", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+    const cartFrames = new Map<string, CartFrame>();
+
+    const paused = createTimelinePlayer({ time: 3, playing: false });
+    driveTimeline(state, { camera, timeline: showTimeline, player: paused, context, cartFrames }, 1);
+    expect(paused.time).toBe(3);
+
+    const playing = createTimelinePlayer({ time: 3, playing: true });
+    driveTimeline(state, { camera, timeline: showTimeline, player: playing, context, cartFrames }, 1);
+    expect(playing.time).toBeCloseTo(4);
+  });
+
+  it("returns no camera in a released gap", () => {
+    const state = createRigDriveState();
+    const releasing = createTimeline({
+      duration: 20,
+      gapMode: "release",
+      tracks: [{ type: "camera", id: "cam", blocks: [{ id: "b1", vcamId: "wide", start: 2, end: 6 }] }]
+    });
+    const player = createTimelinePlayer({ time: 8 });
+
+    const result = driveTimeline(
+      state,
+      { camera: new PerspectiveCamera(), timeline: releasing, player, context, cartFrames: new Map() },
+      0
+    );
+    expect(result.cameraSnapshot).toBeNull();
+    expect(state.composer.vcamId).toBeNull();
+  });
+
+  it("hands its live pose to activation for a seamless blend start", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+    const player = createTimelinePlayer({ time: 3 });
+
+    driveTimeline(state, { camera, timeline: showTimeline, player, context, cartFrames: new Map() }, 0);
+    expect(state.brain.live?.position.z).toBeCloseTo(20);
+
+    const close: VirtualCameraDefinition = {
+      id: "close",
+      body: { type: "static", position: { x: 0, y: 0, z: 5 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+    };
+    driveActivation(
+      state,
+      {
+        camera,
+        activeVcamId: "close",
+        vcams: new Map([["close", close]]),
+        context: {},
+        blend: { durationSeconds: 2, curve: "linear" }
+      },
+      1
+    );
+
+    // The blend starts from the timeline's last pose (z=20), not from close's z=5.
+    expect(state.brain.previous?.position.z).toBeCloseTo(20);
+    expect(camera.position.z).toBeCloseTo(12.5);
   });
 });

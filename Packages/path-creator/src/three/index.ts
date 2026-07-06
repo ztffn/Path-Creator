@@ -816,6 +816,66 @@ function isFiniteVec3(value: Vec3): boolean {
   return Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z);
 }
 
+/**
+ * The composer's carried state: the reframe state, the composed orientation
+ * persisted across frames (the composer owns orientation and damps from the
+ * previous frame), and the vcam id it is currently framing (to reseed on a
+ * shot change). Held inside RigDriveState so it survives timeline<->activation.
+ */
+export interface RigComposerState {
+  aim: ScreenComposerState;
+  composedQuat: Quaternion;
+  vcamId: string | null;
+}
+
+export function createRigComposerState(): RigComposerState {
+  return { aim: createScreenComposerState(), composedQuat: new Quaternion(), vcamId: null };
+}
+
+const COMPOSER_STAGE_UP: Vec3 = { x: 0, y: 1, z: 0 };
+
+/**
+ * The stateful aim stage for a `track`+settings (damped composer) vcam. Restores
+ * the composed orientation, reframes toward the resolved target, and saves it
+ * back — so the brain supplies position while the composer owns orientation.
+ * Reseeds the composed orientation from the camera when the driven vcam changes.
+ * Returns the framed world-space target (for overlays), or null when the vcam is
+ * not a damped-composer aim or its target is unavailable.
+ */
+export function stepComposerAim(
+  camera: Camera,
+  definition: VirtualCameraDefinition,
+  state: RigComposerState,
+  resolveTarget: (targetId: string) => Vec3 | null,
+  deltaSeconds: number,
+  up: Vec3 = COMPOSER_STAGE_UP
+): Vec3 | null {
+  const aim = definition.aim;
+  if (!aim || aim.type !== "track" || !aim.settings) {
+    state.vcamId = null;
+    return null;
+  }
+
+  const target = "targetId" in aim.target ? resolveTarget(aim.target.targetId) : aim.target;
+  if (!target) {
+    state.vcamId = null;
+    return null;
+  }
+
+  if (state.vcamId !== definition.id) {
+    // New shot: seed the composed orientation from the current (body) pose,
+    // then let it damp toward the framing from there.
+    state.vcamId = definition.id;
+    state.aim = createScreenComposerState();
+    state.composedQuat.copy(camera.quaternion);
+  }
+
+  camera.quaternion.copy(state.composedQuat);
+  applyScreenComposerAim(camera, target, up, state.aim, aim.settings, deltaSeconds);
+  state.composedQuat.copy(camera.quaternion);
+  return target;
+}
+
 export function blendVirtualCameraSnapshots(
   from: VirtualCameraSnapshot,
   to: VirtualCameraSnapshot,
@@ -1024,6 +1084,112 @@ export function driveVirtualCameraBrain(
 export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): number {
   if (!state.isBlending || state.durationSeconds <= 0) return 1;
   return Math.min(1, Math.max(0, state.elapsedSeconds / state.durationSeconds));
+}
+
+/**
+ * The per-frame state both rig drivers share: one brain (the single live-pose
+ * holder, so a timeline->activation switch blends from the true last pose) and
+ * one composer stage (so aim continuity survives the switch too). `activation`
+ * tracks the last activated shot to detect re-activations. Playback drivers park
+ * the brain each frame; the activation driver blends it.
+ */
+export interface RigDriveState {
+  brain: VirtualCameraBrainState;
+  composer: RigComposerState;
+  activation: { key: number | null; vcamId: string | null };
+}
+
+export function createRigDriveState(initial?: VirtualCameraSnapshot): RigDriveState {
+  return {
+    brain: createVirtualCameraBrainState(initial),
+    composer: createRigComposerState(),
+    activation: { key: null, vcamId: null }
+  };
+}
+
+/** What a driver produced this frame; the host renders + draws overlays from it. */
+export interface RigDriveResult {
+  cameraSnapshot: VirtualCameraSnapshot | null;
+  activeVcamId: string | null;
+  composerTarget: Vec3 | null;
+  blendProgress: number;
+  blendDone: boolean;
+}
+
+export interface RigActivationParams {
+  camera: Camera;
+  /** The shot to make live, or null to idle (e.g. while the user is dragging). */
+  activeVcamId: string | null;
+  vcams: ReadonlyMap<string, VirtualCameraDefinition>;
+  context: VirtualCameraResolveContext;
+  /** Cut by default; supply a duration/curve for an animated activation. */
+  blend?: { durationSeconds?: number; curve?: VirtualCameraBlendCurve };
+  /** Bump to force a re-activation of the same id (e.g. an explicit "activate" press). */
+  activationKey?: number;
+  /** Pose to blend from when a cart-bodied vcam cannot resolve yet. */
+  fallbackSnapshot?: VirtualCameraSnapshot;
+  up?: Vec3;
+}
+
+/**
+ * Interactive-authoring driver: the brain follows an explicit activeVcamId with
+ * a blend request. Neutral input (id + blend + key) — hosts map their editor
+ * state (selection, activate button, transform gate) to it at the edge. A stable
+ * id with a cut blend parks on that vcam (re-resolving as its cart/target move);
+ * a changed id/key blends from the brain's current live pose.
+ */
+export function driveActivation(
+  state: RigDriveState,
+  params: RigActivationParams,
+  deltaSeconds: number
+): RigDriveResult {
+  const { camera, activeVcamId, vcams, context } = params;
+  const definition = activeVcamId ? vcams.get(activeVcamId) ?? null : null;
+  const resolveTarget = context.getTargetPosition ?? (() => null);
+
+  if (!definition) {
+    state.activation = { key: null, vcamId: null };
+    state.composer.vcamId = null;
+    return {
+      cameraSnapshot: state.brain.live ?? null,
+      activeVcamId: null,
+      composerTarget: null,
+      blendProgress: 1,
+      blendDone: true
+    };
+  }
+
+  const key = params.activationKey ?? null;
+  const changed =
+    state.activation.vcamId !== activeVcamId || (key !== null && state.activation.key !== key);
+  if (changed) {
+    const start = resolveVirtualCameraDefinition(definition, context) ?? params.fallbackSnapshot;
+    if (start) {
+      activateVirtualCameraBrain(state.brain, start, {
+        durationSeconds: params.blend?.durationSeconds ?? 0,
+        curve: params.blend?.curve ?? "cut"
+      });
+    }
+    state.activation = { key, vcamId: activeVcamId };
+  }
+
+  const resolved = driveVirtualCameraBrain(camera, state.brain, definition, context, deltaSeconds);
+  const composerTarget = stepComposerAim(
+    camera,
+    definition,
+    state.composer,
+    resolveTarget,
+    deltaSeconds,
+    params.up
+  );
+
+  return {
+    cameraSnapshot: resolved ?? null,
+    activeVcamId,
+    composerTarget,
+    blendProgress: getVirtualCameraBrainProgress(state.brain),
+    blendDone: !state.brain.isBlending
+  };
 }
 
 function setVertex(buffer: number[], index: number, v: Vec3): void {

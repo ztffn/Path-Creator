@@ -21,7 +21,16 @@ import {
   type VirtualCameraDefinition,
   type VirtualCameraSnapshot
 } from "../core";
-import { blendVirtualCameraSnapshots, resolveVirtualCameraDefinition } from "../three";
+import type { Camera } from "three";
+import {
+  applyVirtualCameraSnapshot,
+  blendVirtualCameraSnapshots,
+  resolveVirtualCameraDefinition,
+  setVirtualCameraBrainLive,
+  stepComposerAim,
+  type RigDriveResult,
+  type RigDriveState
+} from "../three";
 
 export type {
   CameraBlock,
@@ -167,6 +176,78 @@ export function stepTimelinePlayer(
 /** Jumps the clock without firing events (scrub semantics). */
 export function seekTimelinePlayer(player: TimelinePlayer, timeSeconds: number): void {
   player.time = Math.max(0, timeSeconds);
+}
+
+export interface RigTimelineParams {
+  camera: Camera;
+  timeline: Timeline;
+  player: TimelinePlayer;
+  context: TimelineRigContext;
+  /** Shared frames map the host reads (glyphs, cart-mounted targets). */
+  cartFrames: Map<string, CartFrame>;
+  up?: Vec3;
+}
+
+/**
+ * Playback driver: step the clock, evaluate the timeline (which does block-to-
+ * block blending itself), publish cart frames, then park the evaluated pose in
+ * the shared brain and apply it — the brain stays the single live-pose holder so
+ * a later activation blends from the true last pose. Runs the composer stage for
+ * the active block's vcam against the same shared state, so aim continuity
+ * survives a timeline->activation switch too (no double-blend: evaluateTimeline
+ * already blended, the brain only parks). Used by playback: twin, elastiq
+ * preview, final render.
+ */
+export function driveTimeline(
+  state: RigDriveState,
+  params: RigTimelineParams,
+  deltaSeconds: number
+): RigDriveResult {
+  const { camera, timeline, player, context, cartFrames } = params;
+
+  if (player.playing) stepTimelinePlayer(player, timeline, deltaSeconds);
+  const sample = evaluateTimeline(timeline, context, player.time);
+
+  for (const [cartId, frame] of sample.cartFrames) cartFrames.set(cartId, frame);
+
+  if (!sample.camera) {
+    // Released gap: nothing drives the camera; the host holds the last pose.
+    state.composer.vcamId = null;
+    return {
+      cameraSnapshot: null,
+      activeVcamId: null,
+      composerTarget: null,
+      blendProgress: sample.blendProgress,
+      blendDone: true
+    };
+  }
+
+  setVirtualCameraBrainLive(state.brain, sample.camera);
+  applyVirtualCameraSnapshot(camera, sample.camera);
+
+  const activeVcamId = sample.activeBlock?.block.vcamId ?? null;
+  const definition = activeVcamId ? context.vcams.get(activeVcamId) ?? null : null;
+  let composerTarget: Vec3 | null = null;
+  if (definition) {
+    composerTarget = stepComposerAim(
+      camera,
+      definition,
+      state.composer,
+      context.getTargetPosition ?? (() => null),
+      deltaSeconds,
+      params.up
+    );
+  } else {
+    state.composer.vcamId = null;
+  }
+
+  return {
+    cameraSnapshot: sample.camera,
+    activeVcamId,
+    composerTarget,
+    blendProgress: sample.blendProgress,
+    blendDone: true
+  };
 }
 
 function evaluateCameraTrack(

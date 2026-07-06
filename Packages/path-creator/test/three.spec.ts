@@ -6,7 +6,8 @@ import {
   createPathCart,
   sampleCartFrame,
   type ComposerSettings,
-  type Vec3
+  type Vec3,
+  type VirtualCameraDefinition
 } from "../src/core";
 import {
   activateVirtualCameraBrain,
@@ -18,9 +19,13 @@ import {
   buildRoadMeshBuffers,
   buildTubeMeshBuffers,
   captureVirtualCameraSnapshot,
+  createRigComposerState,
+  createRigDriveState,
   createScreenComposerState,
   createVirtualCameraBrainState,
+  driveActivation,
   driveVirtualCameraBrain,
+  stepComposerAim,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
   applyVirtualCameraNoise,
@@ -730,6 +735,120 @@ describe("screen composer aim", () => {
     expect(Math.abs(slowState.smoothedVelocity?.x ?? 0)).toBeLessThan(
       Math.abs(fastState.smoothedVelocity?.x ?? 0)
     );
+  });
+});
+
+describe("composer stage", () => {
+  const trackedDef = (id: string): VirtualCameraDefinition => ({
+    id,
+    body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+    aim: {
+      type: "track",
+      target: { targetId: "t" },
+      settings: composer({ dampingX: 0, dampingY: 0 })
+    }
+  });
+
+  it("frames the resolved target and adopts the vcam id", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const state = createRigComposerState();
+    const target = targetAtScreen(camera, { x: 0.3, y: 0 });
+
+    const out = stepComposerAim(camera, trackedDef("cam"), state, (id) => (id === "t" ? target : null), 1 / 60);
+
+    expect(out).toEqual(target);
+    expect(state.vcamId).toBe("cam");
+    // Undamped: reframed to the dead-zone edge, well short of the raw 0.3.
+    expect(screenPosition(camera, target).x).toBeLessThan(0.2);
+  });
+
+  it("skips vcams without a damped-composer aim and clears its id", () => {
+    const camera = new PerspectiveCamera();
+    const state = createRigComposerState();
+    state.vcamId = "stale";
+    const plain: VirtualCameraDefinition = {
+      id: "x",
+      body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+    };
+
+    expect(stepComposerAim(camera, plain, state, () => null, 1 / 60)).toBeNull();
+    expect(state.vcamId).toBeNull();
+  });
+
+  it("reseeds the composed orientation when the vcam changes", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const state = createRigComposerState();
+    const target = targetAtScreen(camera, { x: 0.3, y: 0 });
+    const resolve = (id: string) => (id === "t" ? target : null);
+
+    stepComposerAim(camera, trackedDef("a"), state, resolve, 1 / 60);
+    const afterA = camera.quaternion.clone();
+
+    // Switching vcam reseeds from the current pose, so a fresh (identity body)
+    // frame re-derives rather than continuing to damp from A's composed pose.
+    camera.quaternion.set(0, 0, 0, 1);
+    stepComposerAim(camera, trackedDef("b"), state, resolve, 1 / 60);
+    expect(state.vcamId).toBe("b");
+    expect(camera.quaternion.angleTo(afterA)).toBeCloseTo(0, 6);
+  });
+});
+
+describe("driveActivation", () => {
+  const vcamA: VirtualCameraDefinition = {
+    id: "a",
+    body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+  };
+  const vcamB: VirtualCameraDefinition = {
+    id: "b",
+    body: { type: "static", position: { x: 10, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+  };
+  const vcams = new Map<string, VirtualCameraDefinition>([
+    ["a", vcamA],
+    ["b", vcamB]
+  ]);
+
+  it("cuts to a shot then blends from the live pose to the next", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+
+    driveActivation(state, { camera, activeVcamId: "a", vcams, context: {} }, 0);
+    expect(camera.position.x).toBeCloseTo(0);
+
+    const blend = { durationSeconds: 2, curve: "linear" as const };
+    driveActivation(state, { camera, activeVcamId: "b", vcams, context: {}, blend }, 1);
+    expect(camera.position.x).toBeCloseTo(5);
+    driveActivation(state, { camera, activeVcamId: "b", vcams, context: {}, blend }, 1);
+    expect(camera.position.x).toBeCloseTo(10);
+    expect(state.brain.isBlending).toBe(false);
+  });
+
+  it("re-activates the same id when the key bumps", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+
+    driveActivation(state, { camera, activeVcamId: "a", vcams, context: {} }, 0);
+    driveActivation(
+      state,
+      { camera, activeVcamId: "b", vcams, context: {}, blend: { durationSeconds: 2, curve: "linear" }, activationKey: 1 },
+      1
+    );
+    expect(camera.position.x).toBeCloseTo(5);
+
+    // Same id, new key, default cut -> snap to B instead of continuing the blend.
+    driveActivation(state, { camera, activeVcamId: "b", vcams, context: {}, activationKey: 2 }, 0);
+    expect(camera.position.x).toBeCloseTo(10);
+    expect(state.brain.isBlending).toBe(false);
+  });
+
+  it("idles on a null id and holds the last live pose", () => {
+    const state = createRigDriveState();
+    const camera = new PerspectiveCamera();
+    driveActivation(state, { camera, activeVcamId: "b", vcams, context: {} }, 0);
+
+    const result = driveActivation(state, { camera, activeVcamId: null, vcams, context: {} }, 1);
+    expect(result.activeVcamId).toBeNull();
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(10);
+    expect(state.activation.vcamId).toBeNull();
   });
 });
 
