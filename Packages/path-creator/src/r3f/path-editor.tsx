@@ -3,7 +3,7 @@
 // gizmos, anchor/handle glyphs, and the drag/rotate PivotControls. Themable via
 // PathEditorProps.theme. The subtree renders inside <EditorHelpers>, so hosts
 // must call useEditorHelpersVisible(editing) on their viewport camera to see it.
-import { Billboard, PivotControls } from "@react-three/drei";
+import { Billboard } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Euler, Matrix4, Quaternion, Vector3 } from "three";
 import {
@@ -18,7 +18,7 @@ import { EditorHelpers } from "./editor";
 import { PathVisual, buildPathLinePoints } from "./path-visual";
 import { RigLabel } from "./rig-label";
 import { PivotGizmo, type RigGizmoComponent } from "./rig-gizmo";
-import { RigLine, useIsWebGPURenderer } from "./rig-line";
+import { RigLine } from "./rig-line";
 
 export interface PathEditorTheme {
   activeLine?: string;
@@ -242,9 +242,6 @@ export function PathEditor({
   onClearSelection
 }: PathEditorProps): ReactNode {
   const t: Required<PathEditorTheme> = { ...DEFAULT_THEME, ...theme };
-  // The midpoint (normal-rotation) pivot is still drei PivotControls; hide it on
-  // WebGPU to avoid the fat-line crash until it's routed through RigGizmo too.
-  const isWebGPU = useIsWebGPURenderer();
 
   // The two recompute effects skip while a gizmo drag is live; that state is
   // owned here (the host learns of it via onTransformingChange for OrbitControls).
@@ -413,22 +410,18 @@ export function PathEditor({
         );
       })}
 
-      {selectedMidpoint && !isWebGPU ? (
-        <PivotControls
-          fixed
-          scale={65}
-          lineWidth={2}
-          depthTest={false}
-          disableAxes
-          disableSliders
-          disableScaling
-          anchor={[0, 0, 0]}
-          offset={[
+      {selectedMidpoint ? (
+        <HandleGizmo
+          matrix={new Matrix4().makeTranslation(
             selectedMidpoint.midpoint.x,
             selectedMidpoint.midpoint.y,
             selectedMidpoint.midpoint.z
-          ]}
+          )}
           rotation={selectedMidpoint.rotation}
+          scale={65}
+          anchor={[0, 0, 0]}
+          disableTranslation
+          disableScaling
           onDragStart={() => setTransforming(true)}
           onDragEnd={() => setTransforming(false)}
           onDrag={(_, deltaL) => {
@@ -455,7 +448,7 @@ export function PathEditor({
             <sphereGeometry args={[0.001, 4, 4]} />
             <meshBasicMaterial transparent opacity={0} />
           </mesh>
-        </PivotControls>
+        </HandleGizmo>
       ) : null}
 
       {Array.from({ length: bezierPath.numPoints }).map((_, i) => {

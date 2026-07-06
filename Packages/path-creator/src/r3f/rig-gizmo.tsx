@@ -21,6 +21,9 @@ export interface RigGizmoProps {
   onDragEnd?: () => void;
   disableRotations?: boolean;
   disableScaling?: boolean;
+  /** Rotation-only: hide the translate arrows + plane sliders (e.g. the midpoint
+   *  normal-rotation pivot). Maps to disableAxes + disableSliders. */
+  disableTranslation?: boolean;
   /** Screen-constant gizmo size (pixels, with `fixed`). */
   scale?: number;
   children?: ReactNode;
@@ -38,6 +41,7 @@ export const PivotGizmo: RigGizmoComponent = ({
   onDragEnd,
   disableRotations,
   disableScaling,
+  disableTranslation,
   scale = 75,
   children
 }) => (
@@ -52,6 +56,7 @@ export const PivotGizmo: RigGizmoComponent = ({
     {...(anchor && { anchor })}
     {...(disableRotations && { disableRotations: true })}
     {...(disableScaling && { disableScaling: true })}
+    {...(disableTranslation && { disableAxes: true, disableSliders: true })}
     {...(onDragStart && { onDragStart })}
     {...(onDragEnd && { onDragEnd })}
     onDrag={(local, deltaLocal) => onDrag(local, deltaLocal)}
@@ -79,6 +84,7 @@ export const TransformGizmo: RigGizmoComponent = ({
   onDragEnd,
   disableRotations,
   disableScaling,
+  disableTranslation,
   scale = 75,
   children
 }) => (
@@ -93,6 +99,7 @@ export const TransformGizmo: RigGizmoComponent = ({
     {...(anchor && { anchor })}
     {...(disableRotations && { disableRotations: true })}
     {...(disableScaling && { disableScaling: true })}
+    {...(disableTranslation && { disableAxes: true, disableSliders: true })}
     {...(onDragStart && { onDragStart })}
     {...(onDragEnd && { onDragEnd })}
     onDrag={(local, deltaLocal) => onDrag(local, deltaLocal)}
