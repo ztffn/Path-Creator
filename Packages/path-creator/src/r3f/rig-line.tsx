@@ -23,6 +23,11 @@ function isWebGPURenderer(gl: unknown): boolean {
   return Boolean((gl as { isWebGPURenderer?: boolean } | null)?.isWebGPURenderer);
 }
 
+/** True when the R3F canvas runs three's WebGPU renderer (vs WebGL). */
+export function useIsWebGPURenderer(): boolean {
+  return isWebGPURenderer(useThree((state) => state.gl));
+}
+
 export function RigLine({
   points,
   color = "#ffffff",

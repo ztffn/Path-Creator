@@ -16,7 +16,8 @@ import {
 import { type DollyRailOptions } from "../three";
 import { EditorHelpers } from "./editor";
 import { PathVisual, buildPathLinePoints } from "./path-visual";
-import { RigLine } from "./rig-line";
+import { PivotGizmo, type RigGizmoComponent } from "./rig-gizmo";
+import { RigLine, useIsWebGPURenderer } from "./rig-line";
 
 export interface PathEditorTheme {
   activeLine?: string;
@@ -49,6 +50,9 @@ export interface PathEditorProps {
   pathStyle?: "line" | "rail";
   /** Tuning for the "rail" style. */
   railOptions?: DollyRailOptions;
+  /** Drag gizmo for the selected handle; defaults to drei PivotControls. A
+   *  WebGPU host injects TransformGizmo. (The midpoint pivot is WebGL-only.) */
+  gizmo?: RigGizmoComponent;
   onSelectHandle: (index: number | null) => void;
   onSelectMidpoint: (index: number | null) => void;
   onMovePoint: (index: number, point: Vec3) => void;
@@ -220,6 +224,7 @@ export function PathEditor({
   theme,
   pathStyle = "line",
   railOptions,
+  gizmo: HandleGizmo = PivotGizmo,
   onSelectHandle,
   onSelectMidpoint,
   onMovePoint,
@@ -229,6 +234,9 @@ export function PathEditor({
   onClearSelection
 }: PathEditorProps): ReactNode {
   const t: Required<PathEditorTheme> = { ...DEFAULT_THEME, ...theme };
+  // The midpoint (normal-rotation) pivot is still drei PivotControls; hide it on
+  // WebGPU to avoid the fat-line crash until it's routed through RigGizmo too.
+  const isWebGPU = useIsWebGPURenderer();
 
   // The two recompute effects skip while a gizmo drag is live; that state is
   // owned here (the host learns of it via onTransformingChange for OrbitControls).
@@ -394,7 +402,7 @@ export function PathEditor({
         );
       })}
 
-      {selectedMidpoint ? (
+      {selectedMidpoint && !isWebGPU ? (
         <PivotControls
           fixed
           scale={65}
@@ -499,7 +507,7 @@ export function PathEditor({
                   <meshBasicMaterial color={t.anchor} transparent opacity={0.55} side={2} />
                 </mesh>
               ) : null}
-              {isAnchor ? (
+              {isAnchor && !isWebGPU ? (
                 <Text
                   position={[0, 0, 0.002]}
                   fontSize={0.09}
@@ -565,7 +573,7 @@ export function PathEditor({
                 depthTest={false}
               />
             </mesh>
-            {isAnchor ? (
+            {isAnchor && !isWebGPU ? (
               <Text
                 position={[0, 0, 0.002]}
                 fontSize={0.09}
@@ -596,13 +604,10 @@ export function PathEditor({
       })}
 
       {selectedHandleIndex !== null && selectedHandlePoint ? (
-        <PivotControls
+        <HandleGizmo
+          key={selectedHandleIndex}
           matrix={handlePivotMatrix}
-          autoTransform={false}
-          fixed
           scale={65}
-          lineWidth={2}
-          depthTest={false}
           disableRotations={!selectedHandleIsAnchor}
           disableScaling={!selectedHandleIsAnchor}
           anchor={[0, 0, 0]}
@@ -695,7 +700,7 @@ export function PathEditor({
             <sphereGeometry args={[0.001, 4, 4]} />
             <meshBasicMaterial transparent opacity={0} />
           </mesh>
-        </PivotControls>
+        </HandleGizmo>
       ) : null}
 
       <mesh
