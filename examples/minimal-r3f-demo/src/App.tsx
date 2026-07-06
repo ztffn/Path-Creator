@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Line, OrbitControls, PivotControls, Text } from "@react-three/drei";
+import { OrbitControls, PivotControls } from "@react-three/drei";
 import {
   BezierPath,
   ControlMode,
@@ -19,12 +19,13 @@ import {
 } from "@huma/path-creator/core";
 import {
   CartGizmo,
+  CartVcamGlyphRig,
   EditorHelpers,
   PathEditor,
   PointTargets,
+  VirtualCameraGlyph,
   getSuggestedNextAnchor,
   normalizeAnchorScales,
-  useCartFrameFollow,
   useEditorHelpersVisible,
   useRegisteredTargets,
   useRigDrive,
@@ -690,121 +691,6 @@ function DollyCameraPip({
   }, 1);
 
   return null;
-}
-
-function CartVcamGlyphRig({
-  framesRef,
-  cartId,
-  selected,
-  offset,
-  onOffsetChange,
-  onTransformingChange,
-  children
-}: {
-  framesRef: { current: Map<string, CartFrame> };
-  cartId: string;
-  selected: boolean;
-  offset: Vec3;
-  onOffsetChange: (offset: Vec3) => void;
-  onTransformingChange: (isTransforming: boolean) => void;
-  children: ReactNode;
-}) {
-  const groupRef = useRef<Group>(null);
-  const offsetMatrix = useMemo(
-    () => new Matrix4().makeTranslation(offset.x, offset.y, offset.z),
-    [offset.x, offset.y, offset.z]
-  );
-
-  // The rig group sits ON the rail with the cart's frame basis as its local axes
-  // (x=right, y=up, z=forward), so the pivot's local translation IS the rail-local
-  // offset the cart body applies.
-  useCartFrameFollow(groupRef, framesRef, cartId);
-
-  // Camera glyphs face -Z; the frame's forward is local +Z here.
-  const glyph = <group rotation={[0, Math.PI, 0]}>{children}</group>;
-
-  return (
-    <group ref={groupRef}>
-      {selected ? (
-        <PivotControls
-          {...VCAM_PIVOT_PROPS}
-          matrix={offsetMatrix}
-          disableRotations
-          disableScaling
-          onDragStart={() => onTransformingChange(true)}
-          onDragEnd={() => onTransformingChange(false)}
-          onDrag={(matrix) => {
-            onOffsetChange({
-              x: matrix.elements[12],
-              y: matrix.elements[13],
-              z: matrix.elements[14]
-            });
-          }}
-        >
-          {glyph}
-        </PivotControls>
-      ) : (
-        <group position={[offset.x, offset.y, offset.z]}>{glyph}</group>
-      )}
-    </group>
-  );
-}
-
-function VirtualCameraGlyph({
-  name,
-  selected,
-  active,
-  onSelect
-}: {
-  name: string;
-  selected: boolean;
-  active: boolean;
-  onSelect: () => void;
-}) {
-  // One hue per state: green = live, orange = selected, slate = idle.
-  const color = active ? "#22c55e" : selected ? "#f97316" : "#64748b";
-  const emissiveIntensity = active ? 0.4 : selected ? 0.3 : 0.12;
-
-  return (
-    <group
-      onPointerDown={(event) => {
-        event.stopPropagation();
-        onSelect();
-      }}
-    >
-      <mesh>
-        <boxGeometry args={[0.18, 0.12, 0.1]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={emissiveIntensity} />
-      </mesh>
-      <mesh position={[0, 0, -0.16]} rotation={[Math.PI / 2, 0, 0]}>
-        <coneGeometry args={[0.08, 0.18, 4]} />
-        <meshStandardMaterial color={color} emissive={color} emissiveIntensity={emissiveIntensity} />
-      </mesh>
-      <Line
-        points={[
-          [-0.16, -0.1, -0.34],
-          [0.16, -0.1, -0.34],
-          [0.16, 0.1, -0.34],
-          [-0.16, 0.1, -0.34],
-          [-0.16, -0.1, -0.34]
-        ]}
-        color={color}
-        lineWidth={1.5}
-      />
-      <Text
-        position={[0, 0.18, 0]}
-        fontSize={0.08}
-        color={color}
-        anchorX="center"
-        anchorY="middle"
-        renderOrder={999}
-        material-depthTest={false}
-        material-depthWrite={false}
-      >
-        {name}
-      </Text>
-    </group>
-  );
 }
 
 // The PiP overlay chrome: the composer zone overview (dead/soft/hard) plus the

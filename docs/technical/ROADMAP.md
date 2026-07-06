@@ -45,9 +45,11 @@ Follow-ups:
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
-- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** drei `PivotControls` (drag) is
-  still fat-line/WebGL-only; offer three `TransformControls` as the default and
-  make the gizmo pluggable (`gizmo?: 'transform' | 'pivot' | custom`).
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *Seam started:* `RigGizmo`
+  (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo` default;
+  `CartVcamGlyphRig` takes an injectable `gizmo` prop. Remaining: a three
+  `TransformControls`-based `RigGizmoComponent` (WebGPU-safe; needs an interactive
+  oracle to verify), and routing `PathEditor`/`PointTargets`' pivots through the seam.
 - **WebGPU-safe text/labels.** anchor/dolly/target labels use drei/troika `<Text>`
   (unproven on WebGPU); add a sprite/canvas fallback or make labels optional.
 - **WebGPU validation example (debrief P0.3).** RigLine's WebGPU path is safe by
