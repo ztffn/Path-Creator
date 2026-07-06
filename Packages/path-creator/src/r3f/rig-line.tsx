@@ -17,6 +17,10 @@ export interface RigLineProps {
   dashed?: boolean;
   dashSize?: number;
   gapSize?: number;
+  /** Bump when `points` mutate to the SAME length. On WebGPU a same-size buffer's
+   *  new contents don't re-upload, so the line goes stale (e.g. rail ties lagging
+   *  a drag); a changed version forces a fresh geometry. */
+  version?: number;
 }
 
 function isWebGPURenderer(gl: unknown): boolean {
@@ -35,7 +39,8 @@ export function RigLine({
   segments = false,
   dashed = false,
   dashSize,
-  gapSize
+  gapSize,
+  version
 }: RigLineProps) {
   const gl = useThree((state) => state.gl);
 
@@ -43,7 +48,7 @@ export function RigLine({
 
   // WebGPU (or any non-WebGL backend): thin core line — no drei, no LineMaterial.
   if (isWebGPURenderer(gl)) {
-    return <ThinLine points={points} color={color} segments={segments} />;
+    return <ThinLine points={points} color={color} segments={segments} {...(version !== undefined && { version })} />;
   }
 
   // WebGL: drei's fat line (the only place the package touches drei for lines).
@@ -67,11 +72,13 @@ export function RigLine({
 function ThinLine({
   points,
   color,
-  segments
+  segments,
+  version
 }: {
   points: ReadonlyArray<[number, number, number]>;
   color: string;
   segments: boolean;
+  version?: number;
 }) {
   const flat = useMemo(() => {
     const array = new Float32Array(points.length * 3);
@@ -88,13 +95,19 @@ function ThinLine({
       <bufferAttribute attach="attributes-position" args={[flat, 3]} count={points.length} />
     </bufferGeometry>
   );
+  // Remount on either a vertex-count change OR a content-version bump. WebGPU
+  // won't reallocate a grown buffer in place ("requires a larger buffer" → device
+  // loss), and won't re-upload a same-size buffer's new contents (stale geometry,
+  // e.g. rail ties lagging a drag). A fresh element sidesteps both. Key is stable
+  // while nothing changes, so idle/playback never remounts.
+  const key = `${version ?? 0}-${points.length}`;
   return segments ? (
-    <lineSegments>
+    <lineSegments key={key}>
       {geometry}
       <lineBasicMaterial color={color} />
     </lineSegments>
   ) : (
-    <line>
+    <line key={key}>
       {geometry}
       <lineBasicMaterial color={color} />
     </line>

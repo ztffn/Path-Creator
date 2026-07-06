@@ -63,14 +63,14 @@ export function PathVisual({
   if (railLines) {
     return (
       <>
-        <RigLine points={railLines.left} color={color} lineWidth={lineWidth} />
-        <RigLine points={railLines.right} color={color} lineWidth={lineWidth} />
+        <RigLine points={railLines.left} color={color} lineWidth={lineWidth} {...(version !== undefined && { version })} />
+        <RigLine points={railLines.right} color={color} lineWidth={lineWidth} {...(version !== undefined && { version })} />
         {railLines.ties.length >= 2 ? (
-          <RigLine segments points={railLines.ties} color={tieColor} lineWidth={tieWidth} />
+          <RigLine segments points={railLines.ties} color={tieColor} lineWidth={tieWidth} {...(version !== undefined && { version })} />
         ) : null}
       </>
     );
   }
 
-  return <RigLine points={centrePoints} color={color} lineWidth={lineWidth} />;
+  return <RigLine points={centrePoints} color={color} lineWidth={lineWidth} {...(version !== undefined && { version })} />;
 }

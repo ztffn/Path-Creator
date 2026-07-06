@@ -365,7 +365,10 @@ export function PathEditor({
         />
       ))}
 
-      <lineSegments>
+      {/* key on pathVersion: WebGPU won't re-upload a same-size buffer's new
+          contents, so the control lines would stay stale during a drag; a fresh
+          element forces the new positions. */}
+      <lineSegments key={`ctrl-${pathVersion}`}>
         <bufferGeometry>
           <bufferAttribute
             attach="attributes-position"
@@ -378,7 +381,7 @@ export function PathEditor({
 
       {/* The rail already shows banking, so the normal indicators are redundant there. */}
       {pathStyle === "rail" ? null : (
-        <lineSegments>
+        <lineSegments key={`normals-${pathVersion}`}>
           <bufferGeometry>
             <bufferAttribute
               attach="attributes-position"
