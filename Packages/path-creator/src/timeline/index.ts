@@ -25,9 +25,11 @@ import type { Camera } from "three";
 import {
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
+  driveActivation,
   resolveVirtualCameraDefinition,
   setVirtualCameraBrainLive,
   stepComposerAim,
+  type RigActivationParams,
   type RigDriveResult,
   type RigDriveState
 } from "../three";
@@ -248,6 +250,52 @@ export function driveTimeline(
     blendProgress: sample.blendProgress,
     blendDone: true
   };
+}
+
+/**
+ * What to drive this frame. `idle` holds the last pose (nothing drives the
+ * camera); `timeline` plays the show; `activation` follows an explicit shot.
+ * The camera is passed to driveRig(), so intents omit it.
+ */
+export type RigDriveIntent =
+  | { mode: "idle" }
+  | ({ mode: "timeline" } & Omit<RigTimelineParams, "camera">)
+  | ({ mode: "activation" } & Omit<RigActivationParams, "camera">);
+
+const IDLE_RESULT: RigDriveResult = {
+  cameraSnapshot: null,
+  activeVcamId: null,
+  composerTarget: null,
+  blendProgress: 1,
+  blendDone: true
+};
+
+/**
+ * Framework-agnostic drive dispatch: routes a per-frame RigDriveIntent to the
+ * right driver (idle / timeline / activation) against one shared RigDriveState,
+ * so any host drives the rig with a single call — the r3f `useRigDrive` hook is a
+ * thin wrapper, and a non-r3f runtime (headless render, elastiq) calls this
+ * directly with its own camera + loop. One shared brain + composer means position
+ * and aim continuity survive a timeline<->activation switch.
+ */
+export function driveRig(
+  state: RigDriveState,
+  camera: Camera,
+  intent: RigDriveIntent,
+  deltaSeconds: number
+): RigDriveResult {
+  if (intent.mode === "timeline") {
+    const { mode, ...params } = intent;
+    return driveTimeline(state, { camera, ...params }, deltaSeconds);
+  }
+  if (intent.mode === "activation") {
+    const { mode, ...params } = intent;
+    return driveActivation(state, { camera, ...params }, deltaSeconds);
+  }
+  // Idle: mirror the activation idle path so re-entry re-activates cleanly.
+  state.composer.vcamId = null;
+  state.activation = { key: null, vcamId: null };
+  return { ...IDLE_RESULT, cameraSnapshot: state.brain.live ?? null };
 }
 
 function evaluateCameraTrack(
