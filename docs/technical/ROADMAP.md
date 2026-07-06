@@ -45,13 +45,20 @@ Follow-ups:
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
-- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *DONE.*
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *DONE — translate + rotate.*
   `RigGizmo` (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo`
-  default + `TransformGizmo` (three `TransformControls`, WebGPU-safe). Both `PathEditor`
-  (handle pivot) and `PointTargets` (target pivot) route through the seam and are
-  validated editable on WebGPU (select + drag move real data, no device loss).
-  Note: TransformGizmo enables all layers on its picking raycaster so it stays
-  grabbable when a host parks it on the reserved EditorHelpers layer.
+  default + `TransformGizmo`. Since three's `TransformControls` is single-mode,
+  TransformGizmo **stacks two** on one object (translate arrows + rotate rings shown
+  together — the PivotControls "all handles at once" feel, but LineBasicMaterial axes
+  that auto-map on WebGPU); the idle one yields mid-drag and it reports the drag delta
+  so a rotate drag swings an anchor's control points. Rotate is dropped when
+  `disableRotations` (control handles / point targets → translate only). Both
+  `PathEditor` and `PointTargets` route through the seam; validated on WebGPU
+  (translate moves, rotate ring rotates + co-moves handles, no device loss). Enables
+  all layers on the picking raycaster so it stays grabbable under EditorHelpers.
+  Remaining: midpoint normal-rotation pivot still uses drei PivotControls (gated off
+  on WebGPU) — route it through the seam too (rotation-only) to close the last gate;
+  optional scale mode (anchor scale) is a further add.
 - **Glyph-geometry churn on WebGPU — FIXED.** Clicking an anchor lost the WebGPU
   device (`DrawIndexed(168)`, "vertex buffer slot 0 not set"). Root cause: PathEditor's
   handle rings/circles changed their `ringGeometry`/`circleGeometry` **args** (and
