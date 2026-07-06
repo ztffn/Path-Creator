@@ -50,8 +50,11 @@ Follow-ups:
   `CartVcamGlyphRig` takes an injectable `gizmo` prop. Remaining: a three
   `TransformControls`-based `RigGizmoComponent` (WebGPU-safe; needs an interactive
   oracle to verify), and routing `PathEditor`/`PointTargets`' pivots through the seam.
-- **WebGPU-safe text/labels.** anchor/dolly/target labels use drei/troika `<Text>`
-  (unproven on WebGPU); add a sprite/canvas fallback or make labels optional.
+- **WebGPU-safe text/labels (RigLabel).** CONFIRMED broken: troika `<Text>` crashes
+  the WebGPU renderer (infinite `drawIndexed` device loss). Labels are gated off on
+  WebGPU for now (PathEditor anchor numbers via useIsWebGPURenderer). Build a
+  WebGPU-safe `RigLabel` (Sprite + CanvasTexture, auto-maps both backends) and route
+  all label usages (PathEditor, CartGizmo, VirtualCameraGlyph, PointTargets) through it.
 - **WebGPU validation example (debrief P0.3).** RigLine's WebGPU path is safe by
   construction but only exercised on the WebGL demo today — add a WebGPU example so
   B-class regressions are caught in-repo, not in a consumer's browser.
