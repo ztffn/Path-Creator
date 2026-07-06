@@ -3,12 +3,13 @@
 // follows the shared live cart frame each tick (not draggable); a static point
 // target is positioned from state and moved via a PivotControls gizmo. Selection
 // ring and gizmo are authoring-only (EditorHelpers layer); the sphere can hide.
-import { Billboard, PivotControls } from "@react-three/drei";
+import { Billboard } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useRef, type ReactNode } from "react";
 import { Matrix4, type Group } from "three";
 import type { CartFrame, TargetRegistry, Vec3 } from "../core";
 import { EditorHelpers } from "./editor";
+import { PivotGizmo, type RigGizmoComponent } from "./rig-gizmo";
 
 export type EditableTarget =
   | { id: string; name?: string; type: "point"; position: Vec3; visibleInRender?: boolean }
@@ -26,6 +27,10 @@ export interface PointTargetsProps {
   framesRef: { current: Map<string, CartFrame> };
   selectedId: string | null;
   theme?: PointTargetsTheme;
+  /** Drag gizmo for the selected static target; defaults to drei PivotControls.
+   *  A WebGPU host injects TransformGizmo (drei PivotControls' fat lines crash
+   *  the WebGPU renderer). */
+  gizmo?: RigGizmoComponent;
   onSelect: (id: string | null) => void;
   onMove: (id: string, position: Vec3) => void;
   onTransformingChange?: (transforming: boolean) => void;
@@ -37,14 +42,6 @@ const DEFAULT_THEME: Required<PointTargetsTheme> = {
   label: "#06b6d4"
 };
 
-const PIVOT_PROPS = {
-  autoTransform: false,
-  fixed: true,
-  scale: 75,
-  lineWidth: 2,
-  depthTest: false
-} as const;
-
 // One target: a sphere on layer 0 (seen by the render) when visible, else on the
 // editor-helpers layer (authoring-only). Selection ring + move gizmo are always
 // authoring-only. A cart-mounted target follows the live cart frame each tick
@@ -54,6 +51,7 @@ function TargetView({
   isSelected,
   framesRef,
   theme,
+  gizmo: Gizmo,
   onSelect,
   onMove,
   onTransformingChange
@@ -62,6 +60,7 @@ function TargetView({
   isSelected: boolean;
   framesRef: { current: Map<string, CartFrame> };
   theme: Required<PointTargetsTheme>;
+  gizmo: RigGizmoComponent;
   onSelect: (id: string | null) => void;
   onMove: (id: string, position: Vec3) => void;
   onTransformingChange?: ((isTransforming: boolean) => void) | undefined;
@@ -117,8 +116,8 @@ function TargetView({
       <group position={[target.position.x, target.position.y, target.position.z]}>{body}</group>
       {isSelected ? (
         <EditorHelpers>
-          <PivotControls
-            {...PIVOT_PROPS}
+          <Gizmo
+            scale={75}
             matrix={new Matrix4().makeTranslation(target.position.x, target.position.y, target.position.z)}
             disableRotations
             disableScaling
@@ -132,7 +131,7 @@ function TargetView({
               <sphereGeometry args={[0.001, 4, 4]} />
               <meshBasicMaterial transparent opacity={0} />
             </mesh>
-          </PivotControls>
+          </Gizmo>
         </EditorHelpers>
       ) : null}
     </>
@@ -151,6 +150,7 @@ export function PointTargets({
   framesRef,
   selectedId,
   theme,
+  gizmo = PivotGizmo,
   onSelect,
   onMove,
   onTransformingChange
@@ -188,6 +188,7 @@ export function PointTargets({
           isSelected={t.id === selectedId}
           framesRef={framesRef}
           theme={resolvedTheme}
+          gizmo={gizmo}
           onSelect={onSelect}
           onMove={onMove}
           onTransformingChange={onTransformingChange}
