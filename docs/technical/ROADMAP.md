@@ -45,19 +45,31 @@ Follow-ups:
 - **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
   `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
   peer-optional) — the "graceful fallback with no drei" goal.
-- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *Seam started:* `RigGizmo`
-  (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo` default;
-  `CartVcamGlyphRig` takes an injectable `gizmo` prop. Remaining: a three
-  `TransformControls`-based `RigGizmoComponent` (WebGPU-safe; needs an interactive
-  oracle to verify), and routing `PathEditor`/`PointTargets`' pivots through the seam.
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** *Seam + TransformGizmo DONE.*
+  `RigGizmo` (`src/r3f/rig-gizmo.tsx`) — `RigGizmoComponent` interface + `PivotGizmo`
+  default + `TransformGizmo` (three `TransformControls`, WebGPU-safe). `PathEditor`'s
+  handle pivot is routed through the seam and validated editable on WebGPU. Remaining:
+  route `PointTargets`' pivot through the seam too.
+- **Glyph-geometry churn on WebGPU — FIXED.** Clicking an anchor lost the WebGPU
+  device (`DrawIndexed(168)`, "vertex buffer slot 0 not set"). Root cause: PathEditor's
+  handle rings/circles changed their `ringGeometry`/`circleGeometry` **args** (and
+  mounted/unmounted the highlight ring) on selection, so three's WebGPU backend
+  disposed/recreated GPU buffers mid-frame and drew with an unbound vertex buffer.
+  Fix: constant geometry args for every glyph; selection/scale now via mesh `scale` +
+  material `opacity` (matrix/uniform updates, no buffer churn). Rule for this package:
+  **never vary a mesh's geometry `args` per-interaction on a WebGPU render path — vary
+  scale/opacity/color instead.**
 - **WebGPU-safe text/labels (RigLabel).** CONFIRMED broken: troika `<Text>` crashes
   the WebGPU renderer (infinite `drawIndexed` device loss). Labels are gated off on
   WebGPU for now (PathEditor anchor numbers via useIsWebGPURenderer). Build a
   WebGPU-safe `RigLabel` (Sprite + CanvasTexture, auto-maps both backends) and route
   all label usages (PathEditor, CartGizmo, VirtualCameraGlyph, PointTargets) through it.
-- **WebGPU validation example (debrief P0.3).** RigLine's WebGPU path is safe by
-  construction but only exercised on the WebGL demo today — add a WebGPU example so
-  B-class regressions are caught in-repo, not in a consumer's browser.
+- **WebGPU validation example (debrief P0.3).** *DONE.* `examples/webgpu-check` now
+  mounts the full `PathEditor` under `WebGPURenderer` and is render + select + drag
+  interactive (validated headless & headed on Apple Metal-3 via a Playwright oracle
+  driving system Chrome). Labels/midpoint pivot gated off pending RigLabel. Note: the
+  package DIST must be rebuilt for the example to pick up changes (a stale dist with
+  ungated troika text is what first surfaced the device-loss chain).
 
 ### 3c-4 — extract the drive-loop into the package  ·  = debrief P1.1
 **Integration-validated:** the twin reinvented this loop by hand
