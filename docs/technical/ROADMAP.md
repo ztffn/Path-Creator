@@ -1,0 +1,72 @@
+<!--
+Purpose: Living backlog of remaining/known work for @huma/path-creator and the
+reference demo, beyond what's already shipped. Not a task tracker for a single
+session — a durable list of deferred features, refactors, and known gaps so they
+aren't rediscovered. Update as items land or new ones surface.
+Scope: Packages/path-creator + examples/minimal-r3f-demo (+ twin integration).
+-->
+
+# Roadmap / backlog
+
+Ordered roughly by priority. "Deferred from" notes where the decision was made.
+
+> **2026-07-06 — first real consumption happened.** The twin integration below
+> was executed (and shipped: server persistence + visitor cinematic, deployed).
+> It surfaced blockers this roadmap did NOT anticipate — WebGPU renderer
+> incompatibility, packaging, georeferencing, handle sizing. Those, plus the
+> reconciled items here, now live in the authoritative
+> **`GEOSPATIAL-INTEGRATION-DEBRIEF.md`** (P0–P3). Read it before picking up
+> reuse work.
+
+## Active / next
+
+### ✅ Twin integration (DONE — exceeded the spike)
+Consumed `@huma/path-creator` from the geospatial twin's `/author` route as a
+dolly+timeline scenario type; went past the spike to in-scene editing, server
+persistence, and a visitor cinematic (deployed `twin.humatopia.ai`). Friction
+captured in `GEOSPATIAL-INTEGRATION-DEBRIEF.md`. **Key learning: the /core edit
+model + /timeline reused cleanly; the /r3f editor UI could NOT render in the
+consumer's WebGPU renderer (drei fat lines) — the #1 thing to fix (debrief P0).**
+
+### 3c-4 — extract the drive-loop into the package  ·  = debrief P1.1
+**Integration-validated:** the twin reinvented this loop by hand
+(`PathRigDriver.useFrame`) because it wasn't extracted — confirming the need.
+The per-frame orchestration (step player → `evaluateTimeline` → position carts →
+drive camera brain → composer) currently lives in `examples/minimal-r3f-demo/src/App.tsx`
+`Scene.useFrame`. Extract a framework-agnostic `driveRig`/`stepRig` (state holder:
+brain + composer state + composed quaternion + cart stepping) into `/three` (needs
+only a three `Camera`, no r3f), with a thin `useRigDrive` `useFrame` wrapper in `/r3f`.
+Makes rig playback reusable by the twin/elastiq without r3f. This is the modularity endgame.
+
+Rolled into 3c-4 (deferred from the /simplify altitude pass):
+- Move the composer function (`applyScreenComposerAim`, `getScreenCorrection`) from
+  `/r3f` to `/three` — it's pure three.js (takes a `Camera`), misfiled in r3f.
+- Reconcile the two composer-config shapes: flat `ComposerSettings` (core) vs nested
+  `ScreenComposerOptions` (r3f). Have the composer consume `ComposerSettings` directly
+  (or make one extend the other) so consumers stop hand-mapping flat→nested.
+- Move `vcamTrackTargetId` (pure accessor over `VirtualCameraDefinition`) into
+  `core/virtual-camera.ts` — it belongs with the aim, not in the demo.
+
+### F3 — dolly motion as an editable speed curve
+Replace discrete dolly move-blocks with a per-dolly **motion curve** (keyframes of
+position-over-time on the dolly lane): flat = parked, sloped = moving, curve shape =
+speed/accel/damping. Simpler mental model ("the dolly's journey") and the natural home
+for fine speed control. Data is already cart-track keys, so this is a UI/authoring change,
+not a data rework. Decision (this session): don't invest further in the block UI; do the
+curve here. Needs a custom curve-editing lane (the current @xzdarcy lane does blocks/actions,
+not 2D keyframe curves).
+
+> Shares the @xzdarcy dependency risk called out in debrief **P2.2** (multilane
+> timeline reuse): the same limitation (blocks/actions, not 2D curves) plus its
+> unmaintained transitive `react-virtualized` argue for a lighter in-house lane —
+> do F3's curve lane and P2.2's reuse together.
+
+## Known gaps / smaller items
+
+- Legacy migration: pre-RigDocument saved shows (old `SHOW_STORAGE_KEY`) do NOT migrate
+  dolly moves into per-dolly runs (edge case; only affects saves made before this session's
+  storage change). Shots/paths/targets still migrate.
+- Dolly `speed` is global (rig speed applied to all carts at document-assemble time); per-cart
+  speed would be more capable. `RigCartDefinition.speed` already supports it.
+- The demo `TrackingTargetDefinition` group variant isn't authored (`SceneTarget` excludes it);
+  target groups (weighted multi-subject framing) are unimplemented in the demo UI.

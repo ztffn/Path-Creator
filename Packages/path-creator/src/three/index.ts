@@ -1,10 +1,12 @@
 import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
 import {
+  DEFAULT_COMPOSER_SETTINGS,
   PathSpace,
   evaluateVirtualCameraBlendCurve,
   offsetAlongBasis,
   orthonormalBasis,
   type CartFrame,
+  type ComposerSettings,
   type QuaternionLike,
   type TargetRegistry,
   type Vec3,
@@ -18,8 +20,9 @@ import {
   vec3
 } from "../core";
 
-export { evaluateVirtualCameraBlendCurve } from "../core";
+export { DEFAULT_COMPOSER_SETTINGS, evaluateVirtualCameraBlendCurve } from "../core";
 export type {
+  ComposerSettings,
   QuaternionLike,
   VirtualCameraAimDefinition,
   VirtualCameraBlendCurve,
@@ -606,6 +609,213 @@ export function applyVirtualCameraSnapshot(camera: Camera, snapshot: VirtualCame
   }
 }
 
+export interface ScreenComposerState {
+  previousTarget?: Vec3;
+  smoothedVelocity?: Vec3;
+  initialized: boolean;
+}
+
+const _composerQuat = new Quaternion();
+const _composerMatrix = new Matrix4();
+const _composerLocalTarget = new Vector3();
+const _composerForward = new Vector3();
+const _composerUp = new Vector3();
+const _composerRight = new Vector3();
+const _composerZAxis = new Vector3();
+const COMPOSER_WORLD_UP = new Vector3(0, 1, 0);
+const COMPOSER_WORLD_RIGHT = new Vector3(1, 0, 0);
+const COMPOSER_EPSILON = 1e-6;
+
+export function createScreenComposerState(): ScreenComposerState {
+  return { initialized: false };
+}
+
+/**
+ * Reframes the camera so `target` lands inside the composer's screen zones
+ * (dead/soft) with per-axis damping — the stateful aim stage. Reads a flat
+ * ComposerSettings (the authored aim profile); `railUp` is the up hint the
+ * reframe rotates around. Pure three (no r3f), mutates the camera quaternion.
+ */
+export function applyScreenComposerAim(
+  camera: Camera,
+  target: Vec3,
+  railUp: Vec3,
+  state: ScreenComposerState,
+  settings: ComposerSettings,
+  deltaSeconds = 0
+): void {
+  if (!isFiniteVec3(target)) {
+    state.initialized = false;
+    delete state.previousTarget;
+    delete state.smoothedVelocity;
+    return;
+  }
+
+  const delta = Math.max(0, deltaSeconds);
+  const targetOffset = {
+    x: settings.targetOffsetX,
+    y: settings.targetOffsetY,
+    z: settings.targetOffsetZ
+  };
+  const composedTarget = vec3.add(target, targetOffset);
+  const predictedTarget = applyComposerLookahead(composedTarget, state, settings, delta);
+
+  const fov = getCameraFov(camera);
+  if (!fov) return;
+
+  _composerLocalTarget
+    .set(
+      predictedTarget.x - camera.position.x,
+      predictedTarget.y - camera.position.y,
+      predictedTarget.z - camera.position.z
+    )
+    .applyQuaternion(_composerQuat.copy(camera.quaternion).invert());
+
+  if (_composerLocalTarget.z >= -COMPOSER_EPSILON) return;
+
+  const horizontalFov = fov.horizontal;
+  const verticalFov = fov.vertical;
+  const screenX = Math.atan2(_composerLocalTarget.x, -_composerLocalTarget.z) / horizontalFov;
+  const screenY =
+    Math.atan2(
+      _composerLocalTarget.y,
+      Math.hypot(_composerLocalTarget.x, -_composerLocalTarget.z)
+    ) / verticalFov;
+
+  const offsetX = screenX - settings.screenX;
+  const offsetY = screenY - settings.screenY;
+  const deadHalfX = clampComposerHalfSize(settings.deadWidth);
+  const deadHalfY = clampComposerHalfSize(settings.deadHeight);
+  const softHalfX = Math.max(deadHalfX, clampComposerHalfSize(settings.softWidth));
+  const softHalfY = Math.max(deadHalfY, clampComposerHalfSize(settings.softHeight));
+
+  const firstFrame = !state.initialized;
+  state.initialized = true;
+  const centerNow = firstFrame && settings.centerOnActivate;
+
+  const correctionX = getScreenCorrection(offsetX, deadHalfX, softHalfX, settings.dampingX, delta, centerNow);
+  const correctionY = getScreenCorrection(offsetY, deadHalfY, softHalfY, settings.dampingY, delta, centerNow);
+
+  if (Math.abs(correctionX) < COMPOSER_EPSILON && Math.abs(correctionY) < COMPOSER_EPSILON) return;
+
+  camera.getWorldDirection(_composerForward).normalize();
+  _composerUp.set(railUp.x, railUp.y, railUp.z);
+  if (_composerUp.lengthSq() < COMPOSER_EPSILON) _composerUp.copy(COMPOSER_WORLD_UP);
+  _composerUp.normalize();
+
+  _composerZAxis.copy(_composerForward).multiplyScalar(-1);
+  _composerRight.crossVectors(_composerUp, _composerZAxis);
+  if (_composerRight.lengthSq() < COMPOSER_EPSILON) {
+    _composerRight.copy(COMPOSER_WORLD_RIGHT).applyQuaternion(camera.quaternion);
+  }
+  _composerRight.normalize();
+
+  _composerForward.applyAxisAngle(_composerUp, -correctionX * horizontalFov);
+  _composerForward.applyAxisAngle(_composerRight, correctionY * verticalFov);
+  _composerForward.normalize();
+
+  composeComposerQuaternion(camera, _composerForward, _composerUp);
+}
+
+function applyComposerLookahead(
+  target: Vec3,
+  state: ScreenComposerState,
+  settings: ComposerSettings,
+  deltaSeconds: number
+): Vec3 {
+  const previous = state.previousTarget;
+  state.previousTarget = vec3.clone(target);
+
+  if (!previous || !state.initialized || deltaSeconds <= 0) {
+    state.smoothedVelocity = vec3.create();
+    return target;
+  }
+
+  const movement = vec3.sub(target, previous);
+  const distance = vec3.magnitude(movement);
+  if (!Number.isFinite(distance) || distance > 25) {
+    state.smoothedVelocity = vec3.create();
+    return target;
+  }
+
+  const velocity = vec3.scale(movement, 1 / deltaSeconds);
+  if (settings.lookaheadIgnoreY) velocity.y = 0;
+
+  const smoothing = Math.max(0, settings.lookaheadSmoothing);
+  const alpha = smoothing > 0 ? 1 - Math.exp(-(12 / smoothing) * deltaSeconds) : 1;
+  state.smoothedVelocity = state.smoothedVelocity
+    ? vec3.lerp(state.smoothedVelocity, velocity, alpha)
+    : velocity;
+
+  const lookaheadTime = Math.max(0, settings.lookaheadTime);
+  if (lookaheadTime <= 0) return target;
+
+  return vec3.add(target, vec3.scale(state.smoothedVelocity, lookaheadTime));
+}
+
+function getScreenCorrection(
+  offset: number,
+  deadHalf: number,
+  softHalf: number,
+  damping: number,
+  deltaSeconds: number,
+  centerImmediately: boolean
+): number {
+  if (centerImmediately) return offset;
+
+  const sign = Math.sign(offset);
+  const magnitude = Math.abs(offset);
+  if (magnitude <= deadHalf) return 0;
+
+  // Beyond the soft edge, clamp back to it immediately; inside the soft zone
+  // (dead..soft), correct toward the dead edge with damping.
+  const clampCorrection = Math.max(0, magnitude - softHalf);
+  const withinSoft = magnitude - clampCorrection;
+  const dampedCorrection = Math.max(0, withinSoft - deadHalf);
+  // Damping is a heaviness value (bigger = slower/heavier), consistent with
+  // lookahead smoothing: alpha = 1 - e^(-(12/damping)·dt).
+  const alpha = damping > 0 ? 1 - Math.exp(-(12 / damping) * deltaSeconds) : 1;
+
+  return sign * (clampCorrection + dampedCorrection * alpha);
+}
+
+function getCameraFov(camera: Camera): { horizontal: number; vertical: number } | null {
+  if (!("fov" in camera) || !("aspect" in camera)) return null;
+
+  const fovDegrees = Number(camera.fov);
+  const aspect = Number(camera.aspect);
+  if (!Number.isFinite(fovDegrees) || !Number.isFinite(aspect) || aspect <= 0) return null;
+
+  const vertical = (fovDegrees * Math.PI) / 180;
+  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * aspect);
+  return { horizontal, vertical };
+}
+
+function composeComposerQuaternion(camera: Camera, forward: Vector3, up: Vector3): void {
+  _composerZAxis.copy(forward).multiplyScalar(-1).normalize();
+  _composerRight.crossVectors(up, _composerZAxis);
+
+  if (_composerRight.lengthSq() < COMPOSER_EPSILON) {
+    _composerRight.copy(COMPOSER_WORLD_RIGHT).applyQuaternion(camera.quaternion);
+    if (_composerRight.lengthSq() < COMPOSER_EPSILON) _composerRight.copy(COMPOSER_WORLD_RIGHT);
+  }
+  _composerRight.normalize();
+
+  _composerUp.crossVectors(_composerZAxis, _composerRight).normalize();
+  _composerMatrix.makeBasis(_composerRight, _composerUp, _composerZAxis);
+  camera.quaternion.setFromRotationMatrix(_composerMatrix);
+  camera.up.copy(_composerUp);
+}
+
+function clampComposerHalfSize(size: number): number {
+  if (!Number.isFinite(size)) return 0;
+  return Math.max(0, Math.min(1, size)) * 0.5;
+}
+
+function isFiniteVec3(value: Vec3): boolean {
+  return Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z);
+}
+
 export function blendVirtualCameraSnapshots(
   from: VirtualCameraSnapshot,
   to: VirtualCameraSnapshot,
@@ -696,6 +906,26 @@ export function createVirtualCameraBrainState(
   }
 
   return state;
+}
+
+/**
+ * Snaps the brain's live pose to a snapshot with no blend: sets both live and
+ * target, clears any in-flight blend, and reports progress as done. The
+ * passthrough path for playback — driveTimeline parks each evaluated frame here
+ * so the brain stays the single live-pose holder without re-animating, giving a
+ * correct starting pose when a later activation blends away from it.
+ */
+export function setVirtualCameraBrainLive(
+  state: VirtualCameraBrainState,
+  snapshot: VirtualCameraSnapshot
+): void {
+  state.live = cloneVirtualCameraSnapshot(snapshot);
+  state.target = cloneVirtualCameraSnapshot(snapshot);
+  delete state.previous;
+  state.elapsedSeconds = 0;
+  state.durationSeconds = 0;
+  state.curve = "cut";
+  state.isBlending = false;
 }
 
 export function activateVirtualCameraBrain(

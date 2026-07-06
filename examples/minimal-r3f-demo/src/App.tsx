@@ -1,5 +1,5 @@
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { Billboard, Line, OrbitControls, PivotControls, Text } from "@react-three/drei";
+import { Line, OrbitControls, PivotControls, Text } from "@react-three/drei";
 import {
   BezierPath,
   ControlMode,
@@ -21,6 +21,10 @@ import {
   applyScreenComposerAim,
   createScreenComposerState,
   EditorHelpers,
+  PathEditor,
+  PointTargets,
+  getSuggestedNextAnchor,
+  normalizeAnchorScales,
   useEditorHelpersVisible,
   useRegisteredTargets
 } from "@huma/path-creator/r3f";
@@ -49,7 +53,7 @@ import {
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
 import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
-import { TimelineLanes } from "./TimelineLanes";
+import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
   deserializeScene,
@@ -72,7 +76,6 @@ import {
 import {
   CameraHelper,
   Color,
-  Euler,
   MOUSE,
   Matrix4,
   PerspectiveCamera,
@@ -120,23 +123,7 @@ function applyComposerAim(
   state: ReturnType<typeof createScreenComposerState>,
   deltaSeconds: number
 ): void {
-  applyScreenComposerAim(
-    camera,
-    target,
-    COMPOSER_UP,
-    state,
-    {
-      screenPosition: { x: settings.screenX, y: settings.screenY },
-      deadZone: { width: settings.deadWidth, height: settings.deadHeight },
-      softZone: { width: settings.softWidth, height: settings.softHeight },
-      damping: { x: settings.dampingX, y: settings.dampingY },
-      lookaheadTime: settings.lookaheadTime,
-      lookaheadSmoothing: settings.lookaheadSmoothing,
-      lookaheadIgnoreY: settings.lookaheadIgnoreY,
-      centerOnActivate: settings.centerOnActivate
-    },
-    deltaSeconds
-  );
+  applyScreenComposerAim(camera, target, COMPOSER_UP, state, settings, deltaSeconds);
 }
 
 type VirtualCameraActivation = {
@@ -181,144 +168,6 @@ function createDefaultBezier(): BezierPath {
       controlMode: ControlMode.Automatic
     }
   );
-}
-
-function getSuggestedNextAnchor(path: BezierPath): Vec3 {
-  const lastAnchorIndex = path.numAnchorPoints - 1;
-  const lastAnchor = path.getAnchor(lastAnchorIndex);
-  const prevAnchor = path.getAnchor(Math.max(0, lastAnchorIndex - 1));
-  const lastControl = path.getPoint(path.numPoints - 2);
-
-  let tangentX = lastAnchor.x - lastControl.x;
-  let tangentY = lastAnchor.y - lastControl.y;
-  let tangentZ = lastAnchor.z - lastControl.z;
-  let tangentLen = Math.hypot(tangentX, tangentY, tangentZ);
-
-  let pathX = lastAnchor.x - prevAnchor.x;
-  let pathY = lastAnchor.y - prevAnchor.y;
-  let pathZ = lastAnchor.z - prevAnchor.z;
-  let pathLen = Math.hypot(pathX, pathY, pathZ);
-
-  if (tangentLen < 1e-5 && pathLen >= 1e-5) {
-    tangentX = pathX;
-    tangentY = pathY;
-    tangentZ = pathZ;
-    tangentLen = pathLen;
-  }
-
-  if (pathLen < 1e-5 && tangentLen >= 1e-5) {
-    pathX = tangentX;
-    pathY = tangentY;
-    pathZ = tangentZ;
-    pathLen = tangentLen;
-  }
-
-  if (tangentLen < 1e-5 && pathLen < 1e-5) {
-    tangentX = 1;
-    tangentY = 0;
-    tangentZ = 0;
-    tangentLen = 1;
-    pathX = 1;
-    pathY = 0;
-    pathZ = 0;
-    pathLen = 1;
-  }
-
-  tangentX /= tangentLen;
-  tangentY /= tangentLen;
-  tangentZ /= tangentLen;
-  pathX /= pathLen;
-  pathY /= pathLen;
-  pathZ /= pathLen;
-
-  let dirX = tangentX * 0.65 + pathX * 0.35;
-  let dirY = tangentY * 0.65 + pathY * 0.35;
-  let dirZ = tangentZ * 0.65 + pathZ * 0.35;
-  let dirLen = Math.hypot(dirX, dirY, dirZ);
-  if (dirLen < 1e-5) {
-    dirX = tangentX;
-    dirY = tangentY;
-    dirZ = tangentZ;
-    dirLen = 1;
-  }
-  dirX /= dirLen;
-  dirY /= dirLen;
-  dirZ /= dirLen;
-
-  const segmentLength = Math.hypot(
-    lastAnchor.x - prevAnchor.x,
-    lastAnchor.y - prevAnchor.y,
-    lastAnchor.z - prevAnchor.z
-  );
-  const travel = Math.max(0.25, segmentLength);
-
-  return {
-    x: lastAnchor.x + dirX * travel,
-    y: lastAnchor.y + dirY * travel,
-    z: lastAnchor.z + dirZ * travel
-  };
-}
-
-function buildPathLinePoints(path: VertexPath): [number, number, number][] {
-  const values: [number, number, number][] = [];
-  for (let i = 0; i < path.numPoints; i += 1) {
-    const p = path.getPoint(i);
-    values.push([p.x, p.y, p.z]);
-  }
-  return values;
-}
-
-function buildControlLinePositions(path: BezierPath): Float32Array {
-  const values: number[] = [];
-  for (let i = 0; i < path.numSegments; i += 1) {
-    const [a, c1, c2, b] = path.getPointsInSegment(i);
-    values.push(a.x, a.y, a.z, c1.x, c1.y, c1.z);
-    values.push(b.x, b.y, b.z, c2.x, c2.y, c2.z);
-  }
-  return new Float32Array(values);
-}
-
-function getSurfaceAlignedQuaternion(path: VertexPath, point: Vec3): [number, number, number, number] {
-  const t = path.getClosestTimeOnPath(point);
-  const n = path.getNormalAtTime(t, EndOfPathInstruction.Stop);
-  const normal = new Vector3(n.x, n.y, n.z).normalize();
-  const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), normal);
-  return [q.x, q.y, q.z, q.w];
-}
-
-function quatFromNormal(normal: Vector3): [number, number, number, number] {
-  const q = new Quaternion().setFromUnitVectors(new Vector3(0, 0, 1), normal.clone().normalize());
-  return [q.x, q.y, q.z, q.w];
-}
-
-function getMidpointFrame(path: VertexPath, point: Vec3): {
-  normal: Vector3;
-  tangent: Vector3;
-  rotation: [number, number, number];
-} {
-  const t = path.getClosestTimeOnPath(point);
-  const n = path.getNormalAtTime(t, EndOfPathInstruction.Stop);
-  const d = path.getDirection(t, EndOfPathInstruction.Stop);
-  const normal = new Vector3(n.x, n.y, n.z).normalize();
-  const tangent = new Vector3(d.x, d.y, d.z).normalize();
-  const binormal = new Vector3().crossVectors(tangent, normal).normalize();
-  const matrix = new Matrix4().makeBasis(binormal, normal, tangent);
-  const quat = new Quaternion().setFromRotationMatrix(matrix);
-  const euler = new Euler().setFromQuaternion(quat, "XYZ");
-  return { normal, tangent, rotation: [euler.x, euler.y, euler.z] };
-}
-
-function normalizeAnchorScales(count: number, previous: number[]): number[] {
-  const next = previous.slice(0, count);
-  while (next.length < count) next.push(1);
-  return next;
-}
-
-function getAnchorPointIndexForHandle(path: BezierPath, pointIndex: number): number {
-  const mod = pointIndex % 3;
-  if (mod === 0) return pointIndex;
-  if (mod === 1) return Math.max(0, pointIndex - 1);
-  return Math.min(path.numPoints - 1, pointIndex + 1);
 }
 
 function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
@@ -419,157 +268,6 @@ function nextTargetName(current: SceneTarget[]): string {
     return match ? Math.max(max, Number(match[1])) : max;
   }, 0);
   return `Target ${highest + 1}`;
-}
-
-// One target: a cyan sphere on layer 0 (seen by the PiP/render) when visible,
-// else on the editor-helpers layer (authoring-only). Selection ring + move
-// gizmo are always authoring-only. A cart-mounted target follows the live cart
-// frame each tick and isn't draggable; a static one is positioned from state.
-function TargetView({
-  target,
-  isSelected,
-  framesRef,
-  onSelect,
-  onMove,
-  onTransformingChange
-}: {
-  target: SceneTarget;
-  isSelected: boolean;
-  framesRef: { current: Map<string, CartFrame> };
-  onSelect: (id: string | null) => void;
-  onMove: (id: string, position: Vec3) => void;
-  onTransformingChange: (isTransforming: boolean) => void;
-}) {
-  const groupRef = useRef<Group>(null);
-
-  useFrame(() => {
-    const group = groupRef.current;
-    if (target.type !== "cart" || !group) return;
-    const frame = framesRef.current.get(target.cartId);
-    group.visible = frame != null;
-    if (frame) group.position.set(frame.position.x, frame.position.y, frame.position.z);
-  });
-
-  const sphere = (
-    <mesh
-      onPointerDown={(event) => {
-        event.stopPropagation();
-        onSelect(isSelected ? null : target.id);
-      }}
-    >
-      <sphereGeometry args={[0.1, 16, 16]} />
-      <meshStandardMaterial color="#06b6d4" emissive="#06b6d4" emissiveIntensity={isSelected ? 0.55 : 0.3} />
-    </mesh>
-  );
-  const body = (
-    <>
-      {(target.visibleInRender ?? true) ? sphere : <EditorHelpers>{sphere}</EditorHelpers>}
-      {isSelected ? (
-        <EditorHelpers>
-          <Billboard>
-            <mesh>
-              <ringGeometry args={[0.16, 0.19, 28]} />
-              <meshBasicMaterial color="#06b6d4" transparent opacity={0.85} depthTest={false} />
-            </mesh>
-          </Billboard>
-        </EditorHelpers>
-      ) : null}
-    </>
-  );
-
-  if (target.type === "cart") {
-    // Position driven each frame from the cart frame; not draggable.
-    return <group ref={groupRef}>{body}</group>;
-  }
-  // Groups aren't authored in this demo; only points are draggable.
-  if (target.type !== "point") return null;
-
-  return (
-    <>
-      <group position={[target.position.x, target.position.y, target.position.z]}>{body}</group>
-      {isSelected ? (
-        <EditorHelpers>
-          <PivotControls
-            {...VCAM_PIVOT_PROPS}
-            matrix={new Matrix4().makeTranslation(target.position.x, target.position.y, target.position.z)}
-            disableRotations
-            disableScaling
-            onDragStart={() => onTransformingChange(true)}
-            onDragEnd={() => onTransformingChange(false)}
-            onDrag={(matrix) =>
-              onMove(target.id, { x: matrix.elements[12], y: matrix.elements[13], z: matrix.elements[14] })
-            }
-          >
-            <mesh>
-              <sphereGeometry args={[0.001, 4, 4]} />
-              <meshBasicMaterial transparent opacity={0} />
-            </mesh>
-          </PivotControls>
-        </EditorHelpers>
-      ) : null}
-    </>
-  );
-}
-
-// Authored targets: each a live pull-source in the registry. A cart-mounted
-// target resolves to the live cart frame; a static one to its position (read
-// via ref so a drag moves it without re-registering). Registration keys on the
-// id/name/mount set.
-function PointTargets({
-  targets,
-  registry,
-  framesRef,
-  selectedId,
-  onSelect,
-  onMove,
-  onTransformingChange
-}: {
-  targets: SceneTarget[];
-  registry: TargetRegistry;
-  framesRef: { current: Map<string, CartFrame> };
-  selectedId: string | null;
-  onSelect: (id: string | null) => void;
-  onMove: (id: string, position: Vec3) => void;
-  onTransformingChange: (isTransforming: boolean) => void;
-}) {
-  const targetsRef = useRef(targets);
-  targetsRef.current = targets;
-  const membershipKey = targets
-    .map((t) => `${t.id}:${t.name ?? ""}:${t.type === "cart" ? t.cartId : ""}`)
-    .join("|");
-
-  useEffect(() => {
-    const unregister = targets.map((t) => {
-      const source =
-        t.type === "cart"
-          ? () => framesRef.current.get(t.cartId)?.position ?? null
-          : () => {
-              const current = targetsRef.current.find((x) => x.id === t.id);
-              if (current?.type === "point") return current.position;
-              return t.type === "point" ? t.position : null;
-            };
-      return registry.register(t.id, source, t.name);
-    });
-    return () => unregister.forEach((fn) => fn());
-    // Positions/frames are read live; only re-register when the id/name/mount set changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [membershipKey, registry]);
-
-  return (
-    <>
-      {targets.map((t) => (
-        <TargetView
-          key={t.id}
-          target={t}
-          isSelected={t.id === selectedId}
-          framesRef={framesRef}
-          onSelect={onSelect}
-          onMove={onMove}
-          onTransformingChange={onTransformingChange}
-        />
-      ))}
-    </>
-  );
 }
 
 function Scene({
@@ -712,55 +410,6 @@ function Scene({
     frustumHelper.setColors(color, color, color, color, color);
   }, [frustumHelper, frustumColor]);
 
-  const pathLinePoints = useMemo(
-    () => (vertexPath ? buildPathLinePoints(vertexPath) : []),
-    [vertexPath, pathVersion]
-  );
-  const controlLinePositions = useMemo(
-    () => (bezierPath ? buildControlLinePositions(bezierPath) : new Float32Array()),
-    [bezierPath, pathVersion]
-  );
-  const midpointData = useMemo(() => {
-    if (!bezierPath || !vertexPath) return [];
-    return Array.from({ length: bezierPath.numSegments }).map((_, segmentIndex) => {
-      const midpoint = bezierPath.evaluate(segmentIndex, 0.5);
-      const frame = getMidpointFrame(vertexPath, midpoint);
-      return {
-        segmentIndex,
-        midpoint,
-        normal: frame.normal,
-        tangent: frame.tangent,
-        rotation: frame.rotation,
-        normalQuat: quatFromNormal(frame.normal)
-      };
-    });
-  }, [bezierPath, vertexPath, pathVersion]);
-  const midpointNormalPositions = useMemo(() => {
-    const values: number[] = [];
-    for (const m of midpointData) {
-      const center = new Vector3(m.midpoint.x, m.midpoint.y, m.midpoint.z);
-      const a = center.clone().add(m.normal.clone().multiplyScalar(0.24));
-      const b = center.clone().add(m.normal.clone().multiplyScalar(-0.24));
-      values.push(a.x, a.y, a.z, b.x, b.y, b.z);
-    }
-    return new Float32Array(values);
-  }, [midpointData]);
-  const selectedMidpoint =
-    selectedMidpointIndex !== null ? midpointData[selectedMidpointIndex] ?? null : null;
-  const selectedHandlePoint =
-    selectedHandleIndex !== null && bezierPath ? bezierPath.getPoint(selectedHandleIndex) : null;
-  const selectedHandleIsAnchor = selectedHandleIndex !== null && selectedHandleIndex % 3 === 0;
-  const selectedAnchorScale =
-    selectedHandleIsAnchor && selectedHandleIndex !== null
-      ? anchorScales[Math.floor(selectedHandleIndex / 3)] ?? 1
-      : 1;
-  const handlePivotMatrix = useMemo(() => new Matrix4(), []);
-  const [handleGizmoRotation, setHandleGizmoRotation] = useState<[number, number, number]>([0, 0, 0]);
-  const anchorDragStartRef = useRef<{
-    anchorIndex: number;
-    anchorStart: Vec3;
-    controlStarts: Array<{ index: number; point: Vec3 }>;
-  } | null>(null);
   const lastCaptureRequestRef = useRef(virtualCameraCaptureRequest);
   const activeVirtualCameraKeyRef = useRef<number | null>(null);
   const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
@@ -809,27 +458,6 @@ function Scene({
   useEffect(() => {
     return () => frustumHelper.dispose();
   }, [frustumHelper]);
-
-  useEffect(() => {
-    if (!selectedHandlePoint || isTransforming) return;
-    handlePivotMatrix.compose(
-      new Vector3(selectedHandlePoint.x, selectedHandlePoint.y, selectedHandlePoint.z),
-      new Quaternion(),
-      new Vector3(selectedAnchorScale, selectedAnchorScale, selectedAnchorScale)
-    );
-  }, [handlePivotMatrix, isTransforming, selectedAnchorScale, selectedHandlePoint]);
-  useEffect(() => {
-    if (isTransforming) return;
-    if (useWorldSpaceGizmo || selectedHandleIndex === null || !bezierPath || !vertexPath) {
-      setHandleGizmoRotation([0, 0, 0]);
-      return;
-    }
-    const anchorPointIndex = getAnchorPointIndexForHandle(bezierPath, selectedHandleIndex);
-    const anchorPoint = bezierPath.getPoint(anchorPointIndex);
-    const [qx, qy, qz, qw] = getSurfaceAlignedQuaternion(vertexPath, anchorPoint);
-    const euler = new Euler().setFromQuaternion(new Quaternion(qx, qy, qz, qw), "XYZ");
-    setHandleGizmoRotation([euler.x, euler.y, euler.z]);
-  }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
 
   useFrame(({ camera }, delta) => {
     const mainCamera = camera as PerspectiveCamera;
@@ -992,381 +620,31 @@ function Scene({
       <ambientLight intensity={0.6} />
       <directionalLight position={[2, 3, 4]} intensity={1.2} />
 
-      <EditorHelpers>
-      {vertexPath ? <Line points={pathLinePoints} color="#101828" lineWidth={4} /> : null}
-      {[...vertexPaths.entries()]
-        .filter(([, path]) => path !== vertexPath)
-        .map(([pathId, path]) => (
-          <Line
-            key={pathId}
-            points={buildPathLinePoints(path)}
-            color="#475569"
-            lineWidth={2}
-            dashed
-            dashSize={0.08}
-            gapSize={0.05}
-          />
-        ))}
-
-      <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[controlLinePositions, 3]}
-            count={controlLinePositions.length / 3}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#8b8f97" />
-      </lineSegments>
-
-      <lineSegments>
-        <bufferGeometry>
-          <bufferAttribute
-            attach="attributes-position"
-            args={[midpointNormalPositions, 3]}
-            count={midpointNormalPositions.length / 3}
-          />
-        </bufferGeometry>
-        <lineBasicMaterial color="#06b6d4" />
-      </lineSegments>
-
-      {midpointData.map((m) => {
-        return (
-          <group
-            key={`midpoint-${m.segmentIndex}`}
-            position={[m.midpoint.x, m.midpoint.y, m.midpoint.z]}
-            quaternion={m.normalQuat}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              onSelectMidpoint(m.segmentIndex);
-            }}
-          >
-            <mesh>
-              <sphereGeometry args={[0.035, 8, 8]} />
-              <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-            </mesh>
-          </group>
-        );
-      })}
-
-      {selectedMidpoint ? (
-        <PivotControls
-          fixed
-          scale={65}
-          lineWidth={2}
-          depthTest={false}
-          disableAxes
-          disableSliders
-          disableScaling
-          anchor={[0, 0, 0]}
-          offset={[
-            selectedMidpoint.midpoint.x,
-            selectedMidpoint.midpoint.y,
-            selectedMidpoint.midpoint.z
-          ]}
-          rotation={selectedMidpoint.rotation}
-          onDragStart={() => onTransformingChange(true)}
-          onDragEnd={() => onTransformingChange(false)}
-          onDrag={(_, deltaL) => {
-            const deltaQuat = new Quaternion().setFromRotationMatrix(deltaL);
-            const clampedW = Math.max(-1, Math.min(1, deltaQuat.w));
-            const angle = 2 * Math.acos(clampedW);
-            if (!Number.isFinite(angle) || angle < 1e-4) return;
-
-            const axisDenom = Math.sqrt(1 - clampedW * clampedW);
-            if (axisDenom < 1e-4) return;
-            const axis = new Vector3(
-              deltaQuat.x / axisDenom,
-              deltaQuat.y / axisDenom,
-              deltaQuat.z / axisDenom
-            ).normalize();
-
-            const tangent = selectedMidpoint.tangent.clone().normalize();
-            const sign = Math.sign(axis.dot(tangent)) || 1;
-            const deltaDegrees = (angle * 180) / Math.PI * sign;
-            onRotateMidpointNormal(selectedMidpoint.segmentIndex, deltaDegrees);
+      {bezierPath && vertexPath ? (
+        <PathEditor
+          bezierPath={bezierPath}
+          vertexPath={vertexPath}
+          pathVersion={pathVersion}
+          otherPaths={[...vertexPaths.entries()]
+            .filter(([, path]) => path !== vertexPath)
+            .map(([id, path]) => ({ id, vertexPath: path }))}
+          selectedHandleIndex={selectedHandleIndex}
+          selectedMidpointIndex={selectedMidpointIndex}
+          anchorScales={anchorScales}
+          useWorldSpaceGizmo={useWorldSpaceGizmo}
+          onSelectHandle={onSelectHandle}
+          onSelectMidpoint={onSelectMidpoint}
+          onMovePoint={onMovePoint}
+          onSetAnchorScale={onSetAnchorScale}
+          onRotateMidpointNormal={onRotateMidpointNormal}
+          onTransformingChange={onTransformingChange}
+          onClearSelection={() => {
+            onSelectHandle(null);
+            onSelectMidpoint(null);
+            onSelectVirtualCamera(null);
           }}
-        >
-          <mesh>
-            <sphereGeometry args={[0.001, 4, 4]} />
-            <meshBasicMaterial transparent opacity={0} />
-          </mesh>
-        </PivotControls>
+        />
       ) : null}
-
-      {bezierPath &&
-        Array.from({ length: bezierPath.numPoints }).map((_, i) => {
-        if (!bezierPath || !vertexPath) return null;
-        const p = bezierPath.getPoint(i);
-        const isAnchor = i % 3 === 0;
-        const draggable = isAnchor || bezierPath.controlMode !== ControlMode.Automatic;
-        const isSelected = selectedHandleIndex === i;
-        const color = isAnchor ? "#f97316" : "#2563eb";
-        const surfaceQuat = getSurfaceAlignedQuaternion(vertexPath, p);
-        const anchorIndex = Math.floor(i / 3);
-        const anchorScale = isAnchor ? anchorScales[anchorIndex] ?? 1 : 1;
-        const anchorScaleVisual = Math.max(0.65, Math.sqrt(anchorScale));
-
-        if (!isAnchor) {
-          return (
-            <Billboard
-              key={`handle-${i}`}
-              position={[p.x, p.y, p.z]}
-              onPointerDown={(e) => {
-                if (!draggable) return;
-                e.stopPropagation();
-                onSelectHandle(i);
-              }}
-            >
-              <mesh>
-                <circleGeometry args={[isSelected ? 0.07 : 0.058, 24]} />
-                <meshBasicMaterial
-                  color={color}
-                  transparent={!draggable}
-                  opacity={draggable ? 1 : 0.4}
-                  depthTest={false}
-                />
-              </mesh>
-              {isSelected ? (
-                <mesh position={[0, 0, -0.001]}>
-                  <ringGeometry args={[0.074, 0.088, 24]} />
-                  <meshBasicMaterial color="#ffffff" opacity={0.9} transparent depthTest={false} />
-                </mesh>
-              ) : null}
-            </Billboard>
-          );
-        }
-
-        if (!draggable) {
-          return (
-            <group key={`handle-${i}`} position={[p.x, p.y, p.z]} quaternion={surfaceQuat}>
-              <mesh>
-                <ringGeometry args={[isAnchor ? 0.085 : 0.065, isAnchor ? 0.11 : 0.085, 28]} />
-                <meshBasicMaterial color={color} opacity={0.35} transparent side={2} />
-              </mesh>
-              {isAnchor ? (
-                <mesh position={[0, 0, -0.001]}>
-                  <ringGeometry
-                    args={[
-                      0.13 * anchorScaleVisual,
-                      0.145 * anchorScaleVisual,
-                      36
-                    ]}
-                  />
-                  <meshBasicMaterial color="#f97316" transparent opacity={0.55} side={2} />
-                </mesh>
-              ) : null}
-              {isAnchor ? (
-                <Text
-                  position={[0, 0, 0.002]}
-                  fontSize={0.09}
-                  color="#f97316"
-                  anchorX="center"
-                  anchorY="middle"
-                  renderOrder={999}
-                  material-depthTest={false}
-                  material-depthWrite={false}
-                >
-                  {String(Math.floor(i / 3) + 1)}
-                </Text>
-              ) : null}
-            </group>
-          );
-        }
-
-        return (
-          <group
-            key={`handle-${i}`}
-            position={[p.x, p.y, p.z]}
-            quaternion={surfaceQuat}
-            onPointerDown={(e) => {
-              e.stopPropagation();
-              onSelectHandle(i);
-            }}
-          >
-            <mesh>
-              <ringGeometry
-                args={[
-                  isSelected ? (isAnchor ? 0.095 : 0.075) : isAnchor ? 0.085 : 0.065,
-                  isSelected ? (isAnchor ? 0.125 : 0.1) : isAnchor ? 0.11 : 0.085,
-                  28
-                ]}
-              />
-              <meshBasicMaterial color={color} side={2} />
-            </mesh>
-            {isAnchor ? (
-              <mesh position={[0, 0, -0.001]}>
-                <ringGeometry
-                  args={[
-                    0.13 * anchorScaleVisual,
-                    0.145 * anchorScaleVisual,
-                    36
-                  ]}
-                />
-                <meshBasicMaterial color="#f97316" transparent opacity={0.65} side={2} />
-              </mesh>
-            ) : null}
-            <mesh
-              onPointerDown={(e) => {
-                e.stopPropagation();
-                onSelectHandle(i);
-              }}
-            >
-              <circleGeometry args={[isAnchor ? 0.09 : 0.07, 24]} />
-              <meshBasicMaterial
-                color="#ffffff"
-                transparent
-                opacity={0.001}
-                side={2}
-                depthWrite={false}
-                depthTest={false}
-              />
-            </mesh>
-            {isAnchor ? (
-              <Text
-                position={[0, 0, 0.002]}
-                fontSize={0.09}
-                color="#f97316"
-                anchorX="center"
-                anchorY="middle"
-                renderOrder={999}
-                material-depthTest={false}
-                material-depthWrite={false}
-              >
-                {String(Math.floor(i / 3) + 1)}
-              </Text>
-            ) : null}
-            {isSelected ? (
-              <mesh position={[0, 0, -0.001]}>
-                <ringGeometry
-                  args={[
-                    isAnchor ? 0.13 : 0.105,
-                    isAnchor ? 0.155 : 0.13,
-                    28
-                  ]}
-                />
-                <meshBasicMaterial color="#ffffff" opacity={0.9} transparent side={2} />
-              </mesh>
-            ) : null}
-          </group>
-        );
-      })}
-
-      {selectedHandleIndex !== null && selectedHandlePoint ? (
-        <PivotControls
-          matrix={handlePivotMatrix}
-          autoTransform={false}
-          fixed
-          scale={65}
-          lineWidth={2}
-          depthTest={false}
-          disableRotations={!selectedHandleIsAnchor}
-          disableScaling={!selectedHandleIsAnchor}
-          anchor={[0, 0, 0]}
-          rotation={handleGizmoRotation}
-          onDragStart={() => {
-            if (bezierPath && selectedHandleIsAnchor && bezierPath.controlMode !== ControlMode.Automatic) {
-              const controlStarts: Array<{ index: number; point: Vec3 }> = [];
-              const prevControlIndex = bezierPath.isClosed
-                ? (selectedHandleIndex - 1 + bezierPath.numPoints) % bezierPath.numPoints
-                : selectedHandleIndex - 1;
-              const nextControlIndex = bezierPath.isClosed
-                ? (selectedHandleIndex + 1) % bezierPath.numPoints
-                : selectedHandleIndex + 1;
-
-              if (prevControlIndex >= 0 && prevControlIndex < bezierPath.numPoints && prevControlIndex % 3 !== 0) {
-                const p = bezierPath.getPoint(prevControlIndex);
-                controlStarts.push({ index: prevControlIndex, point: { x: p.x, y: p.y, z: p.z } });
-              }
-              if (nextControlIndex >= 0 && nextControlIndex < bezierPath.numPoints && nextControlIndex % 3 !== 0) {
-                const p = bezierPath.getPoint(nextControlIndex);
-                controlStarts.push({ index: nextControlIndex, point: { x: p.x, y: p.y, z: p.z } });
-              }
-
-              const a = bezierPath.getPoint(selectedHandleIndex);
-              anchorDragStartRef.current = {
-                anchorIndex: selectedHandleIndex,
-                anchorStart: { x: a.x, y: a.y, z: a.z },
-                controlStarts
-              };
-            } else {
-              anchorDragStartRef.current = null;
-            }
-
-            onTransformingChange(true);
-          }}
-          onDragEnd={() => {
-            anchorDragStartRef.current = null;
-            onTransformingChange(false);
-          }}
-          onDrag={(l, deltaL) => {
-            handlePivotMatrix.copy(l);
-            const position = new Vector3();
-            const dq = new Quaternion();
-            const ds = new Vector3();
-            l.decompose(position, dq, ds);
-
-            onMovePoint(selectedHandleIndex, {
-              x: position.x,
-              y: position.y,
-              z: position.z
-            });
-
-            if (selectedHandleIsAnchor) {
-              const uniformScale = Math.max(0.05, (ds.x + ds.y + ds.z) / 3);
-              onSetAnchorScale(Math.floor(selectedHandleIndex / 3), uniformScale);
-            }
-
-            const dragState = anchorDragStartRef.current;
-            if (
-              !dragState ||
-              !selectedHandleIsAnchor ||
-              dragState.anchorIndex !== selectedHandleIndex
-            ) {
-              return;
-            }
-
-            const deltaQuat = new Quaternion().setFromRotationMatrix(deltaL);
-            const translation = new Vector3(
-              position.x - dragState.anchorStart.x,
-              position.y - dragState.anchorStart.y,
-              position.z - dragState.anchorStart.z
-            );
-
-            for (const c of dragState.controlStarts) {
-              const offset = new Vector3(
-                c.point.x - dragState.anchorStart.x,
-                c.point.y - dragState.anchorStart.y,
-                c.point.z - dragState.anchorStart.z
-              ).applyQuaternion(deltaQuat);
-
-              onMovePoint(c.index, {
-                x: dragState.anchorStart.x + offset.x + translation.x,
-                y: dragState.anchorStart.y + offset.y + translation.y,
-                z: dragState.anchorStart.z + offset.z + translation.z
-              });
-            }
-          }}
-        >
-          <mesh>
-            <sphereGeometry args={[0.001, 4, 4]} />
-            <meshBasicMaterial transparent opacity={0} />
-          </mesh>
-        </PivotControls>
-      ) : null}
-
-      <mesh
-        position={[0, 0, 0]}
-        onPointerDown={() => {
-          onSelectHandle(null);
-          onSelectMidpoint(null);
-          onSelectVirtualCamera(null);
-        }}
-      >
-        <sphereGeometry args={[0.0001, 4, 4]} />
-        <meshBasicMaterial transparent opacity={0} depthWrite={false} />
-      </mesh>
-      </EditorHelpers>
 
       <EditorHelpers>
       {virtualCameras.map((virtualCamera) => {

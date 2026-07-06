@@ -1,5 +1,5 @@
 import { useCallback, useMemo, useRef, type MutableRefObject } from "react";
-import { Matrix4, Quaternion, Vector3, type Camera, type Object3D } from "three";
+import { Quaternion, Vector3, type Camera, type Object3D } from "three";
 import {
   EndOfPathInstruction,
   advanceCartDistance,
@@ -7,11 +7,22 @@ import {
   sampleCartFrame,
   type CartFrame,
   type CartOrientationMode,
+  type ComposerSettings,
   type PathCart,
   type Vec3,
   type VertexPath,
   vec3
 } from "../core";
+import {
+  applyScreenComposerAim,
+  createScreenComposerState,
+  type ScreenComposerState
+} from "../three";
+
+// The screen composer moved to /three (pure three, no r3f); re-exported here so
+// existing /r3f consumers keep importing it from the adapter they already use.
+export { applyScreenComposerAim, createScreenComposerState } from "../three";
+export type { ScreenComposerState } from "../three";
 
 export interface FollowerState {
   distance: number;
@@ -42,49 +53,13 @@ export interface UseDollyCameraOptions extends Omit<UsePathFollowerOptions, "pat
   path: VertexPath;
   lookAhead?: number;
   damping?: number;
-  composer?: ScreenComposerOptions & { target: Vec3 };
-}
-
-export interface ScreenComposerOptions {
-  screenPosition?: { x: number; y: number };
-  deadZone?: { width: number; height: number };
-  softZone?: { width: number; height: number };
-  hardLimits?: { width: number; height: number };
-  damping?: { x: number; y: number };
-  targetOffset?: Vec3;
-  lookaheadTime?: number;
-  lookaheadSmoothing?: number;
-  lookaheadIgnoreY?: boolean;
-  centerOnActivate?: boolean;
-}
-
-export interface ScreenComposerState {
-  previousTarget?: Vec3;
-  smoothedVelocity?: Vec3;
-  initialized: boolean;
+  composer?: ComposerSettings & { target: Vec3 };
 }
 
 const _tmpVec = new Vector3();
 const _tmpUp = new Vector3();
 const _tmpLook = new Vector3();
 const _tmpQuat = new Quaternion();
-const _tmpMatrix = new Matrix4();
-const _tmpRight = new Vector3();
-const _tmpForward = new Vector3();
-const _tmpZAxis = new Vector3();
-const _tmpLocalTarget = new Vector3();
-
-const DEFAULT_SCREEN_COMPOSER = {
-  screenPosition: { x: 0, y: 0 },
-  deadZone: { width: 0.15, height: 0.12 },
-  softZone: { width: 0.55, height: 0.45 },
-  hardLimits: { width: 0.9, height: 0.85 },
-  damping: { x: 6, y: 6 }
-};
-
-const WORLD_UP = new Vector3(0, 1, 0);
-const WORLD_RIGHT = new Vector3(1, 0, 0);
-const EPSILON = 1e-6;
 
 // Returned by a follower with no path: origin, +Z forward, +Y up. Frozen so
 // the shared instance can never be mutated by a consumer.
@@ -152,109 +127,6 @@ export function applyDollyCamera(
 
   _tmpUp.set(sample.normal.x, sample.normal.y, sample.normal.z).normalize();
   camera.up.lerp(_tmpUp, alpha).normalize();
-}
-
-export function createScreenComposerState(): ScreenComposerState {
-  return {
-    initialized: false
-  };
-}
-
-export function applyScreenComposerAim(
-  camera: Camera,
-  target: Vec3,
-  railUp: Vec3,
-  state: ScreenComposerState,
-  options: ScreenComposerOptions = {},
-  deltaSeconds = 0
-): void {
-  if (!isFiniteVec3(target)) {
-    state.initialized = false;
-    delete state.previousTarget;
-    delete state.smoothedVelocity;
-    return;
-  }
-
-  const screenPosition = options.screenPosition ?? DEFAULT_SCREEN_COMPOSER.screenPosition;
-  const deadZone = options.deadZone ?? DEFAULT_SCREEN_COMPOSER.deadZone;
-  // The soft zone is the working boundary: inside dead = no move, dead..soft =
-  // damped, beyond soft = clamped back to the soft edge. (No separate hard zone.)
-  const softZone = options.softZone ?? DEFAULT_SCREEN_COMPOSER.softZone;
-  const damping = options.damping ?? DEFAULT_SCREEN_COMPOSER.damping;
-  const delta = Math.max(0, deltaSeconds);
-
-  const targetOffset = options.targetOffset ?? vec3.create();
-  const composedTarget = vec3.add(target, targetOffset);
-  const predictedTarget = applyLookahead(composedTarget, state, options, delta);
-
-  const fov = getCameraFov(camera);
-  if (!fov) return;
-
-  _tmpLocalTarget
-    .set(
-      predictedTarget.x - camera.position.x,
-      predictedTarget.y - camera.position.y,
-      predictedTarget.z - camera.position.z
-    )
-    .applyQuaternion(_tmpQuat.copy(camera.quaternion).invert());
-
-  if (_tmpLocalTarget.z >= -EPSILON) return;
-
-  const horizontalFov = fov.horizontal;
-  const verticalFov = fov.vertical;
-  const screenX = Math.atan2(_tmpLocalTarget.x, -_tmpLocalTarget.z) / horizontalFov;
-  const screenY =
-    Math.atan2(_tmpLocalTarget.y, Math.hypot(_tmpLocalTarget.x, -_tmpLocalTarget.z)) /
-    verticalFov;
-
-  const offsetX = screenX - screenPosition.x;
-  const offsetY = screenY - screenPosition.y;
-  const deadHalfX = clampHalfSize(deadZone.width);
-  const deadHalfY = clampHalfSize(deadZone.height);
-  const softHalfX = Math.max(deadHalfX, clampHalfSize(softZone.width));
-  const softHalfY = Math.max(deadHalfY, clampHalfSize(softZone.height));
-
-  const firstFrame = !state.initialized;
-  state.initialized = true;
-
-  const correctionX = getScreenCorrection(
-    offsetX,
-    deadHalfX,
-    softHalfX,
-    damping.x,
-    delta,
-    firstFrame && options.centerOnActivate === true
-  );
-  const correctionY = getScreenCorrection(
-    offsetY,
-    deadHalfY,
-    softHalfY,
-    damping.y,
-    delta,
-    firstFrame && options.centerOnActivate === true
-  );
-
-  if (Math.abs(correctionX) < EPSILON && Math.abs(correctionY) < EPSILON) return;
-
-  camera.getWorldDirection(_tmpForward).normalize();
-  _tmpUp.set(railUp.x, railUp.y, railUp.z);
-  if (_tmpUp.lengthSq() < EPSILON) {
-    _tmpUp.copy(WORLD_UP);
-  }
-  _tmpUp.normalize();
-
-  _tmpZAxis.copy(_tmpForward).multiplyScalar(-1);
-  _tmpRight.crossVectors(_tmpUp, _tmpZAxis);
-  if (_tmpRight.lengthSq() < EPSILON) {
-    _tmpRight.copy(WORLD_RIGHT).applyQuaternion(camera.quaternion);
-  }
-  _tmpRight.normalize();
-
-  _tmpForward.applyAxisAngle(_tmpUp, -correctionX * horizontalFov);
-  _tmpForward.applyAxisAngle(_tmpRight, correctionY * verticalFov);
-  _tmpForward.normalize();
-
-  composeCameraQuaternion(camera, _tmpForward, _tmpUp);
 }
 
 export function usePathSample(
@@ -393,6 +265,8 @@ export function useDollyCamera(options: UseDollyCameraOptions): {
 
 export * from "./targets";
 export * from "./editor";
+export * from "./path-editor";
+export * from "./point-targets";
 
 export function vec3Distance(a: Vec3, b: Vec3): number {
   return vec3.distance(a, b);
@@ -414,101 +288,3 @@ function applyDollyCameraPosition(
   }
 }
 
-function applyLookahead(
-  target: Vec3,
-  state: ScreenComposerState,
-  options: ScreenComposerOptions,
-  deltaSeconds: number
-): Vec3 {
-  const previous = state.previousTarget;
-  state.previousTarget = vec3.clone(target);
-
-  if (!previous || !state.initialized || deltaSeconds <= 0) {
-    state.smoothedVelocity = vec3.create();
-    return target;
-  }
-
-  const movement = vec3.sub(target, previous);
-  const distance = vec3.magnitude(movement);
-  if (!Number.isFinite(distance) || distance > 25) {
-    state.smoothedVelocity = vec3.create();
-    return target;
-  }
-
-  const velocity = vec3.scale(movement, 1 / deltaSeconds);
-  if (options.lookaheadIgnoreY) velocity.y = 0;
-
-  const smoothing = Math.max(0, options.lookaheadSmoothing ?? 6);
-  const alpha = smoothing > 0 ? 1 - Math.exp(-(12 / smoothing) * deltaSeconds) : 1;
-  state.smoothedVelocity = state.smoothedVelocity
-    ? vec3.lerp(state.smoothedVelocity, velocity, alpha)
-    : velocity;
-
-  const lookaheadTime = Math.max(0, options.lookaheadTime ?? 0);
-  if (lookaheadTime <= 0) return target;
-
-  return vec3.add(target, vec3.scale(state.smoothedVelocity, lookaheadTime));
-}
-
-function getScreenCorrection(
-  offset: number,
-  deadHalf: number,
-  softHalf: number,
-  damping: number,
-  deltaSeconds: number,
-  centerImmediately: boolean
-): number {
-  if (centerImmediately) return offset;
-
-  const sign = Math.sign(offset);
-  const magnitude = Math.abs(offset);
-  if (magnitude <= deadHalf) return 0;
-
-  // Beyond the soft edge, clamp back to it immediately; inside the soft zone
-  // (dead..soft), correct toward the dead edge with damping.
-  const clampCorrection = Math.max(0, magnitude - softHalf);
-  const withinSoft = magnitude - clampCorrection;
-  const dampedCorrection = Math.max(0, withinSoft - deadHalf);
-  // Damping is a heaviness value (bigger = slower/heavier), consistent with
-  // lookahead smoothing: alpha = 1 - e^(-(12/damping)·dt).
-  const alpha = damping > 0 ? 1 - Math.exp(-(12 / damping) * deltaSeconds) : 1;
-
-  return sign * (clampCorrection + dampedCorrection * alpha);
-}
-
-function getCameraFov(camera: Camera): { horizontal: number; vertical: number } | null {
-  if (!("fov" in camera) || !("aspect" in camera)) return null;
-
-  const fovDegrees = Number(camera.fov);
-  const aspect = Number(camera.aspect);
-  if (!Number.isFinite(fovDegrees) || !Number.isFinite(aspect) || aspect <= 0) return null;
-
-  const vertical = (fovDegrees * Math.PI) / 180;
-  const horizontal = 2 * Math.atan(Math.tan(vertical / 2) * aspect);
-  return { horizontal, vertical };
-}
-
-function composeCameraQuaternion(camera: Camera, forward: Vector3, up: Vector3): void {
-  _tmpZAxis.copy(forward).multiplyScalar(-1).normalize();
-  _tmpRight.crossVectors(up, _tmpZAxis);
-
-  if (_tmpRight.lengthSq() < EPSILON) {
-    _tmpRight.copy(WORLD_RIGHT).applyQuaternion(camera.quaternion);
-    if (_tmpRight.lengthSq() < EPSILON) _tmpRight.copy(WORLD_RIGHT);
-  }
-  _tmpRight.normalize();
-
-  _tmpUp.crossVectors(_tmpZAxis, _tmpRight).normalize();
-  _tmpMatrix.makeBasis(_tmpRight, _tmpUp, _tmpZAxis);
-  camera.quaternion.setFromRotationMatrix(_tmpMatrix);
-  camera.up.copy(_tmpUp);
-}
-
-function clampHalfSize(size: number): number {
-  if (!Number.isFinite(size)) return 0;
-  return Math.max(0, Math.min(1, size)) * 0.5;
-}
-
-function isFiniteVec3(value: Vec3): boolean {
-  return Number.isFinite(value.x) && Number.isFinite(value.y) && Number.isFinite(value.z);
-}

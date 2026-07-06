@@ -1,32 +1,42 @@
 {
   "name": "@huma/path-creator",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Path creator runtime for Three.js and React Three Fiber",
   "license": "MIT",
   "type": "module",
-  "main": "./dist/index.js",
+  "main": "./dist/index.cjs",
   "module": "./dist/index.js",
   "types": "./dist/index.d.ts",
   "exports": {
     ".": {
       "types": "./dist/index.d.ts",
-      "import": "./dist/index.js"
+      "import": "./dist/index.js",
+      "require": "./dist/index.cjs"
     },
     "./core": {
       "types": "./dist/core/index.d.ts",
-      "import": "./dist/core/index.js"
+      "import": "./dist/core/index.js",
+      "require": "./dist/core/index.cjs"
     },
     "./three": {
       "types": "./dist/three/index.d.ts",
-      "import": "./dist/three/index.js"
+      "import": "./dist/three/index.js",
+      "require": "./dist/three/index.cjs"
     },
     "./r3f": {
       "types": "./dist/r3f/index.d.ts",
-      "import": "./dist/r3f/index.js"
+      "import": "./dist/r3f/index.js",
+      "require": "./dist/r3f/index.cjs"
     },
     "./timeline": {
       "types": "./dist/timeline/index.d.ts",
-      "import": "./dist/timeline/index.js"
+      "import": "./dist/timeline/index.js",
+      "require": "./dist/timeline/index.cjs"
+    },
+    "./timeline-ui": {
+      "types": "./dist/timeline-ui/index.d.ts",
+      "import": "./dist/timeline-ui/index.js",
+      "require": "./dist/timeline-ui/index.cjs"
     }
   },
   "files": [
@@ -34,17 +44,25 @@
     "README.md",
     "LICENSE"
   ],
-  "sideEffects": false,
+  "sideEffects": [
+    "./dist/timeline-ui/index.js",
+    "./dist/timeline-ui/index.cjs"
+  ],
   "scripts": {
     "build": "tsup",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
   },
+  "dependencies": {
+    "@xzdarcy/react-timeline-editor": "^1.0.0",
+    "@xzdarcy/timeline-engine": "1.0.0"
+  },
   "peerDependencies": {
+    "@react-three/drei": "^10.7.6",
     "@react-three/fiber": "^9.0.0",
     "react": "^19.0.0",
-    "three": "^0.181.0"
+    "three": ">=0.181.0 <0.190.0"
   },
   "peerDependenciesMeta": {
     "react": {
@@ -52,9 +70,13 @@
     },
     "@react-three/fiber": {
       "optional": true
+    },
+    "@react-three/drei": {
+      "optional": true
     }
   },
   "devDependencies": {
+    "@react-three/drei": "^10.7.6",
     "@react-three/fiber": "^9.0.0",
     "@types/react": "^19.1.13",
     "@types/three": "^0.181.0",

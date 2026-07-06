@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import { Group, PerspectiveCamera, Quaternion, Vector3 } from "three";
-import { DEFAULT_COMPOSER_SETTINGS, VertexPath, createPathCart, sampleCartFrame } from "../src/core";
+import {
+  DEFAULT_COMPOSER_SETTINGS,
+  VertexPath,
+  createPathCart,
+  sampleCartFrame,
+  type ComposerSettings,
+  type Vec3
+} from "../src/core";
 import {
   activateVirtualCameraBrain,
+  applyScreenComposerAim,
   applyVirtualCameraBrain,
   applyVirtualCameraSnapshot,
   applyVirtualCameraTransition,
@@ -10,6 +18,7 @@ import {
   buildRoadMeshBuffers,
   buildTubeMeshBuffers,
   captureVirtualCameraSnapshot,
+  createScreenComposerState,
   createVirtualCameraBrainState,
   driveVirtualCameraBrain,
   evaluateVirtualCameraBlendCurve,
@@ -17,12 +26,19 @@ import {
   applyVirtualCameraNoise,
   hideEditorHelpers,
   markEditorHelpers,
+  setVirtualCameraBrainLive,
   showEditorHelpers,
   resolveVirtualCameraDefinition,
   resolveVirtualCameraTransition,
   retargetVirtualCameraBrain,
   type VirtualCameraSnapshot
 } from "../src/three";
+
+// The composer takes a full ComposerSettings; tests start from the authored
+// defaults and override only the fields under test.
+function composer(overrides: Partial<ComposerSettings>): ComposerSettings {
+  return { ...DEFAULT_COMPOSER_SETTINGS, ...overrides };
+}
 
 describe("three geometry builders", () => {
   const path = new VertexPath(
@@ -507,3 +523,242 @@ describe("driveVirtualCameraBrain", () => {
     expect(brain.isBlending).toBe(false);
   });
 });
+
+describe("virtual camera brain snap", () => {
+  it("setVirtualCameraBrainLive parks a pose with no blend", () => {
+    const brain = createVirtualCameraBrainState({
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    });
+    activateVirtualCameraBrain(
+      brain,
+      { position: { x: 10, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+      { durationSeconds: 2, curve: "linear" }
+    );
+    expect(brain.isBlending).toBe(true);
+
+    setVirtualCameraBrainLive(brain, {
+      position: { x: 7, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    });
+
+    expect(brain.isBlending).toBe(false);
+    expect(brain.previous).toBeUndefined();
+    expect(getVirtualCameraBrainProgress(brain)).toBe(1);
+    expect(brain.live?.position.x).toBeCloseTo(7);
+
+    // A subsequent update holds the snapped pose (no residual animation).
+    const camera = new PerspectiveCamera();
+    applyVirtualCameraBrain(camera, brain, 1 / 60);
+    expect(camera.position.x).toBeCloseTo(7);
+  });
+});
+
+describe("screen composer aim", () => {
+  it("preserves rotation while target is inside the dead zone", () => {
+    const camera = new PerspectiveCamera(60, 16 / 9, 0.1, 100);
+    const initial = camera.quaternion.clone();
+    const target = targetAtScreen(camera, { x: 0.04, y: 0.03 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      composer({ deadWidth: 0.2, deadHeight: 0.2, dampingX: 0, dampingY: 0 }),
+      1 / 60
+    );
+
+    expect(camera.quaternion.angleTo(initial)).toBeCloseTo(0, 6);
+  });
+
+  it("corrects to the nearest dead-zone edge instead of center", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.3, y: 0 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      composer({ deadWidth: 0.2, deadHeight: 0.2, dampingX: 0, dampingY: 0 }),
+      1 / 60
+    );
+
+    expect(screenPosition(camera, target).x).toBeCloseTo(0.1, 5);
+  });
+
+  it("respects non-center screen position", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.32, y: -0.12 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      composer({
+        screenX: 0.2,
+        screenY: -0.1,
+        deadWidth: 0.1,
+        deadHeight: 0.1,
+        dampingX: 0,
+        dampingY: 0
+      }),
+      1 / 60
+    );
+
+    const screen = screenPosition(camera, target);
+    expect(screen.x).toBeCloseTo(0.25, 5);
+    expect(Math.abs(screen.y - -0.1)).toBeLessThanOrEqual(0.05);
+  });
+
+  it("can center on activation", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.3, y: -0.2 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      composer({
+        screenX: 0.1,
+        screenY: -0.1,
+        deadWidth: 0.2,
+        deadHeight: 0.2,
+        dampingX: 1,
+        dampingY: 1,
+        centerOnActivate: true
+      }),
+      1 / 60
+    );
+
+    const screen = screenPosition(camera, target);
+    expect(screen.x).toBeCloseTo(0.1, 2);
+    expect(screen.y).toBeCloseTo(-0.1, 2);
+  });
+
+  it("clamps soft-zone breaches immediately", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.7, y: 0 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      composer({
+        deadWidth: 0.2,
+        deadHeight: 0.2,
+        softWidth: 0.8,
+        softHeight: 0.8,
+        dampingX: 0.000001,
+        dampingY: 0.000001
+      }),
+      1 / 60
+    );
+
+    expect(screenPosition(camera, target).x).toBeLessThanOrEqual(0.400001);
+  });
+
+  it("applies horizontal and vertical damping independently", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const target = targetAtScreen(camera, { x: 0.3, y: 0.3 });
+
+    applyScreenComposerAim(
+      camera,
+      target,
+      { x: 0, y: 1, z: 0 },
+      createScreenComposerState(),
+      // Damping is heaviness (bigger = slower). The lighter x axis corrects more.
+      composer({ deadWidth: 0.2, deadHeight: 0.2, dampingX: 1, dampingY: 12 }),
+      1 / 30
+    );
+
+    const screen = screenPosition(camera, target);
+    expect(Math.abs(screen.x - 0.1)).toBeLessThan(Math.abs(screen.y - 0.1));
+  });
+
+  it("damping is based on delta seconds", () => {
+    const target = targetAtScreen(new PerspectiveCamera(60, 1, 0.1, 100), { x: 0.28, y: 0 });
+    const oneStep = new PerspectiveCamera(60, 1, 0.1, 100);
+    const manySteps = new PerspectiveCamera(60, 1, 0.1, 100);
+    const oneStepState = createScreenComposerState();
+    const manyStepsState = createScreenComposerState();
+    const settings = composer({ deadWidth: 0.2, deadHeight: 0.2, dampingX: 4, dampingY: 4 });
+
+    applyScreenComposerAim(oneStep, target, { x: 0, y: 1, z: 0 }, oneStepState, settings, 1);
+    for (let i = 0; i < 60; i += 1) {
+      applyScreenComposerAim(manySteps, target, { x: 0, y: 1, z: 0 }, manyStepsState, settings, 1 / 60);
+    }
+
+    expect(screenPosition(manySteps, target).x).toBeCloseTo(screenPosition(oneStep, target).x, 2);
+  });
+
+  it("lookahead initializes and resets cleanly on teleports", () => {
+    const camera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const state = createScreenComposerState();
+    const settings = composer({
+      lookaheadTime: 0.5,
+      lookaheadSmoothing: 8,
+      dampingX: 0,
+      dampingY: 0
+    });
+
+    applyScreenComposerAim(camera, { x: 0, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, state, settings, 1 / 60);
+    expect(vec3Length(state.smoothedVelocity)).toBeCloseTo(0, 6);
+
+    applyScreenComposerAim(camera, { x: 100, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, state, settings, 1 / 60);
+    expect(vec3Length(state.smoothedVelocity)).toBeCloseTo(0, 6);
+  });
+
+  it("lookahead smoothing increases prediction lag", () => {
+    const fastState = createScreenComposerState();
+    const slowState = createScreenComposerState();
+    const fastCamera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const slowCamera = new PerspectiveCamera(60, 1, 0.1, 100);
+    const fast = composer({ lookaheadTime: 0.25, dampingX: 0, dampingY: 0, lookaheadSmoothing: 1 });
+    const slow = composer({ lookaheadTime: 0.25, dampingX: 0, dampingY: 0, lookaheadSmoothing: 12 });
+
+    applyScreenComposerAim(fastCamera, { x: 0, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, fastState, fast, 1 / 60);
+    applyScreenComposerAim(slowCamera, { x: 0, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, slowState, slow, 1 / 60);
+
+    applyScreenComposerAim(fastCamera, { x: 1, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, fastState, fast, 1 / 60);
+    applyScreenComposerAim(slowCamera, { x: 1, y: 0, z: -10 }, { x: 0, y: 1, z: 0 }, slowState, slow, 1 / 60);
+
+    expect(Math.abs(slowState.smoothedVelocity?.x ?? 0)).toBeLessThan(
+      Math.abs(fastState.smoothedVelocity?.x ?? 0)
+    );
+  });
+});
+
+function targetAtScreen(
+  camera: PerspectiveCamera,
+  screen: { x: number; y: number },
+  distance = 10
+): Vec3 {
+  const verticalFov = (camera.fov * Math.PI) / 180;
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  return {
+    x: Math.tan(screen.x * horizontalFov) * distance,
+    y: Math.tan(screen.y * verticalFov) * distance,
+    z: -distance
+  };
+}
+
+function screenPosition(camera: PerspectiveCamera, target: Vec3): { x: number; y: number } {
+  const verticalFov = (camera.fov * Math.PI) / 180;
+  const horizontalFov = 2 * Math.atan(Math.tan(verticalFov / 2) * camera.aspect);
+  const local = camera.worldToLocal(new Vector3(target.x, target.y, target.z));
+
+  return {
+    x: Math.atan2(local.x, -local.z) / horizontalFov,
+    y: Math.atan2(local.y, Math.hypot(local.x, -local.z)) / verticalFov
+  };
+}
+
+function vec3Length(v: Vec3 | undefined): number {
+  if (!v) return Number.NaN;
+  return Math.hypot(v.x, v.y, v.z);
+}

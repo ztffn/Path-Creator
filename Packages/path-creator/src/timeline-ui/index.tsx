@@ -1,17 +1,25 @@
-// Shot track over the demo show, built on @xzdarcy/react-timeline-editor as
-// a controlled shell (their playback engine is never used). Mirrors
-// Cinemachine's Timeline model: ONE track holds every shot clip; overlap =
-// crossfade (rendered as the blend zone), touch = cut, later start blends in,
-// full containment is vetoed. Clicking a clip selects its vcam. Quarantined
-// by an error boundary so a crash can't kill the canvas.
+// Shot track over a rig show, built on @xzdarcy/react-timeline-editor as a
+// controlled shell (their playback engine is never used). Mirrors Cinemachine's
+// Timeline model: ONE track holds every shot clip; overlap = crossfade (rendered
+// as the blend zone), touch = cut, full containment is vetoed. Themable via the
+// optional `theme` prop; quarantined by an error boundary so a crash can't kill
+// the host canvas. The editor's CSS is injected at build time (tsup injectStyle).
 import {
   Timeline as TimelineLaneEditor,
   type TimelineState
 } from "@xzdarcy/react-timeline-editor";
 import type { TimelineRow } from "@xzdarcy/timeline-engine";
 import "@xzdarcy/react-timeline-editor/dist/react-timeline-editor.css";
-import { Component, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from "react";
-import { seekTimelinePlayer, type TimelinePlayer } from "@huma/path-creator/timeline";
+import {
+  Component,
+  useEffect,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ReactNode
+} from "react";
+import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },
@@ -37,10 +45,66 @@ export interface LaneDollyMove {
 }
 
 /**
+ * Flat color/font record for the inline styles and the @xzdarcy CSS overrides.
+ * Values default to the original demo colors; overrides for the editor chrome
+ * are applied as CSS custom properties on the root element.
+ */
+export interface TimelineLanesTheme {
+  panelBackground?: string;
+  panelBorder?: string;
+  text?: string;
+  mutedText?: string;
+  subtleText?: string;
+  fontFamily?: string;
+  accent?: string;
+  accentSoft?: string;
+  shotFill?: string;
+  shotSelectedFill?: string;
+  shotBorder?: string;
+  shotSelectedBorder?: string;
+  moveFill?: string;
+  moveSelectedFill?: string;
+  moveBorder?: string;
+  moveSelectedBorder?: string;
+  moveText?: string;
+  live?: string;
+  idle?: string;
+  errorText?: string;
+  contextMenuBackground?: string;
+}
+
+const DEFAULT_THEME: Required<TimelineLanesTheme> = {
+  panelBackground: "rgba(10, 16, 28, 0.92)",
+  panelBorder: "rgba(148, 163, 184, 0.22)",
+  text: "#f8fafc",
+  mutedText: "#94a3b8",
+  subtleText: "#64748b",
+  fontFamily: "ui-sans-serif, system-ui, sans-serif",
+  accent: "rgba(249, 115, 22, 0.9)",
+  accentSoft: "rgba(249, 115, 22, 0.22)",
+  shotFill: "rgba(59, 130, 246, 0.35)",
+  shotSelectedFill: "rgba(249, 115, 22, 0.45)",
+  shotBorder: "rgba(148, 163, 184, 0.35)",
+  shotSelectedBorder: "rgba(249, 115, 22, 0.9)",
+  moveFill: "rgba(148, 163, 184, 0.16)",
+  moveSelectedFill: "rgba(249, 115, 22, 0.22)",
+  moveBorder: "rgba(148, 163, 184, 0.4)",
+  moveSelectedBorder: "rgba(249, 115, 22, 0.7)",
+  moveText: "#cbd5e1",
+  live: "#22c55e",
+  idle: "#64748b",
+  errorText: "#fca5a5",
+  contextMenuBackground: "rgba(10, 16, 28, 0.98)"
+};
+
+/**
  * Quarantines the third-party lane editor: a crash inside it must not
  * unmount the app (and with it the WebGL canvas).
  */
-class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean }> {
+class LaneErrorBoundary extends Component<
+  { children: ReactNode; errorColor: string },
+  { failed: boolean }
+> {
   state = { failed: false };
 
   static getDerivedStateFromError(): { failed: boolean } {
@@ -50,7 +114,7 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
   render() {
     if (this.state.failed) {
       return (
-        <div style={{ padding: 8, fontSize: 12, color: "#fca5a5" }}>
+        <div style={{ padding: 8, fontSize: 12, color: this.props.errorColor }}>
           Lane editor crashed — see console.
         </div>
       );
@@ -59,24 +123,7 @@ class LaneErrorBoundary extends Component<{ children: ReactNode }, { failed: boo
   }
 }
 
-export function TimelineLanes({
-  shots,
-  dollies,
-  dollyMoves,
-  selectedShotId,
-  playerRef,
-  duration,
-  driving,
-  onShotTiming,
-  onSelectShot,
-  onSeek,
-  onTransport,
-  onCreateShot,
-  onCreateDolly,
-  onCreatePath,
-  onDollyRunTiming,
-  onCreateDollyRun
-}: {
+export interface TimelineLanesProps {
   shots: LaneShot[];
   /** One lane per dolly (shown even with no runs, so you can add the first one). */
   dollies: { id: string; name: string }[];
@@ -85,6 +132,7 @@ export function TimelineLanes({
   playerRef: { current: TimelinePlayer };
   duration: number;
   driving: boolean;
+  theme?: TimelineLanesTheme;
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
@@ -95,7 +143,28 @@ export function TimelineLanes({
   /** A dolly run block was dragged/resized (ids are the cart and run). */
   onDollyRunTiming: (cartId: string, runId: string, start: number, end: number) => void;
   onCreateDollyRun: (cartId: string, timeSeconds: number) => void;
-}) {
+}
+
+export function TimelineLanes({
+  shots,
+  dollies,
+  dollyMoves,
+  selectedShotId,
+  playerRef,
+  duration,
+  driving,
+  theme,
+  onShotTiming,
+  onSelectShot,
+  onSeek,
+  onTransport,
+  onCreateShot,
+  onCreateDolly,
+  onCreatePath,
+  onDollyRunTiming,
+  onCreateDollyRun
+}: TimelineLanesProps) {
+  const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
     x: number;
     y: number;
@@ -225,17 +294,17 @@ export function TimelineLanes({
   const shotNames = new Map(shots.map((shot) => [shot.id, shot.name]));
 
   return (
-    <LaneErrorBoundary>
+    <LaneErrorBoundary errorColor={t.errorText}>
       <div
         style={{
           width: "100%",
           boxSizing: "border-box",
           padding: 10,
           borderRadius: 8,
-          background: "rgba(10, 16, 28, 0.92)",
-          color: "#f8fafc",
-          fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          border: "1px solid rgba(148, 163, 184, 0.22)"
+          background: t.panelBackground,
+          color: t.text,
+          fontFamily: t.fontFamily,
+          border: `1px solid ${t.panelBorder}`
         }}
       >
         <div
@@ -273,16 +342,16 @@ export function TimelineLanes({
                 <option value="1">1x</option>
                 <option value="2">2x</option>
               </select>
-              <span ref={timeLabelRef} style={{ marginLeft: "auto", color: "#94a3b8" }}>
+              <span ref={timeLabelRef} style={{ marginLeft: "auto", color: t.mutedText }}>
                 0.0s
               </span>
-              <span style={{ color: "#64748b" }}>/ {duration.toFixed(0)}s</span>
-              <span style={{ fontSize: 11, color: driving ? "#22c55e" : "#64748b" }}>
+              <span style={{ color: t.subtleText }}>/ {duration.toFixed(0)}s</span>
+              <span style={{ fontSize: 11, color: driving ? t.live : t.idle }}>
                 {driving ? "● PiP" : "○ PiP"}
               </span>
             </>
           ) : (
-            <span style={{ marginLeft: "auto", fontSize: 11, color: "#94a3b8" }}>
+            <span style={{ marginLeft: "auto", fontSize: 11, color: t.mutedText }}>
               Add a shot or a dolly move to build the show
             </span>
           )}
@@ -398,15 +467,13 @@ export function TimelineLanes({
                     alignItems: "center",
                     padding: "0 8px",
                     fontSize: 10,
-                    color: "#cbd5e1",
+                    color: t.moveText,
                     whiteSpace: "nowrap",
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     borderRadius: 4,
-                    background: ownerSelected ? "rgba(249, 115, 22, 0.22)" : "rgba(148, 163, 184, 0.16)",
-                    border: `1px dashed ${
-                      ownerSelected ? "rgba(249, 115, 22, 0.7)" : "rgba(148, 163, 184, 0.4)"
-                    }`
+                    background: ownerSelected ? t.moveSelectedFill : t.moveFill,
+                    border: `1px dashed ${ownerSelected ? t.moveSelectedBorder : t.moveBorder}`
                   }}
                 >
                   {moveLabels.get(action.id) ?? "move"}
@@ -415,7 +482,7 @@ export function TimelineLanes({
             }
             const selected = action.id === selectedShotId;
             const blendIn = blendInFractions.get(action.id) ?? 0;
-            const base = selected ? "rgba(249, 115, 22, 0.45)" : "rgba(59, 130, 246, 0.35)";
+            const base = selected ? t.shotSelectedFill : t.shotFill;
             return (
               <div
                 style={{
@@ -441,8 +508,8 @@ export function TimelineLanes({
                         }% 0 / ${(1 - blendIn) * 100}% 100% no-repeat`
                       : base,
                   border: selected
-                    ? "1px solid rgba(249, 115, 22, 0.9)"
-                    : "1px solid rgba(148, 163, 184, 0.35)"
+                    ? `1px solid ${t.shotSelectedBorder}`
+                    : `1px solid ${t.shotBorder}`
                 }}
               >
                 {shotNames.get(action.id) ?? action.id}
@@ -474,8 +541,8 @@ export function TimelineLanes({
                 minWidth: 200,
                 padding: 4,
                 borderRadius: 6,
-                background: "rgba(10, 16, 28, 0.98)",
-                border: "1px solid rgba(148, 163, 184, 0.22)",
+                background: t.contextMenuBackground,
+                border: `1px solid ${t.panelBorder}`,
                 fontSize: 12,
                 zIndex: 31
               }}
@@ -505,7 +572,7 @@ export function TimelineLanes({
                     style={{
                       height: 1,
                       margin: "4px 0",
-                      background: "rgba(148, 163, 184, 0.18)"
+                      background: t.panelBorder
                     }}
                   />
                 </>
@@ -521,7 +588,7 @@ export function TimelineLanes({
                   >
                     Add dolly move here
                   </button>
-                  <div style={{ height: 1, margin: "4px 0", background: "rgba(148, 163, 184, 0.18)" }} />
+                  <div style={{ height: 1, margin: "4px 0", background: t.panelBorder }} />
                 </>
               ) : null}
               <button

@@ -7,6 +7,7 @@
 import {
   DEFAULT_COMPOSER_SETTINGS,
   EndOfPathInstruction,
+  vcamTrackTargetId,
   type ComposerSettings,
   type RigCartDefinition,
   type TrackingTargetDefinition,
@@ -112,12 +113,9 @@ export function expandNoisePreset(preset: DemoNoisePreset): VirtualCameraNoiseSe
   return NOISE_PRESETS[preset];
 }
 
-/** The tracked target id of a track aim, or null for a body aim. */
-export function vcamTrackTargetId(def: VirtualCameraDefinition): string | null {
-  return def.aim?.type === "track" && "targetId" in def.aim.target
-    ? def.aim.target.targetId
-    : null;
-}
+// vcamTrackTargetId now lives in the package core; re-exported so demo modules
+// keep importing it from the model they already use.
+export { vcamTrackTargetId };
 
 /** Builds the flat UI view from a definition and its editor/timing sidecars. */
 export function toVcamView(

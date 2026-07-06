@@ -150,6 +150,13 @@ export interface VirtualCameraDefinition {
   settings?: Record<string, number>;
 }
 
+/** The tracked target id of a `track` aim that references a target by id, or null. */
+export function vcamTrackTargetId(def: VirtualCameraDefinition): string | null {
+  return def.aim?.type === "track" && "targetId" in def.aim.target
+    ? def.aim.target.targetId
+    : null;
+}
+
 export interface VirtualCameraResolveContext {
   getCartFrame?: (cartId: string) => CartFrame | null;
   getTargetPosition?: (targetId: string) => Vec3 | null;
