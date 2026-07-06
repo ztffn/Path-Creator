@@ -267,6 +267,7 @@ export * from "./targets";
 export * from "./editor";
 export * from "./path-editor";
 export * from "./point-targets";
+export * from "./rig-drive";
 
 export function vec3Distance(a: Vec3, b: Vec3): number {
   return vec3.distance(a, b);
