@@ -1,64 +1,64 @@
 // P0.3 WebGPU validation surface (see GEOSPATIAL-INTEGRATION-DEBRIEF.md): mounts
-// only the WebGPU-safe package visuals — PathVisual (dolly rail) + CartGizmo —
-// under three's WebGPURenderer, to prove RigLine's thin-line path renders with no
-// LineMaterial device loss. Deliberately excludes PivotControls and troika text
-// (still WebGPU-unfinished). Run in a WebGPU browser to catch B-class regressions.
+// the full PathEditor under three's WebGPURenderer with the WebGPU-safe gizmo
+// (TransformGizmo) injected, proving the editor renders, selects (click another
+// anchor), and edits (drag) with no LineMaterial/troika/geometry-churn device
+// loss. Anchor labels + midpoint pivot are gated off on WebGPU inside PathEditor.
 import { Canvas, extend } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
-import { useMemo, useRef } from "react";
-// three/webgpu re-exports core THREE plus the node materials + WebGPURenderer.
-// extend() registers them as R3F JSX intrinsics so <lineBasicMaterial> etc. map
-// to node-compatible materials on the WebGPU backend.
+import { useMemo, useState } from "react";
 import * as THREE from "three/webgpu";
-import {
-  VertexPath,
-  createPathCart,
-  sampleCartFrame,
-  type CartFrame
-} from "@huma/path-creator/core";
-import { CartGizmo, PathVisual, TransformGizmo } from "@huma/path-creator/r3f";
+import { BezierPath, ControlMode, PathSpace, VertexPath, type Vec3 } from "@huma/path-creator/core";
+import { PathEditor, TransformGizmo, useEditorHelpersVisible } from "@huma/path-creator/r3f";
 
 extend(THREE as unknown as Record<string, unknown>);
 
 function Scene() {
-  const path = useMemo(
+  // PathEditor renders its visuals on the reserved EditorHelpers layer; the
+  // viewport camera must enable it or the editor renders to nothing.
+  useEditorHelpersVisible();
+
+  const bezier = useMemo(
     () =>
-      new VertexPath(
+      new BezierPath(
         [
           { x: -2, y: 0, z: 0 },
-          { x: -1, y: 0.4, z: 1.2 },
-          { x: 1, y: 0.4, z: 1.2 },
+          { x: -0.7, y: 0.5, z: 1.2 },
+          { x: 0.7, y: 0.5, z: 1.2 },
           { x: 2, y: 0, z: 0 }
         ],
-        [0, 1, 2, 3]
+        { space: PathSpace.XYZ, controlMode: ControlMode.Automatic }
       ),
     []
   );
+  const [pathVersion, setPathVersion] = useState(0);
+  const vertexPath = useMemo(
+    () => new VertexPath(bezier, { spacing: 0.05 }),
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [bezier, pathVersion]
+  );
 
-  // One static cart frame parked mid-rail, so CartGizmo's core edge lines render.
-  const framesRef = useRef<Map<string, CartFrame>>(new Map());
-  useMemo(() => {
-    framesRef.current.set("cart", sampleCartFrame(path, createPathCart({}), path.length * 0.5));
-  }, [path]);
-
-  // Interactive drag test: TransformGizmo (WebGPU-safe) attached directly to a
-  // root-level box — no rotated parent, so the axes are clean and it's a pure
-  // "does the gizmo attach + drag on WebGPU" check.
-  const boxMatrix = useMemo(() => new THREE.Matrix4().makeTranslation(0, 0.7, 1.6), []);
+  const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
+  const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
 
   return (
     <>
       <ambientLight intensity={0.7} />
       <directionalLight position={[3, 4, 2]} intensity={1} />
-      <PathVisual vertexPath={path} style="rail" color="#22c55e" tieColor="#15803d" />
-      {/* No `name` → no troika text, so this validates only the WebGPU-safe lines. */}
-      <CartGizmo framesRef={framesRef} cartId="cart" color="#e2e8f0" />
-      <TransformGizmo matrix={boxMatrix} onDrag={() => {}}>
-        <mesh>
-          <boxGeometry args={[0.25, 0.25, 0.25]} />
-          <meshStandardMaterial color="#f97316" emissive="#f97316" emissiveIntensity={0.3} />
-        </mesh>
-      </TransformGizmo>
+      <PathEditor
+        bezierPath={bezier}
+        vertexPath={vertexPath}
+        pathVersion={pathVersion}
+        pathStyle="rail"
+        gizmo={TransformGizmo}
+        selectedHandleIndex={selectedHandleIndex}
+        selectedMidpointIndex={selectedMidpointIndex}
+        onSelectHandle={setSelectedHandleIndex}
+        onSelectMidpoint={setSelectedMidpointIndex}
+        onMovePoint={(index: number, point: Vec3) => {
+          bezier.movePoint(index, point);
+          setPathVersion((v) => v + 1);
+        }}
+      />
     </>
   );
 }
@@ -68,15 +68,15 @@ export function App() {
     <Canvas
       camera={{ position: [0, 2.5, 4], fov: 45 }}
       gl={async (props) => {
-        const renderer = new THREE.WebGPURenderer(props as ConstructorParameters<typeof THREE.WebGPURenderer>[0]);
+        const renderer = new THREE.WebGPURenderer(
+          props as ConstructorParameters<typeof THREE.WebGPURenderer>[0]
+        );
         await renderer.init();
         return renderer;
       }}
     >
       <color attach="background" args={["#0a101c"]} />
       <Scene />
-      {/* Camera-only (no materials), so WebGPU-safe. makeDefault so the gizmo
-          drag suppresses orbit. */}
       <OrbitControls makeDefault />
     </Canvas>
   );
