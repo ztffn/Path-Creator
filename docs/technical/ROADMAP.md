@@ -28,6 +28,32 @@ captured in `GEOSPATIAL-INTEGRATION-DEBRIEF.md`. **Key learning: the /core edit
 model + /timeline reused cleanly; the /r3f editor UI could NOT render in the
 consumer's WebGPU renderer (drei fat lines) — the #1 thing to fix (debrief P0).**
 
+### P0 — WebGPU-safe rendering (the `RigLine` seam)  ·  = debrief P0
+**First step DONE.** All package line rendering now routes through `RigLine`
+(`src/r3f/rig-line.tsx`), which picks the material by backend: WebGL → drei fat
+line (thick); WebGPU → core `LineBasicMaterial` (thin, auto-maps, no
+`LineMaterial` device-loss). Wired into `PathVisual` (rails/ties/centre) and
+`PathEditor` (sibling dashed); `CartGizmo` uses core `EdgesGeometry` instead of
+drei `<Edges>`. Policy this pass (decided with the user): **thin-but-safe on
+WebGPU, thick on WebGL.** drei stays an *optional* peer, touched only on the
+WebGL branch — the seam localizes every follow-up below to one file.
+
+Follow-ups:
+- **Node-material thickness on WebGPU.** RigLine's WebGPU branch renders thin;
+  upgrade it to `Line2NodeMaterial` (fat, WebGPU-native) so lines are thick on
+  both backends. Dashed lines are also dropped on the WebGPU branch until then.
+- **Drop drei for lines entirely.** Replace the WebGL branch's drei `<Line>` with
+  `three/addons` `Line2` so lines need *zero* drei (drei fully optional, not just
+  peer-optional) — the "graceful fallback with no drei" goal.
+- **Pluggable, WebGPU-safe gizmo (debrief P0.2).** drei `PivotControls` (drag) is
+  still fat-line/WebGL-only; offer three `TransformControls` as the default and
+  make the gizmo pluggable (`gizmo?: 'transform' | 'pivot' | custom`).
+- **WebGPU-safe text/labels.** anchor/dolly/target labels use drei/troika `<Text>`
+  (unproven on WebGPU); add a sprite/canvas fallback or make labels optional.
+- **WebGPU validation example (debrief P0.3).** RigLine's WebGPU path is safe by
+  construction but only exercised on the WebGL demo today — add a WebGPU example so
+  B-class regressions are caught in-repo, not in a consumer's browser.
+
 ### 3c-4 — extract the drive-loop into the package  ·  = debrief P1.1
 **Integration-validated:** the twin reinvented this loop by hand
 (`PathRigDriver.useFrame`) because it wasn't extracted — confirming the need.
