@@ -301,12 +301,30 @@ export function PathEditor({
       setHandleGizmoRotation([0, 0, 0]);
       return;
     }
-    const anchorPointIndex = getAnchorPointIndexForHandle(bezierPath, selectedHandleIndex);
-    const anchorPoint = bezierPath.getPoint(anchorPointIndex);
-    const [qx, qy, qz, qw] = getSurfaceAlignedQuaternion(vertexPath, anchorPoint);
-    const euler = new Euler().setFromQuaternion(new Quaternion(qx, qy, qz, qw), "XYZ");
+    // Anchors align to the surface plane (Z = normal). Control handles align
+    // local X to their in/out direction (anchor -> handle), so dragging that axis
+    // is pure length and the gizmo tracks the tangent after a move — rather than
+    // snapping to the anchor's surface normal, which is unrelated to the handle.
+    let quat: Quaternion;
+    if (selectedHandleIsAnchor) {
+      const [qx, qy, qz, qw] = getSurfaceAlignedQuaternion(
+        vertexPath,
+        bezierPath.getPoint(selectedHandleIndex)
+      );
+      quat = new Quaternion(qx, qy, qz, qw);
+    } else {
+      const anchor = bezierPath.getPoint(getAnchorPointIndexForHandle(bezierPath, selectedHandleIndex));
+      const handle = bezierPath.getPoint(selectedHandleIndex);
+      const dir = new Vector3(handle.x - anchor.x, handle.y - anchor.y, handle.z - anchor.z);
+      if (dir.lengthSq() < 1e-10) {
+        setHandleGizmoRotation([0, 0, 0]);
+        return;
+      }
+      quat = new Quaternion().setFromUnitVectors(new Vector3(1, 0, 0), dir.normalize());
+    }
+    const euler = new Euler().setFromQuaternion(quat, "XYZ");
     setHandleGizmoRotation([euler.x, euler.y, euler.z]);
-  }, [bezierPath, isTransforming, selectedHandleIndex, useWorldSpaceGizmo, vertexPath]);
+  }, [bezierPath, isTransforming, selectedHandleIndex, selectedHandleIsAnchor, useWorldSpaceGizmo, vertexPath]);
 
   return (
     <EditorHelpers>
