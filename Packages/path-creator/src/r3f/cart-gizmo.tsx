@@ -3,12 +3,12 @@
 // and its rail position/orientation reads at a glance — Cinemachine's dolly cart.
 // Reads the cart's frame from a shared frames map. Host places it on the editor-
 // helpers layer (inside <EditorHelpers>); playback/vcam cameras never see it.
-import { Text } from "@react-three/drei";
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import { BoxGeometry, EdgesGeometry, type Group } from "three";
 import type { CartFrame } from "../core";
 import { applyCartFrameToObject } from "../three";
+import { RigLabel } from "./rig-label";
 
 /**
  * Per-frame: sit `groupRef` on the rail at the cart's live frame — the frame
@@ -76,17 +76,9 @@ export function CartGizmo({
         <lineBasicMaterial color={color} />
       </lineSegments>
       {name ? (
-        <Text
-          position={[0, boxY + 0.1, 0]}
-          fontSize={0.08}
-          color={labelColor}
-          anchorX="center"
-          anchorY="middle"
-          renderOrder={999}
-          material-depthTest={false}
-        >
+        <RigLabel position={[0, boxY + 0.1, 0]} fontSize={0.08} color={labelColor}>
           {name}
-        </Text>
+        </RigLabel>
       ) : null}
     </group>
   );

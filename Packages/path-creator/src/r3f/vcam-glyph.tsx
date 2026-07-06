@@ -3,11 +3,11 @@
 // and CartVcamGlyphRig (mounts a glyph — or any child — on a cart's rail frame
 // with a pluggable offset gizmo). Lines route through RigLine (WebGPU-safe) and
 // the gizmo through RigGizmo, so both drop into any host renderer.
-import { Text } from "@react-three/drei";
 import { useMemo, useRef, type ReactNode } from "react";
 import { Matrix4, type Group } from "three";
 import type { CartFrame, Vec3 } from "../core";
 import { useCartFrameFollow } from "./cart-gizmo";
+import { RigLabel } from "./rig-label";
 import { PivotGizmo, type RigGizmoComponent } from "./rig-gizmo";
 import { RigLine } from "./rig-line";
 
@@ -49,18 +49,9 @@ export function VirtualCameraGlyph({ name, selected, active, onSelect }: Virtual
         color={color}
         lineWidth={1.5}
       />
-      <Text
-        position={[0, 0.18, 0]}
-        fontSize={0.08}
-        color={color}
-        anchorX="center"
-        anchorY="middle"
-        renderOrder={999}
-        material-depthTest={false}
-        material-depthWrite={false}
-      >
+      <RigLabel position={[0, 0.18, 0]} fontSize={0.08} color={color}>
         {name}
-      </Text>
+      </RigLabel>
     </group>
   );
 }

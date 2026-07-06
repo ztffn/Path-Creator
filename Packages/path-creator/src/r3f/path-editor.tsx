@@ -3,7 +3,7 @@
 // gizmos, anchor/handle glyphs, and the drag/rotate PivotControls. Themable via
 // PathEditorProps.theme. The subtree renders inside <EditorHelpers>, so hosts
 // must call useEditorHelpersVisible(editing) on their viewport camera to see it.
-import { Billboard, PivotControls, Text } from "@react-three/drei";
+import { Billboard, PivotControls } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Euler, Matrix4, Quaternion, Vector3 } from "three";
 import {
@@ -16,6 +16,7 @@ import {
 import { type DollyRailOptions } from "../three";
 import { EditorHelpers } from "./editor";
 import { PathVisual, buildPathLinePoints } from "./path-visual";
+import { RigLabel } from "./rig-label";
 import { PivotGizmo, type RigGizmoComponent } from "./rig-gizmo";
 import { RigLine, useIsWebGPURenderer } from "./rig-line";
 
@@ -517,19 +518,10 @@ export function PathEditor({
                   <meshBasicMaterial color={t.anchor} transparent opacity={0.55} side={2} />
                 </mesh>
               ) : null}
-              {isAnchor && !isWebGPU ? (
-                <Text
-                  position={[0, 0, 0.002]}
-                  fontSize={0.09}
-                  color={t.label}
-                  anchorX="center"
-                  anchorY="middle"
-                  renderOrder={999}
-                  material-depthTest={false}
-                  material-depthWrite={false}
-                >
+              {isAnchor ? (
+                <RigLabel position={[0, 0, 0.002]} fontSize={0.09} color={t.label}>
                   {String(Math.floor(i / 3) + 1)}
-                </Text>
+                </RigLabel>
               ) : null}
             </group>
           );
@@ -571,19 +563,10 @@ export function PathEditor({
                 depthTest={false}
               />
             </mesh>
-            {isAnchor && !isWebGPU ? (
-              <Text
-                position={[0, 0, 0.002]}
-                fontSize={0.09}
-                color={t.label}
-                anchorX="center"
-                anchorY="middle"
-                renderOrder={999}
-                material-depthTest={false}
-                material-depthWrite={false}
-              >
+            {isAnchor ? (
+              <RigLabel position={[0, 0, 0.002]} fontSize={0.09} color={t.label}>
                 {String(Math.floor(i / 3) + 1)}
-              </Text>
+              </RigLabel>
             ) : null}
             {/* Always mounted; hidden via opacity when unselected so the ring
                 geometry never churns on selection (WebGPU-safe). Constant args:
