@@ -78,6 +78,13 @@ const DEFAULT_THEME: Required<PathEditorTheme> = {
   label: "#f97316"
 };
 
+// Selection/edit state is conveyed through mesh scale + material opacity, never
+// by changing geometry `args`. Swapping a ring/circle's args (or mounting a new
+// glyph mesh) mid-frame disposes/creates its GPU buffers, which three's WebGPU
+// backend mishandles (drawIndexed with no vertex buffer bound → device loss on
+// anchor click). Constant args keep every glyph geometry stable for its lifetime.
+const SELECTED_GLYPH_GROW = 1.14;
+
 export function buildControlLinePositions(path: BezierPath): Float32Array {
   const values: number[] = [];
   for (let i = 0; i < path.numSegments; i += 1) {
@@ -469,8 +476,8 @@ export function PathEditor({
                 onSelectHandle(i);
               }}
             >
-              <mesh>
-                <circleGeometry args={[isSelected ? 0.07 : 0.058, 24]} />
+              <mesh scale={isSelected ? SELECTED_GLYPH_GROW : 1}>
+                <circleGeometry args={[0.058, 24]} />
                 <meshBasicMaterial
                   color={color}
                   transparent={!draggable}
@@ -478,12 +485,18 @@ export function PathEditor({
                   depthTest={false}
                 />
               </mesh>
-              {isSelected ? (
-                <mesh position={[0, 0, -0.001]}>
-                  <ringGeometry args={[0.074, 0.088, 24]} />
-                  <meshBasicMaterial color={t.handleSelected} opacity={0.9} transparent depthTest={false} />
-                </mesh>
-              ) : null}
+              {/* Always mounted; hidden via opacity when unselected so the
+                  geometry never churns (WebGPU-safe). */}
+              <mesh position={[0, 0, -0.001]}>
+                <ringGeometry args={[0.074, 0.088, 24]} />
+                <meshBasicMaterial
+                  color={t.handleSelected}
+                  opacity={isSelected ? 0.9 : 0}
+                  transparent
+                  depthTest={false}
+                  depthWrite={false}
+                />
+              </mesh>
             </Billboard>
           );
         }
@@ -496,14 +509,8 @@ export function PathEditor({
                 <meshBasicMaterial color={color} opacity={0.35} transparent side={2} />
               </mesh>
               {isAnchor ? (
-                <mesh position={[0, 0, -0.001]}>
-                  <ringGeometry
-                    args={[
-                      0.13 * anchorScaleVisual,
-                      0.145 * anchorScaleVisual,
-                      36
-                    ]}
-                  />
+                <mesh position={[0, 0, -0.001]} scale={anchorScaleVisual}>
+                  <ringGeometry args={[0.13, 0.145, 36]} />
                   <meshBasicMaterial color={t.anchor} transparent opacity={0.55} side={2} />
                 </mesh>
               ) : null}
@@ -535,25 +542,13 @@ export function PathEditor({
               onSelectHandle(i);
             }}
           >
-            <mesh>
-              <ringGeometry
-                args={[
-                  isSelected ? (isAnchor ? 0.095 : 0.075) : isAnchor ? 0.085 : 0.065,
-                  isSelected ? (isAnchor ? 0.125 : 0.1) : isAnchor ? 0.11 : 0.085,
-                  28
-                ]}
-              />
+            <mesh scale={isSelected ? SELECTED_GLYPH_GROW : 1}>
+              <ringGeometry args={[isAnchor ? 0.085 : 0.065, isAnchor ? 0.11 : 0.085, 28]} />
               <meshBasicMaterial color={color} side={2} />
             </mesh>
             {isAnchor ? (
-              <mesh position={[0, 0, -0.001]}>
-                <ringGeometry
-                  args={[
-                    0.13 * anchorScaleVisual,
-                    0.145 * anchorScaleVisual,
-                    36
-                  ]}
-                />
+              <mesh position={[0, 0, -0.001]} scale={anchorScaleVisual}>
+                <ringGeometry args={[0.13, 0.145, 36]} />
                 <meshBasicMaterial color={t.anchor} transparent opacity={0.65} side={2} />
               </mesh>
             ) : null}
@@ -587,18 +582,19 @@ export function PathEditor({
                 {String(Math.floor(i / 3) + 1)}
               </Text>
             ) : null}
-            {isSelected ? (
-              <mesh position={[0, 0, -0.001]}>
-                <ringGeometry
-                  args={[
-                    isAnchor ? 0.13 : 0.105,
-                    isAnchor ? 0.155 : 0.13,
-                    28
-                  ]}
-                />
-                <meshBasicMaterial color={isAnchor ? t.anchorSelected : t.handleSelected} opacity={0.9} transparent side={2} />
-              </mesh>
-            ) : null}
+            {/* Always mounted; hidden via opacity when unselected so the ring
+                geometry never churns on selection (WebGPU-safe). Constant args:
+                anchor size (larger) — control handles scale it down. */}
+            <mesh position={[0, 0, -0.001]} scale={isAnchor ? 1 : 0.808}>
+              <ringGeometry args={[0.13, 0.155, 28]} />
+              <meshBasicMaterial
+                color={isAnchor ? t.anchorSelected : t.handleSelected}
+                opacity={isSelected ? 0.9 : 0}
+                transparent
+                side={2}
+                depthWrite={false}
+              />
+            </mesh>
           </group>
         );
       })}
