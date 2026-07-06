@@ -658,14 +658,42 @@ export function captureVirtualCameraSnapshot(
   return snapshot;
 }
 
-export function applyVirtualCameraSnapshot(camera: Camera, snapshot: VirtualCameraSnapshot): void {
-  camera.position.set(snapshot.position.x, snapshot.position.y, snapshot.position.z);
-  camera.quaternion.set(
-    snapshot.quaternion.x,
-    snapshot.quaternion.y,
-    snapshot.quaternion.z,
-    snapshot.quaternion.w
-  );
+const _rigSnapMatrix = new Matrix4();
+const _rigWorldMatrix = new Matrix4();
+const _rigPos = new Vector3();
+const _rigQuat = new Quaternion();
+const _rigScale = new Vector3();
+const _rigOne = new Vector3(1, 1, 1);
+
+/**
+ * Places a rig-space snapshot onto the (world-root) camera. `rigMatrix` is the
+ * world matrix of the group the rig is mounted under; when given, the snapshot is
+ * composed through it so a rig under a rotated/translated parent frames with a
+ * level horizon (no roll). Omit it (or pass identity) and the camera pose is set
+ * directly, byte-identical to before — the world-root case.
+ */
+export function applyVirtualCameraSnapshot(
+  camera: Camera,
+  snapshot: VirtualCameraSnapshot,
+  rigMatrix?: Matrix4
+): void {
+  if (rigMatrix) {
+    _rigSnapMatrix.compose(
+      _rigPos.set(snapshot.position.x, snapshot.position.y, snapshot.position.z),
+      _rigQuat.set(snapshot.quaternion.x, snapshot.quaternion.y, snapshot.quaternion.z, snapshot.quaternion.w),
+      _rigOne
+    );
+    _rigWorldMatrix.multiplyMatrices(rigMatrix, _rigSnapMatrix);
+    _rigWorldMatrix.decompose(camera.position, camera.quaternion, _rigScale);
+  } else {
+    camera.position.set(snapshot.position.x, snapshot.position.y, snapshot.position.z);
+    camera.quaternion.set(
+      snapshot.quaternion.x,
+      snapshot.quaternion.y,
+      snapshot.quaternion.z,
+      snapshot.quaternion.w
+    );
+  }
 
   if (snapshot.lens) {
     if (snapshot.lens.dutchDeg) {
@@ -910,13 +938,17 @@ const COMPOSER_STAGE_UP: Vec3 = { x: 0, y: 1, z: 0 };
  * Returns the framed world-space target (for overlays), or null when the vcam is
  * not a damped-composer aim or its target is unavailable.
  */
+const _composerTargetWorld = new Vector3();
+const _composerUpWorld = new Vector3();
+
 export function stepComposerAim(
   camera: Camera,
   definition: VirtualCameraDefinition,
   state: RigComposerState,
   resolveTarget: (targetId: string) => Vec3 | null,
   deltaSeconds: number,
-  up: Vec3 = COMPOSER_STAGE_UP
+  up: Vec3 = COMPOSER_STAGE_UP,
+  rigMatrix?: Matrix4
 ): Vec3 | null {
   const aim = definition.aim;
   if (!aim || aim.type !== "track" || !aim.settings) {
@@ -924,10 +956,22 @@ export function stepComposerAim(
     return null;
   }
 
-  const target = "targetId" in aim.target ? resolveTarget(aim.target.targetId) : aim.target;
-  if (!target) {
+  const rigTarget = "targetId" in aim.target ? resolveTarget(aim.target.targetId) : aim.target;
+  if (!rigTarget) {
     state.vcamId = null;
     return null;
+  }
+
+  // The composer reframes the world-root camera in world space, so bring the
+  // rig-space target (point) and up (direction) into world when a rigMatrix is
+  // set. The world up is what levels the horizon under a rotated parent.
+  let target: Vec3 = rigTarget;
+  let worldUp: Vec3 = up;
+  if (rigMatrix) {
+    _composerTargetWorld.set(rigTarget.x, rigTarget.y, rigTarget.z).applyMatrix4(rigMatrix);
+    target = { x: _composerTargetWorld.x, y: _composerTargetWorld.y, z: _composerTargetWorld.z };
+    _composerUpWorld.set(up.x, up.y, up.z).transformDirection(rigMatrix);
+    worldUp = { x: _composerUpWorld.x, y: _composerUpWorld.y, z: _composerUpWorld.z };
   }
 
   if (state.vcamId !== definition.id) {
@@ -939,7 +983,7 @@ export function stepComposerAim(
   }
 
   camera.quaternion.copy(state.composedQuat);
-  applyScreenComposerAim(camera, target, up, state.aim, aim.settings, deltaSeconds);
+  applyScreenComposerAim(camera, target, worldUp, state.aim, aim.settings, deltaSeconds);
   state.composedQuat.copy(camera.quaternion);
   return target;
 }
@@ -1120,11 +1164,12 @@ export function updateVirtualCameraBrain(
 export function applyVirtualCameraBrain(
   camera: Camera,
   state: VirtualCameraBrainState,
-  deltaSeconds: number
+  deltaSeconds: number,
+  rigMatrix?: Matrix4
 ): VirtualCameraSnapshot | undefined {
   const snapshot = updateVirtualCameraBrain(state, deltaSeconds);
   if (snapshot) {
-    applyVirtualCameraSnapshot(camera, snapshot);
+    applyVirtualCameraSnapshot(camera, snapshot, rigMatrix);
   }
   return snapshot;
 }
@@ -1140,13 +1185,14 @@ export function driveVirtualCameraBrain(
   state: VirtualCameraBrainState,
   definition: VirtualCameraDefinition,
   context: VirtualCameraResolveContext,
-  deltaSeconds: number
+  deltaSeconds: number,
+  rigMatrix?: Matrix4
 ): VirtualCameraSnapshot | undefined {
   const resolved = resolveVirtualCameraDefinition(definition, context);
   if (resolved) {
     retargetVirtualCameraBrain(state, { target: resolved });
   }
-  return applyVirtualCameraBrain(camera, state, deltaSeconds);
+  return applyVirtualCameraBrain(camera, state, deltaSeconds, rigMatrix);
 }
 
 export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): number {
@@ -1197,6 +1243,10 @@ export interface RigActivationParams {
   /** Pose to blend from when a cart-bodied vcam cannot resolve yet. */
   fallbackSnapshot?: VirtualCameraSnapshot;
   up?: Vec3;
+  /** World matrix of the group the rig is mounted under; composes rig-space poses
+   *  into world so the driven (world-root) camera frames level under a rotated
+   *  parent. Omit for a rig at world root (the default). */
+  rigMatrix?: Matrix4;
 }
 
 /**
@@ -1241,14 +1291,22 @@ export function driveActivation(
     state.activation = { key, vcamId: activeVcamId };
   }
 
-  const resolved = driveVirtualCameraBrain(camera, state.brain, definition, context, deltaSeconds);
+  const resolved = driveVirtualCameraBrain(
+    camera,
+    state.brain,
+    definition,
+    context,
+    deltaSeconds,
+    params.rigMatrix
+  );
   const composerTarget = stepComposerAim(
     camera,
     definition,
     state.composer,
     resolveTarget,
     deltaSeconds,
-    params.up
+    params.up,
+    params.rigMatrix
   );
 
   return {

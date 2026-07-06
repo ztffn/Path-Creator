@@ -21,7 +21,7 @@ import {
   type VirtualCameraDefinition,
   type VirtualCameraSnapshot
 } from "../core";
-import type { Camera } from "three";
+import type { Camera, Matrix4 } from "three";
 import {
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
@@ -188,6 +188,10 @@ export interface RigTimelineParams {
   /** Shared frames map the host reads (glyphs, cart-mounted targets). */
   cartFrames: Map<string, CartFrame>;
   up?: Vec3;
+  /** World matrix of the group the rig is mounted under; composes rig-space poses
+   *  into world so the driven (world-root) camera frames level under a rotated
+   *  parent. Omit for a rig at world root (the default). */
+  rigMatrix?: Matrix4;
 }
 
 /**
@@ -225,7 +229,7 @@ export function driveTimeline(
   }
 
   setVirtualCameraBrainLive(state.brain, sample.camera);
-  applyVirtualCameraSnapshot(camera, sample.camera);
+  applyVirtualCameraSnapshot(camera, sample.camera, params.rigMatrix);
 
   const activeVcamId = sample.activeBlock?.block.vcamId ?? null;
   const definition = activeVcamId ? context.vcams.get(activeVcamId) ?? null : null;
@@ -237,7 +241,8 @@ export function driveTimeline(
       state.composer,
       context.getTargetPosition ?? (() => null),
       deltaSeconds,
-      params.up
+      params.up,
+      params.rigMatrix
     );
   } else {
     state.composer.vcamId = null;

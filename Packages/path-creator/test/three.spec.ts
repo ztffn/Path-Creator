@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Group, PerspectiveCamera, Quaternion, Vector3 } from "three";
+import { Group, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from "three";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   VertexPath,
@@ -372,6 +372,85 @@ describe("virtual camera bodies", () => {
       { getCartFrame }
     );
     expect(snapshot).toBeNull();
+  });
+});
+
+describe("rig-matrix camera placement (P1.2: follow through a transformed parent)", () => {
+  const rotSnap = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 5);
+  const snap: VirtualCameraSnapshot = {
+    name: "s",
+    position: { x: 1, y: 2, z: 3 },
+    quaternion: { x: rotSnap.x, y: rotSnap.y, z: rotSnap.z, w: rotSnap.w }
+  };
+
+  it("identity rigMatrix matches the world-root path (backward compatible)", () => {
+    const a = new PerspectiveCamera();
+    applyVirtualCameraSnapshot(a, snap);
+    const b = new PerspectiveCamera();
+    applyVirtualCameraSnapshot(b, snap, new Matrix4());
+    expect(b.position.distanceTo(a.position)).toBeCloseTo(0, 6);
+    expect(b.quaternion.angleTo(a.quaternion)).toBeCloseTo(0, 6);
+  });
+
+  it("places a rig-space snapshot into world through a rotated + translated parent", () => {
+    const rig = new Matrix4().compose(
+      new Vector3(100, 0, 0),
+      new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2),
+      new Vector3(1, 1, 1)
+    );
+    const s: VirtualCameraSnapshot = {
+      name: "o",
+      position: { x: 0, y: 0, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    };
+    const cam = new PerspectiveCamera();
+    applyVirtualCameraSnapshot(cam, s, rig);
+    cam.updateMatrixWorld(true);
+    expect(cam.getWorldPosition(new Vector3()).distanceTo(new Vector3(100, 0, 0))).toBeCloseTo(0, 5);
+    const forward = cam.getWorldDirection(new Vector3());
+    const expected = new Vector3(0, 0, -1).transformDirection(rig);
+    expect(forward.angleTo(expected)).toBeCloseTo(0, 5);
+  });
+
+  it("composer keeps the horizon level and returns a world-space target under a rolled parent", () => {
+    // Rig rolled 40deg about Z + translated: its up is tilted vs world Y.
+    const rig = new Matrix4().compose(
+      new Vector3(5, 0, 0),
+      new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), (40 * Math.PI) / 180),
+      new Vector3(1, 1, 1)
+    );
+    const def: VirtualCameraDefinition = {
+      id: "v",
+      body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+      aim: {
+        type: "track",
+        target: { x: 2, y: 1.5, z: -5 },
+        settings: composer({ dampingX: 0, dampingY: 0, centerOnActivate: true })
+      }
+    };
+    const cam = new PerspectiveCamera(50, 16 / 9, 0.1, 100);
+    applyVirtualCameraSnapshot(
+      cam,
+      { name: "b", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+      rig
+    );
+    const state = createRigComposerState();
+    const worldTarget = stepComposerAim(cam, def, state, () => null, 1 / 60, undefined, rig);
+    cam.updateMatrixWorld(true);
+
+    // Returned target is the rig-space target expressed in world (for overlays).
+    const expectedTarget = new Vector3(2, 1.5, -5).applyMatrix4(rig);
+    expect(worldTarget).not.toBeNull();
+    expect(
+      new Vector3(worldTarget!.x, worldTarget!.y, worldTarget!.z).distanceTo(expectedTarget)
+    ).toBeCloseTo(0, 5);
+
+    // Level horizon: the camera's screen-right is horizontal w.r.t. the rig's up
+    // (no roll). Contrast: without rigMatrix the composer levels to world Y instead.
+    const expectedUp = new Vector3(0, 1, 0).transformDirection(rig);
+    const right = new Vector3(1, 0, 0).applyQuaternion(cam.quaternion);
+    expect(right.dot(expectedUp)).toBeCloseTo(0, 4);
+    expect(Math.abs(right.dot(new Vector3(0, 1, 0)))).toBeGreaterThan(0.3);
   });
 });
 
