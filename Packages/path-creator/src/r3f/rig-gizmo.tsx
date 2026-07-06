@@ -5,7 +5,7 @@
 // the TransformControls impl + routing the rest of the editor through this is a
 // ROADMAP follow-up (it needs an interactive/WebGPU oracle to verify).
 import { PivotControls, TransformControls } from "@react-three/drei";
-import { useEffect, useRef, type ReactNode } from "react";
+import { useCallback, useEffect, useRef, type ReactNode } from "react";
 import { Matrix4, type Group } from "three";
 
 export interface RigGizmoProps {
@@ -87,10 +87,22 @@ export const TransformGizmo: RigGizmoComponent = ({
     if (rotation) group.rotation.set(rotation[0], rotation[1], rotation[2]);
   }, [matrix, rotation]);
 
+  // The gizmo's own picking raycaster defaults to layer 0 only, but a host that
+  // parks the gizmo on a reserved layer (e.g. EditorHelpers marks the whole
+  // editor subtree onto EDITOR_HELPERS_LAYER) would then be un-grabbable — the
+  // handles draw but the raycaster can't hit them. Check all layers so the gizmo
+  // is grabbable wherever it lives.
+  const controlsRef = useCallback((controls: unknown) => {
+    // `raycaster` is public at runtime (three-stdlib) though typed private.
+    const rc = (controls as { raycaster?: { layers: { enableAll: () => void } } } | null)?.raycaster;
+    rc?.layers.enableAll();
+  }, []);
+
   return (
     <>
       <group ref={target}>{children}</group>
       <TransformControls
+        ref={controlsRef}
         object={target}
         mode="translate"
         space="local"
