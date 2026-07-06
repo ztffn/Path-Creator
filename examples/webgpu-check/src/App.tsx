@@ -1,8 +1,10 @@
-// P0.3 WebGPU validation surface (see GEOSPATIAL-INTEGRATION-DEBRIEF.md): mounts
-// the full PathEditor under three's WebGPURenderer with the WebGPU-safe gizmo
-// (TransformGizmo) injected, proving the editor renders, selects (click another
-// anchor), and edits (drag) with no LineMaterial/troika/geometry-churn device
-// loss. Anchor labels + midpoint pivot are gated off on WebGPU inside PathEditor.
+// P0.3 WebGPU validation surface (see GEOSPATIAL-INTEGRATION-DEBRIEF.md): the full
+// PathEditor under three's WebGPURenderer with the WebGPU-safe gizmo (TransformGizmo)
+// injected. Proves the editor renders, selects (click any anchor OR control point),
+// and edits (drag the gizmo) with no device loss. ControlMode.Free so control points
+// are draggable; a visible theme so the rail reads on the dark background. Anchor
+// labels + midpoint pivot are gated off on WebGPU inside PathEditor (RigLabel is a
+// ROADMAP follow-up).
 import { Canvas, extend } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useMemo, useState } from "react";
@@ -11,6 +13,19 @@ import { BezierPath, ControlMode, PathSpace, VertexPath, type Vec3 } from "@huma
 import { PathEditor, TransformGizmo, useEditorHelpersVisible } from "@huma/path-creator/r3f";
 
 extend(THREE as unknown as Record<string, unknown>);
+
+// Bright rail/handles so the editor reads on the dark canvas (the default theme's
+// near-black rail is invisible here — a consumer supplies its own theme).
+const THEME = {
+  rail: "#38bdf8",
+  tie: "#0ea5e9",
+  activeLine: "#38bdf8",
+  controlLine: "#94a3b8",
+  anchor: "#f97316",
+  anchorSelected: "#fde047",
+  handle: "#22c55e",
+  handleSelected: "#fde047"
+};
 
 function Scene() {
   // PathEditor renders its visuals on the reserved EditorHelpers layer; the
@@ -26,7 +41,7 @@ function Scene() {
           { x: 0.7, y: 0.5, z: 1.2 },
           { x: 2, y: 0, z: 0 }
         ],
-        { space: PathSpace.XYZ, controlMode: ControlMode.Automatic }
+        { space: PathSpace.XYZ, controlMode: ControlMode.Free }
       ),
     []
   );
@@ -49,6 +64,7 @@ function Scene() {
         vertexPath={vertexPath}
         pathVersion={pathVersion}
         pathStyle="rail"
+        theme={THEME}
         gizmo={TransformGizmo}
         selectedHandleIndex={selectedHandleIndex}
         selectedMidpointIndex={selectedMidpointIndex}
