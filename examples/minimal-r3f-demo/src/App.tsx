@@ -10,7 +10,6 @@ import {
   createPathCart,
   sampleCartFrame,
   type CameraOverrideAxisMode,
-  type CameraOverrideSettings,
   type CartFrame,
   type ComposerSettings,
   type RegisteredTarget,
@@ -63,6 +62,7 @@ import {
 import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
+  hasActiveOverrideAxis,
   makeDolly,
   ORBIT_DEFAULTS,
   ORBIT_INTERACTIVE_CONTROL,
@@ -117,7 +117,7 @@ type DemoShotPatch = Partial<
     | "orbitRadius"
     | "orbitBinding"
     | "orbitAutoDegPerSec"
-    | "orbitControl"
+    | "overrideControl"
   >
 >;
 
@@ -258,14 +258,6 @@ function SpinningTargetProbe({
     </group>
   );
 }
-
-/** True when any override axis is user-controllable (free/recenter) — worth piloting. */
-function hasInteractiveOrbitAxis(control: CameraOverrideSettings): boolean {
-  return (["azimuth", "elevation", "pan", "dolly"] as const).some(
-    (axis) => (control[axis]?.mode ?? "locked") !== "locked"
-  );
-}
-
 
 function shotRowLabelStyle(columns: string): CSSProperties {
   return {
@@ -517,9 +509,9 @@ function Scene({
     // timeline plays the show; an activated or selected shot previews through the
     // activation driver (blend vs cut); otherwise idle ("no output").
     const isActivationPreview = Boolean(virtualCameraActivation && !isTransforming);
-    // Live orbit-pilot input is consumed once per frame, only in Play mode. Every
-    // driver (timeline + activation) forwards it; each applies it only to an
-    // interactive orbit body, so it's inert for other shots.
+    // Live pilot input is consumed once per frame, only in Play mode. Every driver
+    // (timeline + activation) forwards it; the package applies it to whichever shot
+    // carries an override `control` (any body), and no-ops shots that don't.
     const overrideInput = playMode ? overrideAcc.drain() : null;
     let intent: RigDriveIntent;
     if (activeTimeline) {
@@ -1555,37 +1547,42 @@ function VirtualCameraPanel({
                           }
                         />
                       </label>
-                      <div
-                        style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}
-                        title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
-                      >
-                        Manual control (Play mode: LMB orbit, RMB pan, wheel dolly)
-                      </div>
-                      {(["azimuth", "elevation", "pan", "dolly"] as const).map((axis) => (
-                        <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
-                          <span style={{ textTransform: "capitalize" }}>{axis}</span>
-                          <select
-                            value={camera.orbitControl[axis]?.mode ?? "locked"}
-                            onChange={(event) =>
-                              onUpdateShot(camera.id, {
-                                orbitControl: {
-                                  ...camera.orbitControl,
-                                  [axis]:
-                                    event.target.value === "recenter"
-                                      ? { mode: "recenter", recenterWait: 1.5, recenterTime: 1 }
-                                      : { mode: event.target.value as CameraOverrideAxisMode }
-                                }
-                              })
-                            }
-                          >
-                            <option value="locked">Locked (coded only)</option>
-                            <option value="free">Free (override, holds)</option>
-                            <option value="recenter">Recenter (override, eases back)</option>
-                          </select>
-                        </label>
-                      ))}
                     </div>
                   ) : null}
+                  <div
+                    onClick={(event) => event.stopPropagation()}
+                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
+                  >
+                    <div
+                      style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}
+                      title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
+                    >
+                      Manual control (Play mode: LMB orbit, RMB pan, wheel dolly)
+                    </div>
+                    {(["azimuth", "elevation", "pan", "dolly"] as const).map((axis) => (
+                      <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
+                        <span style={{ textTransform: "capitalize" }}>{axis}</span>
+                        <select
+                          value={camera.overrideControl[axis]?.mode ?? "locked"}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, {
+                              overrideControl: {
+                                ...camera.overrideControl,
+                                [axis]:
+                                  event.target.value === "recenter"
+                                    ? { mode: "recenter", recenterWait: 1.5, recenterTime: 1 }
+                                    : { mode: event.target.value as CameraOverrideAxisMode }
+                              }
+                            })
+                          }
+                        >
+                          <option value="locked">Locked (coded only)</option>
+                          <option value="free">Free (override, holds)</option>
+                          <option value="recenter">Recenter (override, eases back)</option>
+                        </select>
+                      </label>
+                    ))}
+                  </div>
                 </div>
               );
             })}
@@ -1678,6 +1675,11 @@ export function App() {
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   // Manual-override input: the capture surface accumulates, the drive loop drains.
   const overrideAcc = useMemo(() => createOverrideInputAccumulator(), []);
+  // Clear any gesture left in the accumulator when entering Play, so a delta from a
+  // prior Play session can't jump the camera on this session's first drive frame.
+  useEffect(() => {
+    if (playMode) overrideAcc.drain();
+  }, [playMode, overrideAcc]);
   // Composer overlay markers on the PiP, driven imperatively from Scene's frame loop.
   const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
@@ -2139,16 +2141,6 @@ export function App() {
   // Play mode drops a viewport input surface over the whole 3D view whenever a
   // camera drives it (edit-mode authoring uses gizmos/sliders, not viewport drag).
   const showPlayInput = playMode && hasPipSource;
-  // It pilots the driven shot — whichever driver (timeline OR activation) chose it
-  // — only when that shot is an interactive orbit; else it is a view-only capture
-  // that still swallows input so nothing leaks.
-  const pilotOrbit =
-    showPlayInput &&
-    Boolean(
-      activeDrivenVcam &&
-        activeDrivenVcam.bodyType === "orbit" &&
-        hasInteractiveOrbitAxis(activeDrivenVcam.orbitControl)
-    );
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -2385,14 +2377,14 @@ export function App() {
       patch.orbitElevationDeg !== undefined ||
       patch.orbitRadius !== undefined ||
       patch.orbitBinding !== undefined ||
-      patch.orbitAutoDegPerSec !== undefined ||
-      patch.orbitControl !== undefined;
+      patch.orbitAutoDegPerSec !== undefined;
     if (
       patch.noisePreset !== undefined ||
       patch.trackTargetId !== undefined ||
       patch.dutchDeg !== undefined ||
       patch.cartId !== undefined ||
       patch.cartOffset !== undefined ||
+      patch.overrideControl !== undefined ||
       orbitPatched
     ) {
       setVcamDefs((current) =>
@@ -2445,8 +2437,12 @@ export function App() {
             }
             next.body = body;
           }
-          // Manual override lives at the definition level (applies to any body).
-          if (patch.orbitControl !== undefined) next.control = patch.orbitControl;
+          // Manual override lives at the definition level (any body). Attach it only
+          // when an axis is pilotable, so all-locked shots keep the package fast-path.
+          if (patch.overrideControl !== undefined) {
+            if (hasActiveOverrideAxis(patch.overrideControl)) next.control = patch.overrideControl;
+            else delete next.control;
+          }
           return next;
         })
       );

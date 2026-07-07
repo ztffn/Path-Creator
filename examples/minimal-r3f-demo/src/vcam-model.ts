@@ -109,7 +109,7 @@ export type DemoVirtualCamera = {
   /** Auto-orbit rate; 0 holds a static orbital angle. */
   orbitAutoDegPerSec: number;
   /** Per-axis manual override (locked/free/recenter) — applies to any vcam. */
-  orbitControl: CameraOverrideSettings;
+  overrideControl: CameraOverrideSettings;
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
@@ -119,6 +119,15 @@ export type DemoVirtualCamera = {
   composerSettings: ComposerSettings;
 };
 
+/** All-locked override: input ignored, the shot plays exactly as authored. The
+ *  body-agnostic default every view carries until an axis is set free/recenter. */
+export const DEFAULT_OVERRIDE_CONTROL: CameraOverrideSettings = {
+  azimuth: { mode: "locked" },
+  elevation: { mode: "locked" },
+  pan: { mode: "locked" },
+  dolly: { mode: "locked" }
+};
+
 /** Defaults for the orbit sidecar fields; a static/cart view still carries them. */
 export const ORBIT_DEFAULTS = {
   orbitTargetId: "",
@@ -126,14 +135,17 @@ export const ORBIT_DEFAULTS = {
   orbitElevationDeg: 20,
   orbitRadius: 6,
   orbitBinding: "world" as OrbitBinding,
-  orbitAutoDegPerSec: 0,
-  orbitControl: {
-    azimuth: { mode: "locked" },
-    elevation: { mode: "locked" },
-    pan: { mode: "locked" },
-    dolly: { mode: "locked" }
-  } as CameraOverrideSettings
+  orbitAutoDegPerSec: 0
 };
+
+/** True when any override axis is user-controllable (free/recenter) — i.e. worth
+ *  attaching `control` to the definition. An all-locked override is left off so
+ *  the package keeps its fast-path (no pivot resolve, no decompose). */
+export function hasActiveOverrideAxis(control: CameraOverrideSettings): boolean {
+  return (["azimuth", "elevation", "pan", "dolly"] as const).some(
+    (axis) => (control[axis]?.mode ?? "locked") !== "locked"
+  );
+}
 
 /** A freshly added orbit vcam is interactive out of the box (OrbitControls feel):
  *  LMB spins azimuth (free) + tilts elevation (recenter after idle), RMB pans
@@ -179,8 +191,7 @@ export function toVcamView(
           orbitElevationDeg: def.body.elevationDeg,
           orbitRadius: def.body.radius,
           orbitBinding: def.body.binding ?? "world",
-          orbitAutoDegPerSec: def.body.autoOrbitDegPerSec ?? 0,
-          orbitControl: def.control ?? ORBIT_DEFAULTS.orbitControl
+          orbitAutoDegPerSec: def.body.autoOrbitDegPerSec ?? 0
         }
       : ORBIT_DEFAULTS;
   return {
@@ -190,6 +201,7 @@ export function toVcamView(
     cartId: def.body.type === "cart" ? def.body.cartId : "",
     cartOffset: def.body.type === "cart" ? def.body.positionOffset ?? { x: 0, y: 0, z: 0 } : { x: 0, y: 0, z: 0 },
     ...orbit,
+    overrideControl: def.control ?? DEFAULT_OVERRIDE_CONTROL,
     trackTargetId: vcamTrackTargetId(def),
     noisePreset: editor.noisePreset,
     dutchDeg,
@@ -237,8 +249,9 @@ export function vcamDefFromView(
             }
           : { type: "static", position: view.snapshot.position, quaternion: view.snapshot.quaternion }
   };
-  // Manual override lives at the definition level now (applies to any body).
-  if (view.bodyType === "orbit") def.control = view.orbitControl;
+  // Manual override lives at the definition level (any body). Only attach it when
+  // an axis is actually pilotable, so all-locked shots keep the package fast-path.
+  if (hasActiveOverrideAxis(view.overrideControl)) def.control = view.overrideControl;
   if (view.trackTargetId) {
     def.aim = {
       type: "track",
