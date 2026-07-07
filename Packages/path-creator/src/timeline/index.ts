@@ -14,6 +14,7 @@ import {
   type CartFrame,
   type CartTrack,
   type PathCart,
+  type QuaternionLike,
   type RigRuntime,
   type Timeline,
   type TimelineEvent,
@@ -23,12 +24,15 @@ import {
 } from "../core";
 import type { Camera, Matrix4 } from "three";
 import {
+  applyOrbitLive,
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
   driveActivation,
   resolveVirtualCameraDefinition,
   setVirtualCameraBrainLive,
   stepComposerAim,
+  stepOrbitBody,
+  type OrbitInput,
   type RigActivationParams,
   type RigDriveResult,
   type RigDriveState
@@ -51,6 +55,8 @@ export interface TimelineRigContext {
   rig: Pick<RigRuntime, "paths" | "carts" | "cartPaths">;
   vcams: Map<string, VirtualCameraDefinition>;
   getTargetPosition?: (targetId: string) => Vec3 | null;
+  /** Target world orientation, for target-relative orbit binding (`lockYaw`/`lock`). */
+  getTargetOrientation?: (targetId: string) => QuaternionLike | null;
 }
 
 export interface TimelineSample {
@@ -83,6 +89,7 @@ export function evaluateTimeline(
   const resolveContext = {
     getCartFrame: (cartId: string) => cartFrames.get(cartId) ?? null,
     ...(context.getTargetPosition && { getTargetPosition: context.getTargetPosition }),
+    ...(context.getTargetOrientation && { getTargetOrientation: context.getTargetOrientation }),
     elapsedSeconds: t
   };
 
@@ -192,6 +199,11 @@ export interface RigTimelineParams {
    *  into world so the driven (world-root) camera frames level under a rotated
    *  parent. Omit for a rig at world root (the default). */
   rigMatrix?: Matrix4;
+  /** Live interactive input for the active block's orbit body (pointer/wheel
+   *  deltas). The timeline picks WHICH vcam + blends; the body's input axes still
+   *  respond, per its `control` modes — like Cinemachine input axes under a
+   *  timeline. Omit for pure playback. */
+  orbitInput?: OrbitInput;
 }
 
 /**
@@ -219,6 +231,7 @@ export function driveTimeline(
   if (!sample.camera) {
     // Released gap: nothing drives the camera; the host holds the last pose.
     state.composer.vcamId = null;
+    state.body.vcamId = null;
     return {
       cameraSnapshot: null,
       activeVcamId: null,
@@ -228,11 +241,36 @@ export function driveTimeline(
     };
   }
 
-  setVirtualCameraBrainLive(state.brain, sample.camera);
-  applyVirtualCameraSnapshot(camera, sample.camera, params.rigMatrix);
-
   const activeVcamId = sample.activeBlock?.block.vcamId ?? null;
   const definition = activeVcamId ? context.vcams.get(activeVcamId) ?? null : null;
+
+  // Interactive orbit input stays live under timeline playback: evaluateTimeline
+  // stays pure (scrub-safe), and — mirroring how the composer overrides orientation
+  // as a live post-stage — the body's input axes override the position here. The
+  // active block's orbit vcam is re-resolved with its live offsets. Skipped while a
+  // block blend is in flight, so transitions remain the authored blend.
+  let pose = sample.camera;
+  if (definition) {
+    stepOrbitBody(definition, state.body, params.orbitInput, deltaSeconds);
+    if (sample.blendProgress >= 1) {
+      const driven = applyOrbitLive(definition, state.body);
+      if (driven !== definition) {
+        const piloted = resolveVirtualCameraDefinition(driven, {
+          getCartFrame: (id) => cartFrames.get(id) ?? null,
+          ...(context.getTargetPosition && { getTargetPosition: context.getTargetPosition }),
+          ...(context.getTargetOrientation && { getTargetOrientation: context.getTargetOrientation }),
+          elapsedSeconds: player.time
+        });
+        if (piloted) pose = piloted;
+      }
+    }
+  } else {
+    state.body.vcamId = null;
+  }
+
+  setVirtualCameraBrainLive(state.brain, pose);
+  applyVirtualCameraSnapshot(camera, pose, params.rigMatrix);
+
   let composerTarget: Vec3 | null = null;
   if (definition) {
     composerTarget = stepComposerAim(
@@ -249,7 +287,7 @@ export function driveTimeline(
   }
 
   return {
-    cameraSnapshot: sample.camera,
+    cameraSnapshot: pose,
     activeVcamId,
     composerTarget,
     blendProgress: sample.blendProgress,
@@ -299,6 +337,7 @@ export function driveRig(
   }
   // Idle: mirror the activation idle path so re-entry re-activates cleanly.
   state.composer.vcamId = null;
+  state.body.vcamId = null;
   state.activation = { key: null, vcamId: null };
   return { ...IDLE_RESULT, cameraSnapshot: state.brain.live ?? null };
 }
