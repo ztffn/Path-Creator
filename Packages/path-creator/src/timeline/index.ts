@@ -24,15 +24,15 @@ import {
 } from "../core";
 import type { Camera, Matrix4 } from "three";
 import {
-  applyOrbitLive,
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
   driveActivation,
+  resolveCameraPivot,
   resolveVirtualCameraDefinition,
   setVirtualCameraBrainLive,
+  stepCameraOverride,
   stepComposerAim,
-  stepOrbitBody,
-  type OrbitInput,
+  type CameraOverrideInput,
   type RigActivationParams,
   type RigDriveResult,
   type RigDriveState
@@ -199,11 +199,11 @@ export interface RigTimelineParams {
    *  into world so the driven (world-root) camera frames level under a rotated
    *  parent. Omit for a rig at world root (the default). */
   rigMatrix?: Matrix4;
-  /** Live interactive input for the active block's orbit body (pointer/wheel
-   *  deltas). The timeline picks WHICH vcam + blends; the body's input axes still
-   *  respond, per its `control` modes — like Cinemachine input axes under a
-   *  timeline. Omit for pure playback. */
-  orbitInput?: OrbitInput;
+  /** Live manual-override input for the active block's vcam (LMB/RMB/wheel deltas).
+   *  The timeline picks WHICH vcam + blends; the vcam's override axes still respond
+   *  per its `control` modes — like OrbitControls under a timeline. Omit for pure
+   *  playback. */
+  overrideInput?: CameraOverrideInput;
 }
 
 /**
@@ -244,25 +244,28 @@ export function driveTimeline(
   const activeVcamId = sample.activeBlock?.block.vcamId ?? null;
   const definition = activeVcamId ? context.vcams.get(activeVcamId) ?? null : null;
 
-  // Interactive orbit input stays live under timeline playback: evaluateTimeline
+  // Manual pivot-orbit override stays live under timeline playback: evaluateTimeline
   // stays pure (scrub-safe), and — mirroring how the composer overrides orientation
-  // as a live post-stage — the body's input axes override the position here. The
-  // active block's orbit vcam is re-resolved with its live offsets. Skipped while a
-  // block blend is in flight, so transitions remain the authored blend.
+  // as a live post-stage — the override transforms the active shot's pose around its
+  // pivot here. Stepped every frame to keep its state/damping alive; only applied
+  // when not mid-blend, so block transitions remain the authored blend.
+  const resolveTarget = context.getTargetPosition ?? (() => null);
   let pose = sample.camera;
+  let overrideActive = false;
   if (definition) {
-    stepOrbitBody(definition, state.body, params.orbitInput, deltaSeconds);
+    const pivot = resolveCameraPivot(definition, sample.camera, resolveTarget);
+    const override = stepCameraOverride(
+      sample.camera,
+      pivot,
+      definition.id,
+      definition.control,
+      state.body,
+      params.overrideInput,
+      deltaSeconds
+    );
     if (sample.blendProgress >= 1) {
-      const driven = applyOrbitLive(definition, state.body);
-      if (driven !== definition) {
-        const piloted = resolveVirtualCameraDefinition(driven, {
-          getCartFrame: (id) => cartFrames.get(id) ?? null,
-          ...(context.getTargetPosition && { getTargetPosition: context.getTargetPosition }),
-          ...(context.getTargetOrientation && { getTargetOrientation: context.getTargetOrientation }),
-          elapsedSeconds: player.time
-        });
-        if (piloted) pose = piloted;
-      }
+      pose = override.snapshot;
+      overrideActive = override.active;
     }
   } else {
     state.body.vcamId = null;
@@ -272,12 +275,12 @@ export function driveTimeline(
   applyVirtualCameraSnapshot(camera, pose, params.rigMatrix);
 
   let composerTarget: Vec3 | null = null;
-  if (definition) {
+  if (definition && !overrideActive) {
     composerTarget = stepComposerAim(
       camera,
       definition,
       state.composer,
-      context.getTargetPosition ?? (() => null),
+      resolveTarget,
       deltaSeconds,
       params.up,
       params.rigMatrix
