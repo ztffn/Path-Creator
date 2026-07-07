@@ -7,9 +7,10 @@ import {
   evaluateVirtualCameraBlendCurve,
   offsetAlongBasis,
   orthonormalBasis,
+  type CameraOverrideAxis,
+  type CameraOverrideSettings,
   type CartFrame,
   type ComposerSettings,
-  type OrbitAxisControl,
   type OrbitBinding,
   type QuaternionLike,
   type TargetRegistry,
@@ -1361,31 +1362,41 @@ export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): n
  * tracks the last activated shot to detect re-activations. Playback drivers park
  * the brain each frame; the activation driver blends it.
  */
-/** Live per-frame interactive input for an orbit body: per-axis deltas the host
- *  feeds from pointer/wheel. Omitted axes get no input this frame. */
-export interface OrbitInput {
+/** Live per-frame manual-override input the host feeds from pointer/wheel: LMB
+ *  drag → azimuth/elevation, RMB drag → pan (view-plane), wheel → dolly. All
+ *  optional; omitted axes get no input this frame. */
+export interface CameraOverrideInput {
   azimuthDeltaDeg?: number;
   elevationDeltaDeg?: number;
-  /** Additive radius (zoom) delta in scene units; positive pulls the camera out. */
-  radiusDelta?: number;
+  /** Pan in the view plane, scene units (right / up). */
+  panXDelta?: number;
+  panYDelta?: number;
+  /** Dolly distance delta, scene units; positive pulls the camera out. */
+  dollyDelta?: number;
 }
 
 /**
- * The interactive orbit body's carried state (mirrors RigComposerState): the live
- * per-axis offsets from the coded pose that user input accumulates and recentering
- * decays, the idle timers that gate recentering, and the vcam id it belongs to (to
- * reseed on a shot change). Held inside RigDriveState so it survives the
- * timeline<->activation switch. Only the activation driver steps it; timeline
- * playback stays pure/scrub-safe.
+ * The manual-override channel's carried state (mirrors RigComposerState): the live
+ * offsets from the coded shot that input accumulates and recentering decays, the
+ * per-axis idle timers, and the vcam id it belongs to (reseeds on a shot change).
+ * Dolly is split target/applied for a damped (smooth) zoom. Held in RigDriveState
+ * so it survives a timeline<->activation switch.
  */
 export interface RigBodyState {
   vcamId: string | null;
   azimuthOffsetDeg: number;
   elevationOffsetDeg: number;
-  radiusOffset: number;
+  /** Pan offset of the pivot, world/rig space. */
+  panX: number;
+  panY: number;
+  panZ: number;
+  /** Dolly: input target vs damped applied distance offset. */
+  dollyTargetOffset: number;
+  dollyOffset: number;
   idleAzimuth: number;
   idleElevation: number;
-  idleRadius: number;
+  idlePan: number;
+  idleDolly: number;
 }
 
 export function createRigBodyState(): RigBodyState {
@@ -1393,84 +1404,138 @@ export function createRigBodyState(): RigBodyState {
     vcamId: null,
     azimuthOffsetDeg: 0,
     elevationOffsetDeg: 0,
-    radiusOffset: 0,
+    panX: 0,
+    panY: 0,
+    panZ: 0,
+    dollyTargetOffset: 0,
+    dollyOffset: 0,
     idleAzimuth: 0,
     idleElevation: 0,
-    idleRadius: 0
+    idlePan: 0,
+    idleDolly: 0
   };
 }
 
-const ORBIT_INPUT_EPSILON = 1e-6;
+const OVERRIDE_INPUT_EPSILON = 1e-6;
+const OVERRIDE_DOLLY_DAMPING = 6; // heaviness of the smooth zoom ease (bigger = slower)
+const SYNTH_PIVOT_DISTANCE = 10; // pivot distance for a shot with no aim/orbit target
 
 /** Wraps degrees to (-180, 180] so recentering takes the shortest angular path. */
 function wrapDeg180(deg: number): number {
   return ((((deg + 180) % 360) + 360) % 360) - 180;
 }
 
+/** Recentering ease factor: ~settled after `time` seconds. */
+function recenterAlpha(time: number, dt: number): number {
+  return time > 0 ? 1 - Math.exp(-(5 / time) * Math.max(0, dt)) : 1;
+}
+
 /**
- * Advances one interactive orbit axis: applies input under its mode, ticks the
- * idle timer, and (recenter, once idle past the wait) eases the offset toward the
- * coded value (0). `wrap` handles the angular azimuth axis. Locked ignores input
- * and snaps the offset to 0.
+ * One scalar override axis: apply input under its mode, tick the idle timer, and
+ * (recenter, once idle past the wait) ease the offset toward the coded value (0).
+ * `wrap` handles the angular azimuth axis. Locked ignores input and snaps to 0.
  */
-function stepOrbitAxis(
+function stepOverrideAxis(
   offset: number,
   idle: number,
   delta: number,
-  control: OrbitAxisControl | undefined,
+  control: CameraOverrideAxis | undefined,
   dt: number,
   wrap: boolean
 ): { offset: number; idle: number } {
   const mode = control?.mode ?? "locked";
   if (mode === "locked") return { offset: 0, idle: 0 };
 
-  const hadInput = Math.abs(delta) > ORBIT_INPUT_EPSILON;
+  const hadInput = Math.abs(delta) > OVERRIDE_INPUT_EPSILON;
   let next = offset + delta;
   if (wrap) next = wrapDeg180(next);
   const nextIdle = hadInput ? 0 : idle + Math.max(0, dt);
 
-  if (mode === "recenter" && !hadInput) {
-    const wait = control?.recenterWait ?? 1;
-    const time = control?.recenterTime ?? 1;
-    if (nextIdle >= wait) {
-      // Exponential ease toward the coded value; ~settled after `time` seconds.
-      const alpha = time > 0 ? 1 - Math.exp(-(5 / time) * Math.max(0, dt)) : 1;
-      next *= 1 - alpha;
-    }
+  if (mode === "recenter" && !hadInput && nextIdle >= (control?.recenterWait ?? 1)) {
+    next *= 1 - recenterAlpha(control?.recenterTime ?? 1, dt);
   }
   return { offset: next, idle: nextIdle };
 }
 
+const _ovQuat = new Quaternion();
+const _ovRight = new Vector3();
+const _ovUp = new Vector3();
+
 /**
- * Steps the interactive orbit body state once per frame (the activation driver's
- * post-input stage): integrates per-axis OrbitInput under each axis's mode,
- * reseeding to the coded pose on a shot change. Pure state mutation — it never
- * touches the camera; applyOrbitLive feeds the effective params into the (pure)
- * resolver. A non-orbit body clears the state.
+ * The vcam's pivot for manual override: its aim target (what the shot frames),
+ * else the orbit target, else a synthesized point in front of the coded pose — so
+ * every shot has a pivot to orbit/pan/dolly around.
  */
-export function stepOrbitBody(
+export function resolveCameraPivot(
   definition: VirtualCameraDefinition,
-  state: RigBodyState,
-  input: OrbitInput | undefined,
-  deltaSeconds: number
-): void {
-  const body = definition.body;
-  if (body.type !== "orbit") {
-    state.vcamId = null;
-    return;
+  coded: VirtualCameraSnapshot,
+  resolveTarget: (id: string) => Vec3 | null
+): Vec3 {
+  const aim = definition.aim;
+  if (aim?.type === "track") {
+    const t = "targetId" in aim.target ? resolveTarget(aim.target.targetId) : aim.target;
+    if (t) return t;
   }
-  if (state.vcamId !== definition.id) {
-    state.vcamId = definition.id;
-    state.azimuthOffsetDeg = 0;
-    state.elevationOffsetDeg = 0;
-    state.radiusOffset = 0;
-    state.idleAzimuth = 0;
-    state.idleElevation = 0;
-    state.idleRadius = 0;
+  if (definition.body.type === "orbit") {
+    const b = definition.body;
+    const t = "targetId" in b.target ? resolveTarget(b.target.targetId) : b.target;
+    if (t) return t;
+  }
+  _ovRight
+    .set(0, 0, -1)
+    .applyQuaternion(
+      _ovQuat.set(coded.quaternion.x, coded.quaternion.y, coded.quaternion.z, coded.quaternion.w)
+    );
+  return {
+    x: coded.position.x + _ovRight.x * SYNTH_PIVOT_DISTANCE,
+    y: coded.position.y + _ovRight.y * SYNTH_PIVOT_DISTANCE,
+    z: coded.position.z + _ovRight.z * SYNTH_PIVOT_DISTANCE
+  };
+}
+
+/** A manual-override step's output: the pose to drive, and whether the override is
+ *  active (any live offset). When active it owns position AND aim (looks at the
+ *  panned pivot), so the caller skips the composer. */
+export interface CameraOverrideResult {
+  snapshot: VirtualCameraSnapshot;
+  active: boolean;
+}
+
+const OVERRIDE_WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
+
+/**
+ * Manual pivot-orbit override on a resolved (coded) snapshot — the twin's
+ * OrbitControls model, generalized to any vcam: LMB orbits azimuth/elevation
+ * around `pivot`, RMB pans the pivot in the view plane, wheel dollies distance
+ * (damped, clamped by min/maxDistance). Per-axis locked/free/recenter (recenter
+ * eases back to the coded shot). Reseeds on a shot change. With no live offset it
+ * returns the coded snapshot unchanged (exact passthrough, active=false); when
+ * live it owns position + look-at-pivot orientation. Works in world/rig space, so
+ * it composes through rigMatrix at apply-time like any snapshot.
+ */
+export function stepCameraOverride(
+  coded: VirtualCameraSnapshot,
+  pivot: Vec3,
+  vcamId: string,
+  control: CameraOverrideSettings | undefined,
+  state: RigBodyState,
+  input: CameraOverrideInput | undefined,
+  deltaSeconds: number
+): CameraOverrideResult {
+  if (state.vcamId !== vcamId) {
+    Object.assign(state, createRigBodyState(), { vcamId });
   }
 
-  const control = body.control;
-  const az = stepOrbitAxis(
+  // Decompose the coded offset from the pivot into spherical (world axes) — the
+  // exact inverse of orbitOffset, so a zero offset reconstructs the coded pose.
+  const dx = coded.position.x - pivot.x;
+  const dy = coded.position.y - pivot.y;
+  const dz = coded.position.z - pivot.z;
+  const r0 = Math.hypot(dx, dy, dz);
+  const az0 = Math.atan2(dx, dz) / DEG_TO_RAD;
+  const el0 = r0 > OVERRIDE_INPUT_EPSILON ? Math.asin(clamp(dy / r0, -1, 1)) / DEG_TO_RAD : 0;
+
+  const az = stepOverrideAxis(
     state.azimuthOffsetDeg,
     state.idleAzimuth,
     input?.azimuthDeltaDeg ?? 0,
@@ -1481,7 +1546,7 @@ export function stepOrbitBody(
   state.azimuthOffsetDeg = az.offset;
   state.idleAzimuth = az.idle;
 
-  const el = stepOrbitAxis(
+  const el = stepOverrideAxis(
     state.elevationOffsetDeg,
     state.idleElevation,
     input?.elevationDeltaDeg ?? 0,
@@ -1489,60 +1554,71 @@ export function stepOrbitBody(
     deltaSeconds,
     false
   );
-  // Clamp so coded + offset stays within the ±80 elevation limit (no windup).
-  state.elevationOffsetDeg = clamp(
-    el.offset,
-    -ORBIT_ELEVATION_LIMIT - body.elevationDeg,
-    ORBIT_ELEVATION_LIMIT - body.elevationDeg
-  );
+  // Clamp so coded + offset stays off the ±80 poles (no windup past the limit).
+  state.elevationOffsetDeg = clamp(el.offset, -ORBIT_ELEVATION_LIMIT - el0, ORBIT_ELEVATION_LIMIT - el0);
   state.idleElevation = el.idle;
 
-  const rad = stepOrbitAxis(
-    state.radiusOffset,
-    state.idleRadius,
-    input?.radiusDelta ?? 0,
-    control?.radius,
-    deltaSeconds,
-    false
-  );
-  state.radiusOffset = rad.offset;
-  state.idleRadius = rad.idle;
-}
-
-const ORBIT_MIN_RADIUS = 0.01;
-
-/**
- * Patches an orbit definition with the live interactive offsets so the pure
- * resolver produces the effective pose. Returns the definition unchanged when it
- * is not the orbit vcam the body state owns, or when there is no live offset — so
- * change-detection and non-interactive shots see the coded definition.
- */
-export function applyOrbitLive(
-  definition: VirtualCameraDefinition,
-  state: RigBodyState
-): VirtualCameraDefinition {
-  const body = definition.body;
-  if (body.type !== "orbit" || state.vcamId !== definition.id) return definition;
-  if (
-    state.azimuthOffsetDeg === 0 &&
-    state.elevationOffsetDeg === 0 &&
-    state.radiusOffset === 0
-  ) {
-    return definition;
-  }
-  return {
-    ...definition,
-    body: {
-      ...body,
-      azimuthDeg: body.azimuthDeg + state.azimuthOffsetDeg,
-      elevationDeg: clamp(
-        body.elevationDeg + state.elevationOffsetDeg,
-        -ORBIT_ELEVATION_LIMIT,
-        ORBIT_ELEVATION_LIMIT
-      ),
-      radius: Math.max(ORBIT_MIN_RADIUS, body.radius + state.radiusOffset)
+  // Pan (RMB): accumulate in world via the coded view basis; recenter to 0.
+  const panMode = control?.pan?.mode ?? "locked";
+  if (panMode === "locked") {
+    state.panX = state.panY = state.panZ = state.idlePan = 0;
+  } else {
+    _ovQuat.set(coded.quaternion.x, coded.quaternion.y, coded.quaternion.z, coded.quaternion.w);
+    _ovRight.set(1, 0, 0).applyQuaternion(_ovQuat);
+    _ovUp.set(0, 1, 0).applyQuaternion(_ovQuat);
+    const px = input?.panXDelta ?? 0;
+    const py = input?.panYDelta ?? 0;
+    state.panX += _ovRight.x * px + _ovUp.x * py;
+    state.panY += _ovRight.y * px + _ovUp.y * py;
+    state.panZ += _ovRight.z * px + _ovUp.z * py;
+    const hadPan = Math.abs(px) > OVERRIDE_INPUT_EPSILON || Math.abs(py) > OVERRIDE_INPUT_EPSILON;
+    state.idlePan = hadPan ? 0 : state.idlePan + Math.max(0, deltaSeconds);
+    if (panMode === "recenter" && !hadPan && state.idlePan >= (control?.pan?.recenterWait ?? 1)) {
+      const k = 1 - recenterAlpha(control?.pan?.recenterTime ?? 1, deltaSeconds);
+      state.panX *= k;
+      state.panY *= k;
+      state.panZ *= k;
     }
+  }
+
+  // Dolly (wheel): input bumps a target; the applied distance eases toward it for a
+  // damped (smooth) zoom, matching the twin's damped dolly.
+  const dollyMode = control?.dolly?.mode ?? "locked";
+  if (dollyMode === "locked") {
+    state.dollyTargetOffset = state.dollyOffset = state.idleDolly = 0;
+  } else {
+    const dd = input?.dollyDelta ?? 0;
+    state.dollyTargetOffset += dd;
+    const hadDolly = Math.abs(dd) > OVERRIDE_INPUT_EPSILON;
+    state.idleDolly = hadDolly ? 0 : state.idleDolly + Math.max(0, deltaSeconds);
+    if (dollyMode === "recenter" && !hadDolly && state.idleDolly >= (control?.dolly?.recenterWait ?? 1)) {
+      state.dollyTargetOffset *= 1 - recenterAlpha(control?.dolly?.recenterTime ?? 1, deltaSeconds);
+    }
+    const alpha = 1 - Math.exp(-(12 / OVERRIDE_DOLLY_DAMPING) * Math.max(0, deltaSeconds));
+    state.dollyOffset += (state.dollyTargetOffset - state.dollyOffset) * alpha;
+  }
+
+  const active =
+    Math.abs(state.azimuthOffsetDeg) > OVERRIDE_INPUT_EPSILON ||
+    Math.abs(state.elevationOffsetDeg) > OVERRIDE_INPUT_EPSILON ||
+    Math.abs(state.panX) > OVERRIDE_INPUT_EPSILON ||
+    Math.abs(state.panY) > OVERRIDE_INPUT_EPSILON ||
+    Math.abs(state.panZ) > OVERRIDE_INPUT_EPSILON ||
+    Math.abs(state.dollyOffset) > OVERRIDE_INPUT_EPSILON;
+
+  if (!active) return { snapshot: coded, active: false };
+
+  const azE = az0 + state.azimuthOffsetDeg;
+  const elE = clamp(el0 + state.elevationOffsetDeg, -ORBIT_ELEVATION_LIMIT, ORBIT_ELEVATION_LIMIT);
+  const rE = clamp(r0 + state.dollyOffset, control?.minDistance ?? 0.01, control?.maxDistance ?? Infinity);
+  const off = orbitOffset(azE, elE, rE);
+  const position = {
+    x: pivot.x + state.panX + off.x,
+    y: pivot.y + state.panY + off.y,
+    z: pivot.z + state.panZ + off.z
   };
+  const quaternion = cameraQuaternionFromFrame({ x: -off.x, y: -off.y, z: -off.z }, OVERRIDE_WORLD_UP);
+  return { snapshot: { ...coded, position, quaternion }, active: true };
 }
 
 export interface RigDriveState {
@@ -1588,9 +1664,9 @@ export interface RigActivationParams {
    *  into world so the driven (world-root) camera frames level under a rotated
    *  parent. Omit for a rig at world root (the default). */
   rigMatrix?: Matrix4;
-  /** Per-frame interactive input for an orbit body (pointer/wheel deltas); the
-   *  axis's `control` mode decides whether it moves, holds, or recenters. */
-  orbitInput?: OrbitInput;
+  /** Per-frame manual-override input (LMB/RMB/wheel deltas); the vcam's `control`
+   *  axis modes decide whether each axis moves, holds, or recenters. */
+  overrideInput?: CameraOverrideInput;
 }
 
 /**
@@ -1636,28 +1712,44 @@ export function driveActivation(
     state.activation = { key, vcamId: activeVcamId };
   }
 
-  // Integrate interactive orbit input (locked/free/recenter per axis), then drive
-  // the pure resolver with the effective params. Non-orbit bodies no-op.
-  stepOrbitBody(definition, state.body, params.orbitInput, deltaSeconds);
-  const drivenDefinition = applyOrbitLive(definition, state.body);
+  // Resolve the coded pose, then apply the manual pivot-orbit override (LMB/RMB/
+  // wheel around the shot's pivot). When the override is active it owns position +
+  // aim, so the composer is skipped this frame; otherwise the shot plays as coded.
+  const coded = resolveVirtualCameraDefinition(definition, context);
+  let overrideActive = false;
+  if (coded) {
+    const pivot = resolveCameraPivot(definition, coded, resolveTarget);
+    const override = stepCameraOverride(
+      coded,
+      pivot,
+      definition.id,
+      definition.control,
+      state.body,
+      params.overrideInput,
+      deltaSeconds
+    );
+    overrideActive = override.active;
+    retargetVirtualCameraBrain(state.brain, { target: override.snapshot });
+  } else {
+    state.body.vcamId = null;
+  }
+  const resolved = applyVirtualCameraBrain(camera, state.brain, deltaSeconds, params.rigMatrix);
 
-  const resolved = driveVirtualCameraBrain(
-    camera,
-    state.brain,
-    drivenDefinition,
-    context,
-    deltaSeconds,
-    params.rigMatrix
-  );
-  const composerTarget = stepComposerAim(
-    camera,
-    drivenDefinition,
-    state.composer,
-    resolveTarget,
-    deltaSeconds,
-    params.up,
-    params.rigMatrix
-  );
+  let composerTarget: Vec3 | null = null;
+  if (overrideActive) {
+    // Override owns the aim (looking at the pivot); re-seed the composer on resume.
+    state.composer.vcamId = null;
+  } else {
+    composerTarget = stepComposerAim(
+      camera,
+      definition,
+      state.composer,
+      resolveTarget,
+      deltaSeconds,
+      params.up,
+      params.rigMatrix
+    );
+  }
 
   return {
     cameraSnapshot: resolved ?? null,

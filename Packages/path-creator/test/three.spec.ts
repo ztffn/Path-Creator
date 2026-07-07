@@ -29,7 +29,6 @@ import {
   stepComposerAim,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
-  applyOrbitLive,
   applyVirtualCameraNoise,
   buildOrbitRingPoints,
   createRigBodyState,
@@ -37,7 +36,8 @@ import {
   markEditorHelpers,
   orbitOffset,
   orbitParamsFromLocalOffset,
-  stepOrbitBody,
+  resolveCameraPivot,
+  stepCameraOverride,
   setVirtualCameraBrainLive,
   showEditorHelpers,
   resolveVirtualCameraDefinition,
@@ -644,107 +644,153 @@ describe("orbit placement helpers", () => {
   });
 });
 
-describe("interactive orbit body (Cinemachine input axes + recentering)", () => {
-  const def = (body: Record<string, unknown>): VirtualCameraDefinition => ({
-    id: "orbit-i",
-    body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5, ...body }
+describe("manual pivot-orbit override (OrbitControls model on any vcam)", () => {
+  // Coded pose: camera at (0,0,5), identity quaternion (looks along -Z, i.e. at the
+  // pivot at the origin). Decomposes to azimuth 0, elevation 0, radius 5.
+  const coded = (): VirtualCameraSnapshot => ({
+    position: { x: 0, y: 0, z: 5 },
+    quaternion: { x: 0, y: 0, z: 0, w: 1 }
+  });
+  const PIVOT = { x: 0, y: 0, z: 0 };
+  const lookDir = (s: VirtualCameraSnapshot) =>
+    new Vector3(0, 0, -1).applyQuaternion(
+      new Quaternion(s.quaternion.x, s.quaternion.y, s.quaternion.z, s.quaternion.w)
+    );
+
+  it("locked axes ignore input — exact passthrough", () => {
+    const state = createRigBodyState();
+    const r = stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "locked" } }, state, { azimuthDeltaDeg: 45 }, 0.016);
+    expect(r.active).toBe(false);
+    expect(r.snapshot).toBe(r.snapshot); // returned pose is the coded one
+    expect(r.snapshot.position).toEqual({ x: 0, y: 0, z: 5 });
   });
 
-  it("locked axis ignores input and holds the coded value", () => {
+  it("no control at all is an exact passthrough", () => {
     const state = createRigBodyState();
-    const d = def({ control: { azimuth: { mode: "locked" } } });
-    stepOrbitBody(d, state, { azimuthDeltaDeg: 45 }, 0.016);
-    expect(state.azimuthOffsetDeg).toBe(0);
-    // applyOrbitLive leaves the definition untouched (no offset).
-    expect(applyOrbitLive(d, state)).toBe(d);
+    const c = coded();
+    const r = stepCameraOverride(c, PIVOT, "v", undefined, state, { azimuthDeltaDeg: 45, dollyDelta: 3 }, 0.016);
+    expect(r.active).toBe(false);
+    expect(r.snapshot).toBe(c);
   });
 
-  it("free axis accumulates input and holds it (no recentering)", () => {
+  it("LMB azimuth orbits around the pivot, staying aimed at it", () => {
     const state = createRigBodyState();
-    const d = def({ control: { azimuth: { mode: "free" } } });
-    stepOrbitBody(d, state, { azimuthDeltaDeg: 30 }, 0.016);
-    expect(state.azimuthOffsetDeg).toBeCloseTo(30);
-    // Idle for a long time: free never decays.
-    stepOrbitBody(d, state, {}, 5);
-    expect(state.azimuthOffsetDeg).toBeCloseTo(30);
-    const live = applyOrbitLive(d, state);
-    expect((live.body as { azimuthDeg: number }).azimuthDeg).toBeCloseTo(30);
+    const r = stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "free" } }, state, { azimuthDeltaDeg: 90 }, 0.016);
+    expect(r.active).toBe(true);
+    // +90° azimuth swings from +Z to +X.
+    expect(r.snapshot.position.x).toBeCloseTo(5);
+    expect(r.snapshot.position.z).toBeCloseTo(0, 5);
+    // Still looking at the pivot (toward -X from +X).
+    const look = lookDir(r.snapshot);
+    expect(look.x).toBeCloseTo(-1);
   });
 
-  it("recenter axis holds until the wait, then eases back to the coded value", () => {
-    const state = createRigBodyState();
-    const d = def({ control: { azimuth: { mode: "recenter", recenterWait: 0.5, recenterTime: 0.5 } } });
-    stepOrbitBody(d, state, { azimuthDeltaDeg: 40 }, 0.016);
-    expect(state.azimuthOffsetDeg).toBeCloseTo(40);
-    // Before the wait elapses: still holding.
-    stepOrbitBody(d, state, {}, 0.4);
-    expect(state.azimuthOffsetDeg).toBeCloseTo(40);
-    // Past the wait: decays toward 0.
-    stepOrbitBody(d, state, {}, 0.4);
-    expect(Math.abs(state.azimuthOffsetDeg)).toBeLessThan(40);
-    for (let i = 0; i < 200; i += 1) stepOrbitBody(d, state, {}, 0.05);
-    expect(state.azimuthOffsetDeg).toBeCloseTo(0, 2);
+  it("free holds where left; recenter eases back to the coded pose", () => {
+    const free = createRigBodyState();
+    stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "free" } }, free, { azimuthDeltaDeg: 30 }, 0.016);
+    for (let i = 0; i < 100; i += 1) stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "free" } }, free, {}, 0.05);
+    expect(free.azimuthOffsetDeg).toBeCloseTo(30); // free never decays
+
+    const rec = createRigBodyState();
+    const ctrl = { azimuth: { mode: "recenter" as const, recenterWait: 0.5, recenterTime: 0.5 } };
+    stepCameraOverride(coded(), PIVOT, "v", ctrl, rec, { azimuthDeltaDeg: 40 }, 0.016);
+    stepCameraOverride(coded(), PIVOT, "v", ctrl, rec, {}, 0.4); // before wait: holds
+    expect(rec.azimuthOffsetDeg).toBeCloseTo(40);
+    for (let i = 0; i < 300; i += 1) stepCameraOverride(coded(), PIVOT, "v", ctrl, rec, {}, 0.05);
+    expect(rec.azimuthOffsetDeg).toBeCloseTo(0, 2); // eased back to coded
   });
 
-  it("recentering yields to live input (idle timer resets on input)", () => {
+  it("recentering yields to live input (idle timer resets)", () => {
     const state = createRigBodyState();
-    const d = def({ control: { azimuth: { mode: "recenter", recenterWait: 0.2, recenterTime: 0.5 } } });
-    // Feed input every frame well past the wait window: it must never decay.
-    for (let i = 0; i < 30; i += 1) stepOrbitBody(d, state, { azimuthDeltaDeg: 5 }, 0.1);
-    // 30 × 5° = 150° accumulated (within ±180, no wrap), and the idle timer stayed
-    // reset the whole time, so recentering never fired.
+    const ctrl = { azimuth: { mode: "recenter" as const, recenterWait: 0.2, recenterTime: 0.5 } };
+    for (let i = 0; i < 30; i += 1) stepCameraOverride(coded(), PIVOT, "v", ctrl, state, { azimuthDeltaDeg: 5 }, 0.1);
     expect(state.azimuthOffsetDeg).toBeCloseTo(150);
     expect(state.idleAzimuth).toBe(0);
   });
 
-  it("takes the shortest angular path (wraps azimuth to ±180)", () => {
+  it("azimuth takes the shortest angular path (wraps to ±180)", () => {
     const state = createRigBodyState();
-    const d = def({ control: { azimuth: { mode: "free" } } });
-    stepOrbitBody(d, state, { azimuthDeltaDeg: 350 }, 0.016);
+    stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "free" } }, state, { azimuthDeltaDeg: 350 }, 0.016);
     expect(state.azimuthOffsetDeg).toBeCloseTo(-10);
   });
 
-  it("clamps elevation so coded + offset stays off the poles", () => {
+  it("elevation is clamped off the poles", () => {
     const state = createRigBodyState();
-    const d = def({ elevationDeg: 70, control: { elevation: { mode: "free" } } });
-    stepOrbitBody(d, state, { elevationDeltaDeg: 40 }, 0.016);
-    // Coded 70 + offset clamped to +10 => effective 80.
-    expect(state.elevationOffsetDeg).toBeCloseTo(10);
-    expect((applyOrbitLive(d, state).body as { elevationDeg: number }).elevationDeg).toBeCloseTo(80);
+    const r = stepCameraOverride(coded(), PIVOT, "v", { elevation: { mode: "free" } }, state, { elevationDeltaDeg: 200 }, 0.016);
+    // Clamped to 80°: y = sin(80°)·5.
+    expect(r.snapshot.position.y).toBeCloseTo(Math.sin((80 * Math.PI) / 180) * 5);
   });
 
-  it("free radius zooms and never goes below the minimum", () => {
+  it("RMB pan moves the pivot and re-frames (aims at the panned point)", () => {
     const state = createRigBodyState();
-    const d = def({ radius: 5, control: { radius: { mode: "free" } } });
-    stepOrbitBody(d, state, { radiusDelta: 3 }, 0.016);
-    expect((applyOrbitLive(d, state).body as { radius: number }).radius).toBeCloseTo(8);
-    stepOrbitBody(d, state, { radiusDelta: -100 }, 0.016);
-    expect((applyOrbitLive(d, state).body as { radius: number }).radius).toBeGreaterThan(0);
+    // Coded looks along -Z, so view-right is +X; pan +X by 2.
+    const r = stepCameraOverride(coded(), PIVOT, "v", { pan: { mode: "free" } }, state, { panXDelta: 2 }, 0.016);
+    expect(r.active).toBe(true);
+    expect(r.snapshot.position.x).toBeCloseTo(2); // camera trucked +X
+    expect(r.snapshot.position.z).toBeCloseTo(5);
+    // Aims at the panned pivot (2,0,0): forward still -Z.
+    const look = lookDir(r.snapshot);
+    expect(look.z).toBeCloseTo(-1);
+  });
+
+  it("wheel dollies toward the pivot with damping + min/max clamp", () => {
+    const state = createRigBodyState();
+    const ctrl = { dolly: { mode: "free" as const }, minDistance: 2, maxDistance: 12 };
+    // Pull out by +5 and let the damped ease settle.
+    let r = stepCameraOverride(coded(), PIVOT, "v", ctrl, state, { dollyDelta: 5 }, 0.016);
+    for (let i = 0; i < 300; i += 1) r = stepCameraOverride(coded(), PIVOT, "v", ctrl, state, {}, 0.05);
+    expect(r.snapshot.position.z).toBeCloseTo(10); // 5 + 5, within max 12
+    // Now zoom way in: clamps at minDistance 2.
+    stepCameraOverride(coded(), PIVOT, "v", ctrl, state, { dollyDelta: -100 }, 0.016);
+    for (let i = 0; i < 300; i += 1) r = stepCameraOverride(coded(), PIVOT, "v", ctrl, state, {}, 0.05);
+    expect(r.snapshot.position.z).toBeCloseTo(2);
   });
 
   it("reseeds (zeroes offsets) when the driven vcam changes", () => {
     const state = createRigBodyState();
-    const a = def({ control: { azimuth: { mode: "free" } } });
-    stepOrbitBody(a, state, { azimuthDeltaDeg: 30 }, 0.016);
+    stepCameraOverride(coded(), PIVOT, "a", { azimuth: { mode: "free" } }, state, { azimuthDeltaDeg: 30 }, 0.016);
     expect(state.azimuthOffsetDeg).toBeCloseTo(30);
-    const b: VirtualCameraDefinition = {
-      id: "orbit-other",
-      body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5, control: { azimuth: { mode: "free" } } }
-    };
-    stepOrbitBody(b, state, {}, 0.016);
+    stepCameraOverride(coded(), PIVOT, "b", { azimuth: { mode: "free" } }, state, {}, 0.016);
     expect(state.azimuthOffsetDeg).toBe(0);
-    expect(state.vcamId).toBe("orbit-other");
+    expect(state.vcamId).toBe("b");
   });
 
-  it("clears the body state for a non-orbit body", () => {
-    const state = createRigBodyState();
-    state.vcamId = "orbit-i";
+  it("resolveCameraPivot: aim target > orbit target > synthesized point in front", () => {
+    const resolve = (id: string) => (id === "t" ? { x: 1, y: 2, z: 3 } : null);
+    const trackDef: VirtualCameraDefinition = {
+      id: "v",
+      body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } },
+      aim: { type: "track", target: { targetId: "t" } }
+    };
+    expect(resolveCameraPivot(trackDef, coded(), resolve)).toEqual({ x: 1, y: 2, z: 3 });
+
+    const orbitDef: VirtualCameraDefinition = {
+      id: "v",
+      body: { type: "orbit", target: { x: 4, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5 }
+    };
+    expect(resolveCameraPivot(orbitDef, coded(), () => null)).toEqual({ x: 4, y: 0, z: 0 });
+
     const staticDef: VirtualCameraDefinition = {
-      id: "s",
+      id: "v",
       body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
     };
-    stepOrbitBody(staticDef, state, { azimuthDeltaDeg: 20 }, 0.016);
-    expect(state.vcamId).toBeNull();
+    // Coded looks -Z from (0,0,5); synthesized pivot is 10 in front → (0,0,-5).
+    const p = resolveCameraPivot(staticDef, coded(), () => null);
+    expect(p.z).toBeCloseTo(-5);
+  });
+
+  it("orbits any vcam around a synthesized pivot (static, no target)", () => {
+    const state = createRigBodyState();
+    const staticDef: VirtualCameraDefinition = {
+      id: "s",
+      body: { type: "static", position: { x: 0, y: 0, z: 5 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+    };
+    const pivot = resolveCameraPivot(staticDef, coded(), () => null); // (0,0,-5)
+    const r = stepCameraOverride(coded(), pivot, "s", { azimuth: { mode: "free" } }, state, { azimuthDeltaDeg: 90 }, 0.016);
+    expect(r.active).toBe(true);
+    // radius to synth pivot is 10; +90° azimuth swings to +X of the pivot.
+    expect(r.snapshot.position.x).toBeCloseTo(10);
+    expect(r.snapshot.position.z).toBeCloseTo(-5);
   });
 });
 
