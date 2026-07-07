@@ -9,10 +9,10 @@ import {
   VertexPath,
   createPathCart,
   sampleCartFrame,
+  type CameraOverrideAxisMode,
+  type CameraOverrideSettings,
   type CartFrame,
   type ComposerSettings,
-  type OrbitAxisMode,
-  type OrbitControlSettings,
   type RegisteredTarget,
   type RigCartDefinition,
   type RigPathDefinition,
@@ -37,7 +37,7 @@ import {
 import {
   captureVirtualCameraSnapshot,
   registerObjectTarget,
-  type OrbitInput,
+  type CameraOverrideInput,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraResolveContext,
@@ -257,21 +257,23 @@ function SpinningTargetProbe({
   );
 }
 
-/** Reads and clears the accumulated orbit-pilot input; null when nothing pending. */
-function drainOrbitInput(ref: { current: OrbitInput }): OrbitInput | null {
+/** Reads and clears the accumulated manual-override input; null when nothing pending. */
+function drainOrbitInput(ref: { current: CameraOverrideInput }): CameraOverrideInput | null {
   const cur = ref.current;
   const pending =
     (cur.azimuthDeltaDeg ?? 0) !== 0 ||
     (cur.elevationDeltaDeg ?? 0) !== 0 ||
-    (cur.radiusDelta ?? 0) !== 0;
+    (cur.panXDelta ?? 0) !== 0 ||
+    (cur.panYDelta ?? 0) !== 0 ||
+    (cur.dollyDelta ?? 0) !== 0;
   if (!pending) return null;
   ref.current = {};
   return cur;
 }
 
-/** True when any orbit axis is user-controllable (free/recenter) — i.e. worth piloting. */
-function hasInteractiveOrbitAxis(control: OrbitControlSettings): boolean {
-  return (["azimuth", "elevation", "radius"] as const).some(
+/** True when any override axis is user-controllable (free/recenter) — worth piloting. */
+function hasInteractiveOrbitAxis(control: CameraOverrideSettings): boolean {
+  return (["azimuth", "elevation", "pan", "dolly"] as const).some(
     (axis) => (control[axis]?.mode ?? "locked") !== "locked"
   );
 }
@@ -286,15 +288,15 @@ function hasInteractiveOrbitAxis(control: OrbitControlSettings): boolean {
  *     input here severs that mismatch entirely.
  *  2. No leakage — the wheel listener is non-passive and calls preventDefault, so
  *     scrolling never zooms the (disabled) editor controls or scrolls the page.
- * When the driven shot is an interactive orbit (`pilot`), drag → azimuth/elevation
- * and wheel → radius, accumulated into orbitInputRef (drained by the drive loop).
- * Otherwise it is view-only: input is swallowed but ignored.
+ * Maps the twin's OrbitControls scheme into the override input: LMB drag →
+ * azimuth/elevation, RMB drag → pan, wheel → dolly, accumulated into orbitInputRef
+ * (drained by the drive loop, which applies it to the active shot's unlocked axes).
  */
 function PlayViewportInput({
   orbitInputRef,
   pilot
 }: {
-  orbitInputRef: { current: OrbitInput };
+  orbitInputRef: { current: CameraOverrideInput };
   pilot: boolean;
 }) {
   const ref = useRef<HTMLDivElement>(null);
@@ -309,9 +311,9 @@ function PlayViewportInput({
     const onWheel = (event: WheelEvent) => {
       event.preventDefault();
       event.stopPropagation();
-      // Always accumulate; the drive loop applies it only to an interactive orbit
-      // body's unlocked axes (inert otherwise), so this stays the single gate.
-      orbitInputRef.current.radiusDelta = (orbitInputRef.current.radiusDelta ?? 0) + event.deltaY * 0.01;
+      // Always accumulate; the drive loop applies it only to the active shot's
+      // unlocked axes (inert otherwise), so this stays the single gate.
+      orbitInputRef.current.dollyDelta = (orbitInputRef.current.dollyDelta ?? 0) + event.deltaY * 0.01;
     };
     el.addEventListener("wheel", onWheel, { passive: false });
     return () => el.removeEventListener("wheel", onWheel);
@@ -326,14 +328,21 @@ function PlayViewportInput({
         last.current = { x: event.clientX, y: event.clientY };
         (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
       }}
+      onContextMenu={(event) => event.preventDefault()}
       onPointerMove={(event) => {
         if (!dragging.current || !last.current) return;
         const dx = event.clientX - last.current.x;
         const dy = event.clientY - last.current.y;
         last.current = { x: event.clientX, y: event.clientY };
         const cur = orbitInputRef.current;
-        cur.azimuthDeltaDeg = (cur.azimuthDeltaDeg ?? 0) + dx * 0.4;
-        cur.elevationDeltaDeg = (cur.elevationDeltaDeg ?? 0) - dy * 0.4;
+        // RMB (buttons bit 2) → pan the pivot; otherwise LMB → orbit azimuth/elevation.
+        if ((event.buttons & 2) !== 0) {
+          cur.panXDelta = (cur.panXDelta ?? 0) - dx * 0.02;
+          cur.panYDelta = (cur.panYDelta ?? 0) + dy * 0.02;
+        } else {
+          cur.azimuthDeltaDeg = (cur.azimuthDeltaDeg ?? 0) + dx * 0.4;
+          cur.elevationDeltaDeg = (cur.elevationDeltaDeg ?? 0) - dy * 0.4;
+        }
       }}
       onPointerUp={(event) => {
         dragging.current = false;
@@ -495,7 +504,7 @@ function Scene({
     params: { azimuthDeg: number; elevationDeg: number; radius: number }
   ) => void;
   /** Live orbit-pilot input the PiP pad accumulates; the drive loop drains it per frame. */
-  orbitInputRef: { current: OrbitInput };
+  orbitInputRef: { current: CameraOverrideInput };
   targetRegistry: TargetRegistry;
   /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
   dollyFramesRef: { current: Map<string, CartFrame> };
@@ -606,7 +615,7 @@ function Scene({
     // Live orbit-pilot input is consumed once per frame, only in Play mode. Every
     // driver (timeline + activation) forwards it; each applies it only to an
     // interactive orbit body, so it's inert for other shots.
-    const orbitInput = playMode ? drainOrbitInput(orbitInputRef) : null;
+    const overrideInput = playMode ? drainOrbitInput(orbitInputRef) : null;
     let intent: RigDriveIntent;
     if (activeTimeline) {
       intent = {
@@ -615,7 +624,7 @@ function Scene({
         player: timelinePlayerRef.current,
         context: timelineContext,
         cartFrames: dollyFramesRef.current,
-        ...(orbitInput && { orbitInput })
+        ...(overrideInput && { overrideInput })
       };
     } else if (isActivationPreview && virtualCameraActivation) {
       const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
@@ -630,7 +639,7 @@ function Scene({
         },
         activationKey: virtualCameraActivation.key,
         ...(liveVcam && { fallbackSnapshot: liveVcam.snapshot }),
-        ...(orbitInput && { orbitInput })
+        ...(overrideInput && { overrideInput })
       };
     } else if (selectedVirtualCamera) {
       // Cut (no blend): park on the selected shot, re-resolving as it moves.
@@ -640,7 +649,7 @@ function Scene({
         vcams: vcamDefById,
         context: demoResolveContext(elapsed),
         fallbackSnapshot: selectedVirtualCamera.snapshot,
-        ...(orbitInput && { orbitInput })
+        ...(overrideInput && { overrideInput })
       };
     } else {
       intent = { mode: "idle" };
@@ -1645,9 +1654,9 @@ function VirtualCameraPanel({
                         style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}
                         title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
                       >
-                        Manual control (drag PiP to pilot, wheel to zoom)
+                        Manual control (Play mode: LMB orbit, RMB pan, wheel dolly)
                       </div>
-                      {(["azimuth", "elevation", "radius"] as const).map((axis) => (
+                      {(["azimuth", "elevation", "pan", "dolly"] as const).map((axis) => (
                         <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
                           <span style={{ textTransform: "capitalize" }}>{axis}</span>
                           <select
@@ -1659,7 +1668,7 @@ function VirtualCameraPanel({
                                   [axis]:
                                     event.target.value === "recenter"
                                       ? { mode: "recenter", recenterWait: 1.5, recenterTime: 1 }
-                                      : { mode: event.target.value as OrbitAxisMode }
+                                      : { mode: event.target.value as CameraOverrideAxisMode }
                                 }
                               })
                             }
@@ -1763,7 +1772,7 @@ export function App() {
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   // Live orbit-pilot input: the PiP pad writes deltas, the drive loop drains them.
-  const orbitInputRef = useRef<OrbitInput>({});
+  const orbitInputRef = useRef<CameraOverrideInput>({});
   // Composer overlay markers on the PiP, driven imperatively from Scene's frame loop.
   const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
@@ -2374,9 +2383,9 @@ export function App() {
                 azimuthDeg: ORBIT_DEFAULTS.orbitAzimuthDeg,
                 elevationDeg: ORBIT_DEFAULTS.orbitElevationDeg,
                 radius: ORBIT_DEFAULTS.orbitRadius,
-                binding: ORBIT_DEFAULTS.orbitBinding,
-                control: ORBIT_INTERACTIVE_CONTROL
+                binding: ORBIT_DEFAULTS.orbitBinding
               },
+              control: ORBIT_INTERACTIVE_CONTROL,
               ...(snapshot.lens && { lens: snapshot.lens })
             } as VirtualCameraDefinition)
           : ({
@@ -2525,13 +2534,14 @@ export function App() {
             if (patch.orbitElevationDeg !== undefined) body.elevationDeg = patch.orbitElevationDeg;
             if (patch.orbitRadius !== undefined) body.radius = patch.orbitRadius;
             if (patch.orbitBinding !== undefined) body.binding = patch.orbitBinding;
-            if (patch.orbitControl !== undefined) body.control = patch.orbitControl;
             if (patch.orbitAutoDegPerSec !== undefined) {
               if (patch.orbitAutoDegPerSec === 0) delete body.autoOrbitDegPerSec;
               else body.autoOrbitDegPerSec = patch.orbitAutoDegPerSec;
             }
             next.body = body;
           }
+          // Manual override lives at the definition level (applies to any body).
+          if (patch.orbitControl !== undefined) next.control = patch.orbitControl;
           return next;
         })
       );

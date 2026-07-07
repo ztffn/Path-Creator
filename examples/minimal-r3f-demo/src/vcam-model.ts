@@ -8,9 +8,9 @@ import {
   DEFAULT_COMPOSER_SETTINGS,
   EndOfPathInstruction,
   vcamTrackTargetId,
+  type CameraOverrideSettings,
   type ComposerSettings,
   type OrbitBinding,
-  type OrbitControlSettings,
   type RigCartDefinition,
   type TrackingTargetDefinition,
   type Vec3,
@@ -108,8 +108,8 @@ export type DemoVirtualCamera = {
   orbitBinding: OrbitBinding;
   /** Auto-orbit rate; 0 holds a static orbital angle. */
   orbitAutoDegPerSec: number;
-  /** Per-axis interactive control (locked/free/recenter). */
-  orbitControl: OrbitControlSettings;
+  /** Per-axis manual override (locked/free/recenter) — applies to any vcam. */
+  orbitControl: CameraOverrideSettings;
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
@@ -130,17 +130,21 @@ export const ORBIT_DEFAULTS = {
   orbitControl: {
     azimuth: { mode: "locked" },
     elevation: { mode: "locked" },
-    radius: { mode: "locked" }
-  } as OrbitControlSettings
+    pan: { mode: "locked" },
+    dolly: { mode: "locked" }
+  } as CameraOverrideSettings
 };
 
-/** A freshly added orbit vcam is interactive out of the box — a user can spin it
- *  (azimuth free), it recenters elevation after idle, and zoom is free — so the
- *  Cinemachine override/recenter behaviour is demonstrable immediately. */
-export const ORBIT_INTERACTIVE_CONTROL: OrbitControlSettings = {
+/** A freshly added orbit vcam is interactive out of the box (OrbitControls feel):
+ *  LMB spins azimuth (free) + tilts elevation (recenter after idle), RMB pans
+ *  (recenter), wheel dollies (free) — so the override is demonstrable immediately. */
+export const ORBIT_INTERACTIVE_CONTROL: CameraOverrideSettings = {
   azimuth: { mode: "free" },
   elevation: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
-  radius: { mode: "free" }
+  pan: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
+  dolly: { mode: "free" },
+  minDistance: 1,
+  maxDistance: 40
 };
 
 const IDENTITY_QUAT = { x: 0, y: 0, z: 0, w: 1 } as const;
@@ -176,7 +180,7 @@ export function toVcamView(
           orbitRadius: def.body.radius,
           orbitBinding: def.body.binding ?? "world",
           orbitAutoDegPerSec: def.body.autoOrbitDegPerSec ?? 0,
-          orbitControl: def.body.control ?? ORBIT_DEFAULTS.orbitControl
+          orbitControl: def.control ?? ORBIT_DEFAULTS.orbitControl
         }
       : ORBIT_DEFAULTS;
   return {
@@ -227,13 +231,14 @@ export function vcamDefFromView(
               elevationDeg: view.orbitElevationDeg,
               radius: view.orbitRadius,
               binding: view.orbitBinding,
-              control: view.orbitControl,
               ...(view.orbitAutoDegPerSec !== 0 && {
                 autoOrbitDegPerSec: view.orbitAutoDegPerSec
               })
             }
           : { type: "static", position: view.snapshot.position, quaternion: view.snapshot.quaternion }
   };
+  // Manual override lives at the definition level now (applies to any body).
+  if (view.bodyType === "orbit") def.control = view.orbitControl;
   if (view.trackTargetId) {
     def.aim = {
       type: "track",
