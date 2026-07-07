@@ -20,6 +20,7 @@ import {
   type Vec3
 } from "@huma/path-creator/core";
 import {
+  CameraOverrideSurface,
   CartGizmo,
   CartVcamGlyphRig,
   EditorHelpers,
@@ -37,7 +38,8 @@ import {
 import {
   captureVirtualCameraSnapshot,
   registerObjectTarget,
-  type CameraOverrideInput,
+  createOverrideInputAccumulator,
+  type OverrideInputAccumulator,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraResolveContext,
@@ -257,20 +259,6 @@ function SpinningTargetProbe({
   );
 }
 
-/** Reads and clears the accumulated manual-override input; null when nothing pending. */
-function drainOrbitInput(ref: { current: CameraOverrideInput }): CameraOverrideInput | null {
-  const cur = ref.current;
-  const pending =
-    (cur.azimuthDeltaDeg ?? 0) !== 0 ||
-    (cur.elevationDeltaDeg ?? 0) !== 0 ||
-    (cur.panXDelta ?? 0) !== 0 ||
-    (cur.panYDelta ?? 0) !== 0 ||
-    (cur.dollyDelta ?? 0) !== 0;
-  if (!pending) return null;
-  ref.current = {};
-  return cur;
-}
-
 /** True when any override axis is user-controllable (free/recenter) — worth piloting. */
 function hasInteractiveOrbitAxis(control: CameraOverrideSettings): boolean {
   return (["azimuth", "elevation", "pan", "dolly"] as const).some(
@@ -278,89 +266,6 @@ function hasInteractiveOrbitAxis(control: CameraOverrideSettings): boolean {
   );
 }
 
-/**
- * Play-mode viewport input surface. In Play mode this transparent layer sits over
- * the whole 3D viewport (below the panels/timeline, above the canvas) and OWNS all
- * pointer + wheel input, for two reasons:
- *  1. Determinism — R3F raycasts events from the default (editor) camera, but Play
- *     renders the driven camera; letting clicks reach the canvas would pick unseen
- *     editor-space objects (selecting shots, stopping the timeline). Swallowing
- *     input here severs that mismatch entirely.
- *  2. No leakage — the wheel listener is non-passive and calls preventDefault, so
- *     scrolling never zooms the (disabled) editor controls or scrolls the page.
- * Maps the twin's OrbitControls scheme into the override input: LMB drag →
- * azimuth/elevation, RMB drag → pan, wheel → dolly, accumulated into orbitInputRef
- * (drained by the drive loop, which applies it to the active shot's unlocked axes).
- */
-function PlayViewportInput({
-  orbitInputRef,
-  pilot
-}: {
-  orbitInputRef: { current: CameraOverrideInput };
-  pilot: boolean;
-}) {
-  const ref = useRef<HTMLDivElement>(null);
-  const dragging = useRef(false);
-  const last = useRef<{ x: number; y: number } | null>(null);
-
-  // Native, non-passive wheel: preventDefault stops page-scroll / editor-zoom
-  // bleed-through. React's onWheel is passive, so it cannot do this reliably.
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    const onWheel = (event: WheelEvent) => {
-      event.preventDefault();
-      event.stopPropagation();
-      // Always accumulate; the drive loop applies it only to the active shot's
-      // unlocked axes (inert otherwise), so this stays the single gate.
-      orbitInputRef.current.dollyDelta = (orbitInputRef.current.dollyDelta ?? 0) + event.deltaY * 0.01;
-    };
-    el.addEventListener("wheel", onWheel, { passive: false });
-    return () => el.removeEventListener("wheel", onWheel);
-  }, [orbitInputRef]);
-
-  return (
-    <div
-      ref={ref}
-      title={pilot ? "Pilot: drag to rotate, scroll to zoom" : "Play preview"}
-      onPointerDown={(event) => {
-        dragging.current = true;
-        last.current = { x: event.clientX, y: event.clientY };
-        (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
-      }}
-      onContextMenu={(event) => event.preventDefault()}
-      onPointerMove={(event) => {
-        if (!dragging.current || !last.current) return;
-        const dx = event.clientX - last.current.x;
-        const dy = event.clientY - last.current.y;
-        last.current = { x: event.clientX, y: event.clientY };
-        const cur = orbitInputRef.current;
-        // RMB (buttons bit 2) → pan the pivot; otherwise LMB → orbit azimuth/elevation.
-        if ((event.buttons & 2) !== 0) {
-          cur.panXDelta = (cur.panXDelta ?? 0) - dx * 0.02;
-          cur.panYDelta = (cur.panYDelta ?? 0) + dy * 0.02;
-        } else {
-          cur.azimuthDeltaDeg = (cur.azimuthDeltaDeg ?? 0) + dx * 0.4;
-          cur.elevationDeltaDeg = (cur.elevationDeltaDeg ?? 0) - dy * 0.4;
-        }
-      }}
-      onPointerUp={(event) => {
-        dragging.current = false;
-        last.current = null;
-        (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
-      }}
-      style={{
-        position: "fixed",
-        inset: 0,
-        zIndex: 8,
-        cursor: pilot ? "grab" : "default",
-        background: "transparent",
-        touchAction: "none",
-        boxSizing: "border-box"
-      }}
-    />
-  );
-}
 
 function shotRowLabelStyle(columns: string): CSSProperties {
   return {
@@ -454,7 +359,7 @@ function Scene({
   onUpdateVirtualCameraSnapshot,
   onUpdateCartOffset,
   onUpdateOrbitParams,
-  orbitInputRef,
+  overrideAcc,
   targetRegistry,
   dollyFramesRef,
   dollies,
@@ -503,8 +408,8 @@ function Scene({
     id: string,
     params: { azimuthDeg: number; elevationDeg: number; radius: number }
   ) => void;
-  /** Live orbit-pilot input the PiP pad accumulates; the drive loop drains it per frame. */
-  orbitInputRef: { current: CameraOverrideInput };
+  /** Manual-override input the capture surface accumulates; drained per frame. */
+  overrideAcc: OverrideInputAccumulator;
   targetRegistry: TargetRegistry;
   /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
   dollyFramesRef: { current: Map<string, CartFrame> };
@@ -615,7 +520,7 @@ function Scene({
     // Live orbit-pilot input is consumed once per frame, only in Play mode. Every
     // driver (timeline + activation) forwards it; each applies it only to an
     // interactive orbit body, so it's inert for other shots.
-    const overrideInput = playMode ? drainOrbitInput(orbitInputRef) : null;
+    const overrideInput = playMode ? overrideAcc.drain() : null;
     let intent: RigDriveIntent;
     if (activeTimeline) {
       intent = {
@@ -1771,8 +1676,8 @@ export function App() {
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
-  // Live orbit-pilot input: the PiP pad writes deltas, the drive loop drains them.
-  const orbitInputRef = useRef<CameraOverrideInput>({});
+  // Manual-override input: the capture surface accumulates, the drive loop drains.
+  const overrideAcc = useMemo(() => createOverrideInputAccumulator(), []);
   // Composer overlay markers on the PiP, driven imperatively from Scene's frame loop.
   const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
@@ -3076,7 +2981,7 @@ export function App() {
           lookaheadLineRef={lookaheadLineRef}
         />
       ) : null}
-      {showPlayInput ? <PlayViewportInput orbitInputRef={orbitInputRef} pilot={pilotOrbit} /> : null}
+      {showPlayInput ? <CameraOverrideSurface accumulator={overrideAcc} /> : null}
 
       <Canvas style={{ width: "100%", height: "100%" }} camera={{ position: [0, 0, 6], fov: 45 }}>
         <color attach="background" args={["#f8fafc"]} />
@@ -3091,7 +2996,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
-          orbitInputRef={orbitInputRef}
+          overrideAcc={overrideAcc}
           dollyFramesRef={dollyFramesRef}
           dollies={dollies}
           vertexPaths={vertexPaths}
