@@ -9,6 +9,8 @@ import {
   EndOfPathInstruction,
   vcamTrackTargetId,
   type ComposerSettings,
+  type OrbitBinding,
+  type OrbitControlSettings,
   type RigCartDefinition,
   type TrackingTargetDefinition,
   type Vec3,
@@ -95,9 +97,19 @@ export type DollyRun = {
 export type DemoVirtualCamera = {
   id: string;
   name: string;
-  bodyType: "static" | "cart";
+  bodyType: "static" | "cart" | "orbit";
   cartId: string;
   cartOffset: Vec3;
+  /** Orbit body (meaningful when bodyType === "orbit"): the follow target it orbits. */
+  orbitTargetId: string;
+  orbitAzimuthDeg: number;
+  orbitElevationDeg: number;
+  orbitRadius: number;
+  orbitBinding: OrbitBinding;
+  /** Auto-orbit rate; 0 holds a static orbital angle. */
+  orbitAutoDegPerSec: number;
+  /** Per-axis interactive control (locked/free/recenter). */
+  orbitControl: OrbitControlSettings;
   trackTargetId: string | null;
   noisePreset: DemoNoisePreset;
   dutchDeg: number;
@@ -105,6 +117,30 @@ export type DemoVirtualCamera = {
   shotEnd: number;
   snapshot: VirtualCameraSnapshot;
   composerSettings: ComposerSettings;
+};
+
+/** Defaults for the orbit sidecar fields; a static/cart view still carries them. */
+export const ORBIT_DEFAULTS = {
+  orbitTargetId: "",
+  orbitAzimuthDeg: 45,
+  orbitElevationDeg: 20,
+  orbitRadius: 6,
+  orbitBinding: "world" as OrbitBinding,
+  orbitAutoDegPerSec: 0,
+  orbitControl: {
+    azimuth: { mode: "locked" },
+    elevation: { mode: "locked" },
+    radius: { mode: "locked" }
+  } as OrbitControlSettings
+};
+
+/** A freshly added orbit vcam is interactive out of the box — a user can spin it
+ *  (azimuth free), it recenters elevation after idle, and zoom is free — so the
+ *  Cinemachine override/recenter behaviour is demonstrable immediately. */
+export const ORBIT_INTERACTIVE_CONTROL: OrbitControlSettings = {
+  azimuth: { mode: "free" },
+  elevation: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
+  radius: { mode: "free" }
 };
 
 const IDENTITY_QUAT = { x: 0, y: 0, z: 0, w: 1 } as const;
@@ -131,12 +167,25 @@ export function toVcamView(
     quaternion: def.body.type === "static" ? def.body.quaternion : { ...IDENTITY_QUAT },
     ...(def.lens && { lens: def.lens })
   };
+  const orbit =
+    def.body.type === "orbit"
+      ? {
+          orbitTargetId: "targetId" in def.body.target ? def.body.target.targetId : "",
+          orbitAzimuthDeg: def.body.azimuthDeg,
+          orbitElevationDeg: def.body.elevationDeg,
+          orbitRadius: def.body.radius,
+          orbitBinding: def.body.binding ?? "world",
+          orbitAutoDegPerSec: def.body.autoOrbitDegPerSec ?? 0,
+          orbitControl: def.body.control ?? ORBIT_DEFAULTS.orbitControl
+        }
+      : ORBIT_DEFAULTS;
   return {
     id: def.id,
     name,
     bodyType: def.body.type,
     cartId: def.body.type === "cart" ? def.body.cartId : "",
     cartOffset: def.body.type === "cart" ? def.body.positionOffset ?? { x: 0, y: 0, z: 0 } : { x: 0, y: 0, z: 0 },
+    ...orbit,
     trackTargetId: vcamTrackTargetId(def),
     noisePreset: editor.noisePreset,
     dutchDeg,
@@ -168,7 +217,22 @@ export function vcamDefFromView(
     body:
       view.bodyType === "cart"
         ? { type: "cart", cartId: view.cartId, positionOffset: view.cartOffset }
-        : { type: "static", position: view.snapshot.position, quaternion: view.snapshot.quaternion }
+        : view.bodyType === "orbit"
+          ? {
+              type: "orbit",
+              target: view.orbitTargetId
+                ? { targetId: view.orbitTargetId }
+                : { x: 0, y: 0, z: 0 },
+              azimuthDeg: view.orbitAzimuthDeg,
+              elevationDeg: view.orbitElevationDeg,
+              radius: view.orbitRadius,
+              binding: view.orbitBinding,
+              control: view.orbitControl,
+              ...(view.orbitAutoDegPerSec !== 0 && {
+                autoOrbitDegPerSec: view.orbitAutoDegPerSec
+              })
+            }
+          : { type: "static", position: view.snapshot.position, quaternion: view.snapshot.quaternion }
   };
   if (view.trackTargetId) {
     def.aim = {

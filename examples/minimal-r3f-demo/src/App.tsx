@@ -11,6 +11,8 @@ import {
   sampleCartFrame,
   type CartFrame,
   type ComposerSettings,
+  type OrbitAxisMode,
+  type OrbitControlSettings,
   type RegisteredTarget,
   type RigCartDefinition,
   type RigPathDefinition,
@@ -21,6 +23,7 @@ import {
   CartGizmo,
   CartVcamGlyphRig,
   EditorHelpers,
+  OrbitVcamGlyphRig,
   PathEditor,
   PointTargets,
   VirtualCameraGlyph,
@@ -33,6 +36,8 @@ import {
 } from "@huma/path-creator/r3f";
 import {
   captureVirtualCameraSnapshot,
+  registerObjectTarget,
+  type OrbitInput,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraResolveContext,
@@ -57,6 +62,8 @@ import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
   makeDolly,
+  ORBIT_DEFAULTS,
+  ORBIT_INTERACTIVE_CONTROL,
   toVcamView,
   vcamDefFromView,
   type DemoNoisePreset,
@@ -95,7 +102,20 @@ const DOLLY_PIP_MARGIN = 16;
 type DemoShotPatch = Partial<
   Pick<
     DemoVirtualCamera,
-    "trackTargetId" | "noisePreset" | "dutchDeg" | "shotStart" | "shotEnd" | "cartOffset" | "cartId"
+    | "trackTargetId"
+    | "noisePreset"
+    | "dutchDeg"
+    | "shotStart"
+    | "shotEnd"
+    | "cartOffset"
+    | "cartId"
+    | "orbitTargetId"
+    | "orbitAzimuthDeg"
+    | "orbitElevationDeg"
+    | "orbitRadius"
+    | "orbitBinding"
+    | "orbitAutoDegPerSec"
+    | "orbitControl"
   >
 >;
 
@@ -192,6 +212,147 @@ const VCAM_PIVOT_PROPS = {
   depthTest: false
 } as const;
 
+/**
+ * A slowly yawing scene object registered as an oriented tracking target — the
+ * wind-turbine stand-in. Because it exposes orientation (via registerObjectTarget),
+ * an orbit vcam bound `lockYaw`/`lock` to it visibly follows its rotation, while a
+ * `world`-bound orbit stays compass-anchored as it spins. A pointer nub marks the
+ * target's forward so the yaw is legible.
+ */
+function SpinningTargetProbe({
+  targetRegistry,
+  id,
+  name,
+  position,
+  degPerSec
+}: {
+  targetRegistry: TargetRegistry;
+  id: string;
+  name: string;
+  position: [number, number, number];
+  degPerSec: number;
+}) {
+  const groupRef = useRef<Group>(null);
+  useEffect(() => {
+    const group = groupRef.current;
+    if (!group) return;
+    return registerObjectTarget(targetRegistry, id, group, name);
+  }, [targetRegistry, id, name]);
+  useFrame((_, delta) => {
+    const group = groupRef.current;
+    if (group) group.rotation.y += (degPerSec * Math.PI) / 180 * delta;
+  });
+  return (
+    <group ref={groupRef} position={position}>
+      <mesh>
+        <boxGeometry args={[0.5, 0.5, 0.5]} />
+        <meshStandardMaterial color="#a3a3a3" />
+      </mesh>
+      {/* forward nub (local +Z), so the yaw is visible */}
+      <mesh position={[0, 0, 0.45]}>
+        <boxGeometry args={[0.12, 0.12, 0.4]} />
+        <meshStandardMaterial color="#f59e0b" emissive="#f59e0b" emissiveIntensity={0.4} />
+      </mesh>
+    </group>
+  );
+}
+
+/** Reads and clears the accumulated orbit-pilot input; null when nothing pending. */
+function drainOrbitInput(ref: { current: OrbitInput }): OrbitInput | null {
+  const cur = ref.current;
+  const pending =
+    (cur.azimuthDeltaDeg ?? 0) !== 0 ||
+    (cur.elevationDeltaDeg ?? 0) !== 0 ||
+    (cur.radiusDelta ?? 0) !== 0;
+  if (!pending) return null;
+  ref.current = {};
+  return cur;
+}
+
+/** True when any orbit axis is user-controllable (free/recenter) — i.e. worth piloting. */
+function hasInteractiveOrbitAxis(control: OrbitControlSettings): boolean {
+  return (["azimuth", "elevation", "radius"] as const).some(
+    (axis) => (control[axis]?.mode ?? "locked") !== "locked"
+  );
+}
+
+/**
+ * Play-mode viewport input surface. In Play mode this transparent layer sits over
+ * the whole 3D viewport (below the panels/timeline, above the canvas) and OWNS all
+ * pointer + wheel input, for two reasons:
+ *  1. Determinism — R3F raycasts events from the default (editor) camera, but Play
+ *     renders the driven camera; letting clicks reach the canvas would pick unseen
+ *     editor-space objects (selecting shots, stopping the timeline). Swallowing
+ *     input here severs that mismatch entirely.
+ *  2. No leakage — the wheel listener is non-passive and calls preventDefault, so
+ *     scrolling never zooms the (disabled) editor controls or scrolls the page.
+ * When the driven shot is an interactive orbit (`pilot`), drag → azimuth/elevation
+ * and wheel → radius, accumulated into orbitInputRef (drained by the drive loop).
+ * Otherwise it is view-only: input is swallowed but ignored.
+ */
+function PlayViewportInput({
+  orbitInputRef,
+  pilot
+}: {
+  orbitInputRef: { current: OrbitInput };
+  pilot: boolean;
+}) {
+  const ref = useRef<HTMLDivElement>(null);
+  const dragging = useRef(false);
+  const last = useRef<{ x: number; y: number } | null>(null);
+
+  // Native, non-passive wheel: preventDefault stops page-scroll / editor-zoom
+  // bleed-through. React's onWheel is passive, so it cannot do this reliably.
+  useEffect(() => {
+    const el = ref.current;
+    if (!el) return;
+    const onWheel = (event: WheelEvent) => {
+      event.preventDefault();
+      event.stopPropagation();
+      // Always accumulate; the drive loop applies it only to an interactive orbit
+      // body's unlocked axes (inert otherwise), so this stays the single gate.
+      orbitInputRef.current.radiusDelta = (orbitInputRef.current.radiusDelta ?? 0) + event.deltaY * 0.01;
+    };
+    el.addEventListener("wheel", onWheel, { passive: false });
+    return () => el.removeEventListener("wheel", onWheel);
+  }, [orbitInputRef]);
+
+  return (
+    <div
+      ref={ref}
+      title={pilot ? "Pilot: drag to rotate, scroll to zoom" : "Play preview"}
+      onPointerDown={(event) => {
+        dragging.current = true;
+        last.current = { x: event.clientX, y: event.clientY };
+        (event.currentTarget as HTMLElement).setPointerCapture?.(event.pointerId);
+      }}
+      onPointerMove={(event) => {
+        if (!dragging.current || !last.current) return;
+        const dx = event.clientX - last.current.x;
+        const dy = event.clientY - last.current.y;
+        last.current = { x: event.clientX, y: event.clientY };
+        const cur = orbitInputRef.current;
+        cur.azimuthDeltaDeg = (cur.azimuthDeltaDeg ?? 0) + dx * 0.4;
+        cur.elevationDeltaDeg = (cur.elevationDeltaDeg ?? 0) - dy * 0.4;
+      }}
+      onPointerUp={(event) => {
+        dragging.current = false;
+        last.current = null;
+        (event.currentTarget as HTMLElement).releasePointerCapture?.(event.pointerId);
+      }}
+      style={{
+        position: "fixed",
+        inset: 0,
+        zIndex: 8,
+        cursor: pilot ? "grab" : "default",
+        background: "transparent",
+        touchAction: "none",
+        boxSizing: "border-box"
+      }}
+    />
+  );
+}
+
 function shotRowLabelStyle(columns: string): CSSProperties {
   return {
     gridColumn: "1 / -1",
@@ -255,6 +416,7 @@ function Scene({
   speed,
   debugPreview,
   debugFrustum,
+  playMode,
   pathStyle,
   selectedHandleIndex,
   selectedMidpointIndex,
@@ -279,8 +441,11 @@ function Scene({
   onVirtualCameraCaptured,
   onVirtualCameraResolved,
   onSelectVirtualCamera,
+  onActiveVcamChange,
   onUpdateVirtualCameraSnapshot,
   onUpdateCartOffset,
+  onUpdateOrbitParams,
+  orbitInputRef,
   targetRegistry,
   dollyFramesRef,
   dollies,
@@ -294,6 +459,7 @@ function Scene({
   speed: number;
   debugPreview: boolean;
   debugFrustum: boolean;
+  playMode: boolean;
   pathStyle: "line" | "rail";
   selectedHandleIndex: number | null;
   selectedMidpointIndex: number | null;
@@ -320,8 +486,16 @@ function Scene({
   onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
   onSelectVirtualCamera: (id: string | null) => void;
+  /** The vcam actually driving the PiP this frame (timeline picks it per-frame). */
+  onActiveVcamChange: (id: string | null) => void;
   onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
   onUpdateCartOffset: (id: string, offset: Vec3) => void;
+  onUpdateOrbitParams: (
+    id: string,
+    params: { azimuthDeg: number; elevationDeg: number; radius: number }
+  ) => void;
+  /** Live orbit-pilot input the PiP pad accumulates; the drive loop drains it per frame. */
+  orbitInputRef: { current: OrbitInput };
   targetRegistry: TargetRegistry;
   /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
   dollyFramesRef: { current: Map<string, CartFrame> };
@@ -341,6 +515,7 @@ function Scene({
   const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
     getCartFrame: (id) => dollyFramesRef.current.get(id) ?? null,
     getTargetPosition: (id) => targetRegistry.resolve(id),
+    getTargetOrientation: (id) => targetRegistry.resolveOrientation(id),
     elapsedSeconds
   });
   const vcamDefById = useMemo(
@@ -355,7 +530,8 @@ function Scene({
         cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
       },
       vcams: vcamDefById,
-      getTargetPosition: (id) => targetRegistry.resolve(id)
+      getTargetPosition: (id) => targetRegistry.resolve(id),
+      getTargetOrientation: (id) => targetRegistry.resolveOrientation(id)
     }),
     [speed, targetRegistry, vertexPaths, vcamDefById, dollies]
   );
@@ -385,6 +561,8 @@ function Scene({
   const lastCaptureRequestRef = useRef(virtualCameraCaptureRequest);
   // Dedup for the resolved-shot callback (fire while blending, then once on done).
   const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
+  // Last reported driven-vcam id, so onActiveVcamChange fires only on change.
+  const lastActiveVcamRef = useRef<string | null>(null);
   // The extracted drive-loop: one shared brain + composer stage, driven each
   // frame via a neutral intent. Replaces the hand-rolled brain/composer refs.
   const rigDrive = useRigDrive();
@@ -425,6 +603,10 @@ function Scene({
     // timeline plays the show; an activated or selected shot previews through the
     // activation driver (blend vs cut); otherwise idle ("no output").
     const isActivationPreview = Boolean(virtualCameraActivation && !isTransforming);
+    // Live orbit-pilot input is consumed once per frame, only in Play mode. Every
+    // driver (timeline + activation) forwards it; each applies it only to an
+    // interactive orbit body, so it's inert for other shots.
+    const orbitInput = playMode ? drainOrbitInput(orbitInputRef) : null;
     let intent: RigDriveIntent;
     if (activeTimeline) {
       intent = {
@@ -432,7 +614,8 @@ function Scene({
         timeline: activeTimeline,
         player: timelinePlayerRef.current,
         context: timelineContext,
-        cartFrames: dollyFramesRef.current
+        cartFrames: dollyFramesRef.current,
+        ...(orbitInput && { orbitInput })
       };
     } else if (isActivationPreview && virtualCameraActivation) {
       const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
@@ -446,7 +629,8 @@ function Scene({
           curve: virtualCameraActivation.curve
         },
         activationKey: virtualCameraActivation.key,
-        ...(liveVcam && { fallbackSnapshot: liveVcam.snapshot })
+        ...(liveVcam && { fallbackSnapshot: liveVcam.snapshot }),
+        ...(orbitInput && { orbitInput })
       };
     } else if (selectedVirtualCamera) {
       // Cut (no blend): park on the selected shot, re-resolving as it moves.
@@ -455,7 +639,8 @@ function Scene({
         activeVcamId: selectedVirtualCamera.id,
         vcams: vcamDefById,
         context: demoResolveContext(elapsed),
-        fallbackSnapshot: selectedVirtualCamera.snapshot
+        fallbackSnapshot: selectedVirtualCamera.snapshot,
+        ...(orbitInput && { orbitInput })
       };
     } else {
       intent = { mode: "idle" };
@@ -463,6 +648,13 @@ function Scene({
 
     const result = rigDrive.drive(brainCamera, intent, delta);
     frustumHelper.update();
+
+    // Surface the actually-driven vcam id (timeline picks it per-frame) so the host
+    // can label the PiP and enable piloting for the active orbit shot.
+    if (result.activeVcamId !== lastActiveVcamRef.current) {
+      lastActiveVcamRef.current = result.activeVcamId;
+      onActiveVcamChange(result.activeVcamId);
+    }
 
     // Report the activated shot's resolved pose/progress to the panels — only for
     // a real activation, not the selected-shot preview.
@@ -550,6 +742,14 @@ function Scene({
         />
       ) : null}
 
+      <SpinningTargetProbe
+        targetRegistry={targetRegistry}
+        id="turbine/Nacelle"
+        name="Turbine (spinning)"
+        position={[-3.2, 1, -2.2]}
+        degPerSec={18}
+      />
+
       <EditorHelpers>
       {dollies.map((dolly) => (
         <CartGizmo
@@ -582,6 +782,33 @@ function Scene({
                 onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
               />
             </CartVcamGlyphRig>
+          );
+        }
+
+        if (virtualCamera.bodyType === "orbit") {
+          const orbitTargetId = virtualCamera.orbitTargetId;
+          return (
+            <OrbitVcamGlyphRig
+              key={virtualCamera.id}
+              resolveTarget={() => (orbitTargetId ? targetRegistry.resolve(orbitTargetId) : { x: 0, y: 0, z: 0 })}
+              resolveOrientation={() =>
+                orbitTargetId ? targetRegistry.resolveOrientation(orbitTargetId) : null
+              }
+              binding={virtualCamera.orbitBinding}
+              azimuthDeg={virtualCamera.orbitAzimuthDeg}
+              elevationDeg={virtualCamera.orbitElevationDeg}
+              radius={virtualCamera.orbitRadius}
+              selected={isSelected}
+              onChange={(params) => onUpdateOrbitParams(virtualCamera.id, params)}
+              onTransformingChange={onTransformingChange}
+            >
+              <VirtualCameraGlyph
+                name={virtualCamera.name}
+                selected={isSelected}
+                active={isActive}
+                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
+              />
+            </OrbitVcamGlyphRig>
           );
         }
 
@@ -638,8 +865,14 @@ function Scene({
       {debugFrustum && hasPipSource ? <primitive object={frustumHelper} /> : null}
       </EditorHelpers>
 
-      {debugPreview ? (
-        <DollyCameraPip camera={pipCamera} frustumHelper={frustumHelper} hasSource={hasPipSource} />
+      {debugPreview || playMode ? (
+        <DollyCameraPip
+          camera={pipCamera}
+          frustumHelper={frustumHelper}
+          hasSource={hasPipSource}
+          playMode={playMode}
+          showPip={debugPreview}
+        />
       ) : null}
     </>
   );
@@ -651,19 +884,39 @@ const _pipClearScratch = new Color();
 function DollyCameraPip({
   camera: dollyCamera,
   frustumHelper,
-  hasSource
+  hasSource,
+  playMode,
+  showPip
 }: {
   camera: PerspectiveCamera;
   frustumHelper: CameraHelper;
   hasSource: boolean;
+  /** Play: the driven camera fills the main viewport, editor drops to the PiP. */
+  playMode: boolean;
+  /** Whether to draw the small inset at all ("Show camera PiP"). */
+  showPip: boolean;
 }) {
   const { gl, scene, size } = useThree();
 
-  useFrame(({ camera }) => {
+  useFrame(({ camera: editorCamera }) => {
+    // Play mode promotes the driven camera to the main viewport (only when one
+    // actually drives it). The inset then shows the editor camera.
+    const play = playMode && hasSource;
+    const mainCamera = play ? dollyCamera : editorCamera;
+    const pipCamera = play ? editorCamera : dollyCamera;
+
+    // Full-viewport render. Hide the frustum helper while looking THROUGH the
+    // dolly camera (you're inside its own frustum).
     gl.setScissorTest(false);
     gl.setViewport(0, 0, size.width, size.height);
-    gl.render(scene, camera);
+    const hideFrustumMain = mainCamera === dollyCamera;
+    if (hideFrustumMain) frustumHelper.visible = false;
+    gl.render(scene, mainCamera);
+    if (hideFrustumMain) frustumHelper.visible = true;
 
+    if (!showPip) return; // Play mode with the inset hidden: main render only.
+
+    // PiP scissor region (bottom-right).
     const width = Math.min(360, Math.max(220, size.width * 0.28));
     const height = width / DOLLY_PIP_ASPECT;
     const x = Math.max(DOLLY_PIP_MARGIN, size.width - width - DOLLY_PIP_MARGIN);
@@ -673,11 +926,8 @@ function DollyCameraPip({
     gl.setScissorTest(true);
     gl.setScissor(x, y, width, height);
     gl.setViewport(x, y, width, height);
-    if (hasSource) {
-      frustumHelper.visible = false;
-      gl.render(scene, dollyCamera);
-      frustumHelper.visible = true;
-    } else {
+    const pipIsDolly = pipCamera === dollyCamera;
+    if (pipIsDolly && !hasSource) {
       // No camera drives the PiP: paint a dark "no signal" panel instead of a
       // view from an undriven camera.
       const prevColor = gl.getClearColor(_pipClearScratch);
@@ -685,6 +935,10 @@ function DollyCameraPip({
       gl.setClearColor(PIP_NO_SIGNAL_COLOR, 1);
       gl.clear(true, true, false);
       gl.setClearColor(prevColor, prevAlpha);
+    } else {
+      if (pipIsDolly) frustumHelper.visible = false;
+      gl.render(scene, pipCamera);
+      if (pipIsDolly) frustumHelper.visible = true;
     }
     gl.setScissorTest(false);
     gl.setViewport(0, 0, size.width, size.height);
@@ -1065,6 +1319,7 @@ function VirtualCameraPanel({
   onBlendDurationChange,
   onCapture,
   onAddCart,
+  onAddOrbit,
   onSelect,
   onActivate,
   onDelete,
@@ -1084,6 +1339,7 @@ function VirtualCameraPanel({
   onBlendDurationChange: (duration: number) => void;
   onCapture: () => void;
   onAddCart: () => void;
+  onAddOrbit: () => void;
   onSelect: (id: string) => void;
   onActivate: (id: string) => void;
   onDelete: (id: string) => void;
@@ -1124,6 +1380,7 @@ function VirtualCameraPanel({
         <div style={{ display: "flex", gap: 6 }}>
           <button onClick={onCapture}>Add VCam (from viewport)</button>
           <button onClick={onAddCart}>Add Cart VCam</button>
+          <button onClick={onAddOrbit}>Add Orbit VCam</button>
         </div>
       </SettingsSection>
 
@@ -1292,6 +1549,129 @@ function VirtualCameraPanel({
                       </select>
                     </label>
                   ) : null}
+                  {camera.bodyType === "orbit" ? (
+                    <div
+                      onClick={(event) => event.stopPropagation()}
+                      style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
+                    >
+                      <label style={shotRowLabelStyle("64px 1fr")} title="The target this camera orbits">
+                        <span>Orbit</span>
+                        <select
+                          value={camera.orbitTargetId}
+                          onChange={(event) => onUpdateShot(camera.id, { orbitTargetId: event.target.value })}
+                        >
+                          <option value="">(fixed origin)</option>
+                          {trackTargets.map((target) => (
+                            <option key={target.id} value={target.id}>
+                              {target.name}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <label
+                        style={shotRowLabelStyle("64px 1fr")}
+                        title="World: compass-anchored (ignores target rotation). LockYaw: follows target heading, level horizon. Lock: welds to target (rolls with it)."
+                      >
+                        <span>Binding</span>
+                        <select
+                          value={camera.orbitBinding}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, {
+                              orbitBinding: event.target.value as DemoVirtualCamera["orbitBinding"]
+                            })
+                          }
+                        >
+                          <option value="world">World (compass-anchored)</option>
+                          <option value="lockYaw">Lock yaw (level horizon)</option>
+                          <option value="lock">Lock (welded)</option>
+                        </select>
+                      </label>
+                      <label style={shotRowLabelStyle("64px 1fr")}>
+                        <span>Azimuth</span>
+                        <input
+                          type="range"
+                          min={-180}
+                          max={180}
+                          step={1}
+                          value={camera.orbitAzimuthDeg}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, { orbitAzimuthDeg: Number(event.target.value) })
+                          }
+                        />
+                      </label>
+                      <label style={shotRowLabelStyle("64px 1fr")}>
+                        <span>Elevation</span>
+                        <input
+                          type="range"
+                          min={-80}
+                          max={80}
+                          step={1}
+                          value={camera.orbitElevationDeg}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, { orbitElevationDeg: Number(event.target.value) })
+                          }
+                        />
+                      </label>
+                      <label style={shotRowLabelStyle("64px 1fr")}>
+                        <span>Radius</span>
+                        <input
+                          type="range"
+                          min={0.5}
+                          max={20}
+                          step={0.1}
+                          value={camera.orbitRadius}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, { orbitRadius: Number(event.target.value) })
+                          }
+                        />
+                      </label>
+                      <label
+                        style={shotRowLabelStyle("64px 1fr")}
+                        title="Auto-orbit rate in degrees/second (0 holds a static angle)"
+                      >
+                        <span>Spin °/s</span>
+                        <input
+                          type="range"
+                          min={-90}
+                          max={90}
+                          step={1}
+                          value={camera.orbitAutoDegPerSec}
+                          onChange={(event) =>
+                            onUpdateShot(camera.id, { orbitAutoDegPerSec: Number(event.target.value) })
+                          }
+                        />
+                      </label>
+                      <div
+                        style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}
+                        title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
+                      >
+                        Manual control (drag PiP to pilot, wheel to zoom)
+                      </div>
+                      {(["azimuth", "elevation", "radius"] as const).map((axis) => (
+                        <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
+                          <span style={{ textTransform: "capitalize" }}>{axis}</span>
+                          <select
+                            value={camera.orbitControl[axis]?.mode ?? "locked"}
+                            onChange={(event) =>
+                              onUpdateShot(camera.id, {
+                                orbitControl: {
+                                  ...camera.orbitControl,
+                                  [axis]:
+                                    event.target.value === "recenter"
+                                      ? { mode: "recenter", recenterWait: 1.5, recenterTime: 1 }
+                                      : { mode: event.target.value as OrbitAxisMode }
+                                }
+                              })
+                            }
+                          >
+                            <option value="locked">Locked (coded only)</option>
+                            <option value="free">Free (override, holds)</option>
+                            <option value="recenter">Recenter (override, eases back)</option>
+                          </select>
+                        </label>
+                      ))}
+                    </div>
+                  ) : null}
                 </div>
               );
             })}
@@ -1354,9 +1734,36 @@ export function App() {
   const [speed, setSpeed] = useState(() => loadedScene?.dollies[0]?.speed ?? 1);
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
+  // Edit vs Play mode. Edit: the editor camera owns the main viewport with
+  // OrbitControls + helpers; the driven "viewer" camera previews in the PiP.
+  // Play: the driven camera owns the main viewport (clean, no helpers) and all
+  // interaction pilots it (editor OrbitControls are off); the editor drops to the
+  // PiP. One switch flips the render camera, the controls, AND the input surface.
+  const [viewMode, setViewMode] = useState<"edit" | "play">("edit");
+  const playMode = viewMode === "play";
+  // The vcam actually driving the PiP this frame — reported by the drive loop. In
+  // timeline playback the active shot changes over time, so this is the truth for
+  // the PiP label and for deciding whether the viewport can pilot an orbit shot.
+  const [activeDrivenVcamId, setActiveDrivenVcamId] = useState<string | null>(null);
+
+  // Quick toggle: press "P" to flip Edit <-> Play (ignored while typing in a field).
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key !== "p" && event.key !== "P") return;
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement || el instanceof HTMLSelectElement) {
+        return;
+      }
+      setViewMode((mode) => (mode === "edit" ? "play" : "edit"));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, []);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
+  // Live orbit-pilot input: the PiP pad writes deltas, the drive loop drains them.
+  const orbitInputRef = useRef<OrbitInput>({});
   // Composer overlay markers on the PiP, driven imperatively from Scene's frame loop.
   const dollyTargetMarkerRef = useRef<HTMLDivElement | null>(null);
   const dollyTargetLineRef = useRef<SVGLineElement | null>(null);
@@ -1793,10 +2200,18 @@ export function App() {
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
   const hasPipSource = Boolean(timelineActive || virtualCameraActivation || selectedVirtualCamera);
+  // The vcam actually driving the PiP this frame (reported by the drive loop);
+  // during timeline playback this is the active block's shot, which changes over
+  // time — so the label names the real camera instead of an opaque "Timeline".
+  const activeDrivenVcam = activeDrivenVcamId
+    ? virtualCameras.find((camera) => camera.id === activeDrivenVcamId) ?? null
+    : null;
   const pipLabel = timelineActive
-    ? "Timeline"
+    ? activeDrivenVcam
+      ? `▶ ${activeDrivenVcam.name}`
+      : "Timeline (gap)"
     : virtualCameraActivation
-      ? "Brain Camera"
+      ? activeDrivenVcam?.name ?? "Brain Camera"
       : selectedVirtualCamera
         ? selectedVirtualCamera.name
         : "No output";
@@ -1807,6 +2222,19 @@ export function App() {
   const composerChromeVcam = selectedVirtualCamera ?? activatedVcam;
   const composerChromeActive = Boolean(composerChromeVcam?.trackTargetId);
   const composerChromeSettings = composerChromeVcam?.composerSettings ?? DEFAULT_COMPOSER_SETTINGS;
+  // Play mode drops a viewport input surface over the whole 3D view whenever a
+  // camera drives it (edit-mode authoring uses gizmos/sliders, not viewport drag).
+  const showPlayInput = playMode && hasPipSource;
+  // It pilots the driven shot — whichever driver (timeline OR activation) chose it
+  // — only when that shot is an interactive orbit; else it is a view-only capture
+  // that still swallows input so nothing leaks.
+  const pilotOrbit =
+    showPlayInput &&
+    Boolean(
+      activeDrivenVcam &&
+        activeDrivenVcam.bodyType === "orbit" &&
+        hasInteractiveOrbitAxis(activeDrivenVcam.orbitControl)
+    );
 
   function getActiveAnchorPointIndex(path: BezierPath): number | null {
     if (selectedHandleIndex === null) return null;
@@ -1934,12 +2362,29 @@ export function App() {
             body: { type: "cart", cartId: defaultDollyId, positionOffset: { x: 0, y: 0, z: 0 } },
             ...(snapshot.lens && { lens: snapshot.lens })
           } as VirtualCameraDefinition)
-        : ({
-            id,
-            name,
-            body: { type: "static", position: snapshot.position, quaternion: snapshot.quaternion },
-            ...(snapshot.lens && { lens: snapshot.lens })
-          } as VirtualCameraDefinition);
+        : bodyType === "orbit"
+          ? ({
+              id,
+              name,
+              body: {
+                type: "orbit",
+                target: registeredTargets[0]?.id
+                  ? { targetId: registeredTargets[0].id }
+                  : { x: 0, y: 0, z: 0 },
+                azimuthDeg: ORBIT_DEFAULTS.orbitAzimuthDeg,
+                elevationDeg: ORBIT_DEFAULTS.orbitElevationDeg,
+                radius: ORBIT_DEFAULTS.orbitRadius,
+                binding: ORBIT_DEFAULTS.orbitBinding,
+                control: ORBIT_INTERACTIVE_CONTROL
+              },
+              ...(snapshot.lens && { lens: snapshot.lens })
+            } as VirtualCameraDefinition)
+          : ({
+              id,
+              name,
+              body: { type: "static", position: snapshot.position, quaternion: snapshot.quaternion },
+              ...(snapshot.lens && { lens: snapshot.lens })
+            } as VirtualCameraDefinition);
     setSelectedVirtualCameraId(id);
     setVcamDefs((current) => [...current, def]);
     setEditorVcams((current) => ({ ...current, [id]: editor }));
@@ -1960,6 +2405,20 @@ export function App() {
     addDemoVcam(
       "cart",
       "Cart VCam",
+      {
+        position: { x: 0, y: 0, z: 0 },
+        quaternion: { x: 0, y: 0, z: 0, w: 1 },
+        lens: { fov: 45 }
+      },
+      start
+    );
+  }
+
+  function addOrbitVirtualCamera(startTime?: number | null): void {
+    const start = typeof startTime === "number" ? startTime : null;
+    addDemoVcam(
+      "orbit",
+      "Orbit VCam",
       {
         position: { x: 0, y: 0, z: 0 },
         quaternion: { x: 0, y: 0, z: 0, w: 1 },
@@ -2006,12 +2465,21 @@ export function App() {
     }
     // Every definition-shaped field (noise expansion, aim, dutch, cart) in one
     // pass over vcamDefs; the editor-sidecar write above stays separate.
+    const orbitPatched =
+      patch.orbitTargetId !== undefined ||
+      patch.orbitAzimuthDeg !== undefined ||
+      patch.orbitElevationDeg !== undefined ||
+      patch.orbitRadius !== undefined ||
+      patch.orbitBinding !== undefined ||
+      patch.orbitAutoDegPerSec !== undefined ||
+      patch.orbitControl !== undefined;
     if (
       patch.noisePreset !== undefined ||
       patch.trackTargetId !== undefined ||
       patch.dutchDeg !== undefined ||
       patch.cartId !== undefined ||
-      patch.cartOffset !== undefined
+      patch.cartOffset !== undefined ||
+      orbitPatched
     ) {
       setVcamDefs((current) =>
         current.map((def) => {
@@ -2045,6 +2513,24 @@ export function App() {
           }
           if (patch.cartOffset !== undefined && next.body.type === "cart") {
             next.body = { ...next.body, positionOffset: patch.cartOffset };
+          }
+          if (orbitPatched && next.body.type === "orbit") {
+            const body = { ...next.body };
+            if (patch.orbitTargetId !== undefined) {
+              body.target = patch.orbitTargetId
+                ? { targetId: patch.orbitTargetId }
+                : { x: 0, y: 0, z: 0 };
+            }
+            if (patch.orbitAzimuthDeg !== undefined) body.azimuthDeg = patch.orbitAzimuthDeg;
+            if (patch.orbitElevationDeg !== undefined) body.elevationDeg = patch.orbitElevationDeg;
+            if (patch.orbitRadius !== undefined) body.radius = patch.orbitRadius;
+            if (patch.orbitBinding !== undefined) body.binding = patch.orbitBinding;
+            if (patch.orbitControl !== undefined) body.control = patch.orbitControl;
+            if (patch.orbitAutoDegPerSec !== undefined) {
+              if (patch.orbitAutoDegPerSec === 0) delete body.autoOrbitDegPerSec;
+              else body.autoOrbitDegPerSec = patch.orbitAutoDegPerSec;
+            }
+            next.body = body;
           }
           return next;
         })
@@ -2409,6 +2895,39 @@ export function App() {
         </SettingsSection>
 
         <SettingsSection title="Viewport Debug">
+          <div
+            role="group"
+            aria-label="View mode"
+            title="Edit: editor camera + controls in the main view, driven camera in the PiP. Play: driven camera fills the main view and all interaction pilots it. Shortcut: P"
+            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 8 }}
+          >
+            {(["edit", "play"] as const).map((mode) => {
+              const active = viewMode === mode;
+              return (
+                <button
+                  key={mode}
+                  onClick={() => setViewMode(mode)}
+                  style={{
+                    padding: "6px 8px",
+                    fontSize: 12,
+                    fontWeight: 700,
+                    textTransform: "capitalize",
+                    borderRadius: 6,
+                    cursor: "pointer",
+                    color: active ? "#0f172a" : "#cbd5e1",
+                    background: active
+                      ? mode === "play"
+                        ? "rgba(34, 197, 94, 0.9)"
+                        : "rgba(148, 163, 184, 0.9)"
+                      : "rgba(15, 23, 42, 0.6)",
+                    border: `1px solid ${active ? "transparent" : "rgba(148, 163, 184, 0.25)"}`
+                  }}
+                >
+                  {mode === "play" ? "▶ Play" : "✎ Edit"}
+                </button>
+              );
+            })}
+          </div>
           <label style={{ display: "block", fontSize: 12 }}>
             <input
               type="checkbox"
@@ -2467,6 +2986,7 @@ export function App() {
           onBlendDurationChange={setVirtualCameraBlendDuration}
           onCapture={captureVirtualCamera}
           onAddCart={addCartVirtualCamera}
+          onAddOrbit={addOrbitVirtualCamera}
           trackTargets={registeredTargets}
           onUpdateShot={updateVirtualCameraShot}
           onUpdateComposer={updateVirtualCameraComposer}
@@ -2546,12 +3066,13 @@ export function App() {
           lookaheadLineRef={lookaheadLineRef}
         />
       ) : null}
+      {showPlayInput ? <PlayViewportInput orbitInputRef={orbitInputRef} pilot={pilotOrbit} /> : null}
 
       <Canvas style={{ width: "100%", height: "100%" }} camera={{ position: [0, 0, 6], fov: 45 }}>
         <color attach="background" args={["#f8fafc"]} />
         <OrbitControls
           makeDefault
-          enabled={!isTransforming}
+          enabled={!isTransforming && (!playMode || !hasPipSource)}
           enableDamping
           dampingFactor={0.08}
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
@@ -2560,6 +3081,7 @@ export function App() {
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
+          orbitInputRef={orbitInputRef}
           dollyFramesRef={dollyFramesRef}
           dollies={dollies}
           vertexPaths={vertexPaths}
@@ -2568,6 +3090,7 @@ export function App() {
           pathVersion={pathVersion}
           speed={speed}
           debugPreview={debugPreview}
+          playMode={playMode}
           debugFrustum={debugFrustum}
           pathStyle={pathStyle}
           selectedHandleIndex={selectedHandleIndex}
@@ -2600,12 +3123,20 @@ export function App() {
           vcamDefs={vcamDefs}
           selectedVirtualCameraId={selectedVirtualCameraId}
           onVirtualCameraCaptured={addCapturedVirtualCamera}
+          onActiveVcamChange={setActiveDrivenVcamId}
           onVirtualCameraResolved={({ progress }) => {
             setVirtualCameraTransitionProgress(progress);
           }}
           onSelectVirtualCamera={selectVirtualCamera}
           onUpdateVirtualCameraSnapshot={updateVirtualCameraSnapshot}
           onUpdateCartOffset={(id, cartOffset) => updateVirtualCameraShot(id, { cartOffset })}
+          onUpdateOrbitParams={(id, params) =>
+            updateVirtualCameraShot(id, {
+              orbitAzimuthDeg: params.azimuthDeg,
+              orbitElevationDeg: params.elevationDeg,
+              orbitRadius: params.radius
+            })
+          }
           onSetAnchorScale={(anchorIndex, scale) => {
             if (!bezierPath) return;
             setAnchorScales((prev) => {
