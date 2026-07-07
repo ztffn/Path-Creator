@@ -660,10 +660,10 @@ describe("manual pivot-orbit override (OrbitControls model on any vcam)", () => 
 
   it("locked axes ignore input — exact passthrough", () => {
     const state = createRigBodyState();
-    const r = stepCameraOverride(coded(), PIVOT, "v", { azimuth: { mode: "locked" } }, state, { azimuthDeltaDeg: 45 }, 0.016);
+    const c = coded();
+    const r = stepCameraOverride(c, PIVOT, "v", { azimuth: { mode: "locked" } }, state, { azimuthDeltaDeg: 45 }, 0.016);
     expect(r.active).toBe(false);
-    expect(r.snapshot).toBe(r.snapshot); // returned pose is the coded one
-    expect(r.snapshot.position).toEqual({ x: 0, y: 0, z: 5 });
+    expect(r.snapshot).toBe(c); // returns the coded snapshot by reference
   });
 
   it("no control at all is an exact passthrough", () => {

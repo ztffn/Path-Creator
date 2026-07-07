@@ -27,11 +27,10 @@ import {
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
   driveActivation,
-  resolveCameraPivot,
   resolveVirtualCameraDefinition,
   setVirtualCameraBrainLive,
-  stepCameraOverride,
   stepComposerAim,
+  stepShotOverride,
   type CameraOverrideInput,
   type RigActivationParams,
   type RigDriveResult,
@@ -253,12 +252,10 @@ export function driveTimeline(
   let pose = sample.camera;
   let overrideActive = false;
   if (definition) {
-    const pivot = resolveCameraPivot(definition, sample.camera, resolveTarget);
-    const override = stepCameraOverride(
+    const override = stepShotOverride(
+      definition,
       sample.camera,
-      pivot,
-      definition.id,
-      definition.control,
+      resolveTarget,
       state.body,
       params.overrideInput,
       deltaSeconds

@@ -1417,7 +1417,7 @@ export function createRigBodyState(): RigBodyState {
 }
 
 const OVERRIDE_INPUT_EPSILON = 1e-6;
-const OVERRIDE_DOLLY_DAMPING = 6; // heaviness of the smooth zoom ease (bigger = slower)
+const OVERRIDE_DOLLY_RATE = 2; // per-second ease rate of the smooth zoom
 const SYNTH_PIVOT_DISTANCE = 10; // pivot distance for a shot with no aim/orbit target
 
 /** Wraps degrees to (-180, 180] so recentering takes the shortest angular path. */
@@ -1425,15 +1425,37 @@ function wrapDeg180(deg: number): number {
   return ((((deg + 180) % 360) + 360) % 360) - 180;
 }
 
-/** Recentering ease factor: ~settled after `time` seconds. */
+/** Exponential approach factor for `dt`: 1 - e^(-rate·dt) (0 → 1 as rate·dt grows). */
+function easeAlpha(rate: number, dt: number): number {
+  return 1 - Math.exp(-rate * Math.max(0, dt));
+}
+
+/** Recentering ease factor toward the coded value; ~settled after `time` seconds. */
 function recenterAlpha(time: number, dt: number): number {
-  return time > 0 ? 1 - Math.exp(-(5 / time) * Math.max(0, dt)) : 1;
+  return time > 0 ? easeAlpha(5 / time, dt) : 1;
 }
 
 /**
- * One scalar override axis: apply input under its mode, tick the idle timer, and
- * (recenter, once idle past the wait) ease the offset toward the coded value (0).
- * `wrap` handles the angular azimuth axis. Locked ignores input and snaps to 0.
+ * The per-frame idle/recenter gate shared by every override axis: ticks the idle
+ * timer, and returns the multiplier to decay the offset toward the coded value
+ * this frame — 1 while held (free, or recenter before the wait), <1 while an idle
+ * recenter axis eases home. One place owns "when does recentering fire".
+ */
+function idleRecenterDecay(
+  idle: number,
+  hadInput: boolean,
+  control: CameraOverrideAxis | undefined,
+  dt: number
+): { idle: number; decay: number } {
+  const nextIdle = hadInput ? 0 : idle + Math.max(0, dt);
+  const recentering =
+    control?.mode === "recenter" && !hadInput && nextIdle >= (control.recenterWait ?? 1);
+  return { idle: nextIdle, decay: recentering ? 1 - recenterAlpha(control.recenterTime ?? 1, dt) : 1 };
+}
+
+/**
+ * One scalar override axis: apply input under its mode and decay it via the shared
+ * idle/recenter gate. `wrap` handles the angular azimuth axis. Locked snaps to 0.
  */
 function stepOverrideAxis(
   offset: number,
@@ -1443,18 +1465,12 @@ function stepOverrideAxis(
   dt: number,
   wrap: boolean
 ): { offset: number; idle: number } {
-  const mode = control?.mode ?? "locked";
-  if (mode === "locked") return { offset: 0, idle: 0 };
-
+  if ((control?.mode ?? "locked") === "locked") return { offset: 0, idle: 0 };
   const hadInput = Math.abs(delta) > OVERRIDE_INPUT_EPSILON;
   let next = offset + delta;
   if (wrap) next = wrapDeg180(next);
-  const nextIdle = hadInput ? 0 : idle + Math.max(0, dt);
-
-  if (mode === "recenter" && !hadInput && nextIdle >= (control?.recenterWait ?? 1)) {
-    next *= 1 - recenterAlpha(control?.recenterTime ?? 1, dt);
-  }
-  return { offset: next, idle: nextIdle };
+  const gate = idleRecenterDecay(idle, hadInput, control, dt);
+  return { offset: next * gate.decay, idle: gate.idle };
 }
 
 const _ovQuat = new Quaternion();
@@ -1471,16 +1487,12 @@ export function resolveCameraPivot(
   coded: VirtualCameraSnapshot,
   resolveTarget: (id: string) => Vec3 | null
 ): Vec3 {
-  const aim = definition.aim;
-  if (aim?.type === "track") {
-    const t = "targetId" in aim.target ? resolveTarget(aim.target.targetId) : aim.target;
-    if (t) return t;
-  }
-  if (definition.body.type === "orbit") {
-    const b = definition.body;
-    const t = "targetId" in b.target ? resolveTarget(b.target.targetId) : b.target;
-    if (t) return t;
-  }
+  const resolvePoint = (target: Vec3 | { targetId: string }): Vec3 | null =>
+    "targetId" in target ? resolveTarget(target.targetId) : target;
+  const aimed = definition.aim?.type === "track" ? resolvePoint(definition.aim.target) : null;
+  if (aimed) return aimed;
+  const orbited = definition.body.type === "orbit" ? resolvePoint(definition.body.target) : null;
+  if (orbited) return orbited;
   _ovRight
     .set(0, 0, -1)
     .applyQuaternion(
@@ -1527,13 +1539,13 @@ export function stepCameraOverride(
   }
 
   // Decompose the coded offset from the pivot into spherical (world axes) — the
-  // exact inverse of orbitOffset, so a zero offset reconstructs the coded pose.
-  const dx = coded.position.x - pivot.x;
-  const dy = coded.position.y - pivot.y;
-  const dz = coded.position.z - pivot.z;
-  const r0 = Math.hypot(dx, dy, dz);
-  const az0 = Math.atan2(dx, dz) / DEG_TO_RAD;
-  const el0 = r0 > OVERRIDE_INPUT_EPSILON ? Math.asin(clamp(dy / r0, -1, 1)) / DEG_TO_RAD : 0;
+  // exact inverse of orbitOffset (reuses its published inverse), so a zero offset
+  // reconstructs the coded pose.
+  const { azimuthDeg: az0, elevationDeg: el0, radius: r0 } = orbitParamsFromLocalOffset({
+    x: coded.position.x - pivot.x,
+    y: coded.position.y - pivot.y,
+    z: coded.position.z - pivot.z
+  });
 
   const az = stepOverrideAxis(
     state.azimuthOffsetDeg,
@@ -1554,7 +1566,8 @@ export function stepCameraOverride(
     deltaSeconds,
     false
   );
-  // Clamp so coded + offset stays off the ±80 poles (no windup past the limit).
+  // Clamp so coded + offset stays off the ±80 poles (no windup past the limit);
+  // this makes the effective-elevation clamp at recompose a provable no-op.
   state.elevationOffsetDeg = clamp(el.offset, -ORBIT_ELEVATION_LIMIT - el0, ORBIT_ELEVATION_LIMIT - el0);
   state.idleElevation = el.idle;
 
@@ -1572,13 +1585,11 @@ export function stepCameraOverride(
     state.panY += _ovRight.y * px + _ovUp.y * py;
     state.panZ += _ovRight.z * px + _ovUp.z * py;
     const hadPan = Math.abs(px) > OVERRIDE_INPUT_EPSILON || Math.abs(py) > OVERRIDE_INPUT_EPSILON;
-    state.idlePan = hadPan ? 0 : state.idlePan + Math.max(0, deltaSeconds);
-    if (panMode === "recenter" && !hadPan && state.idlePan >= (control?.pan?.recenterWait ?? 1)) {
-      const k = 1 - recenterAlpha(control?.pan?.recenterTime ?? 1, deltaSeconds);
-      state.panX *= k;
-      state.panY *= k;
-      state.panZ *= k;
-    }
+    const gate = idleRecenterDecay(state.idlePan, hadPan, control?.pan, deltaSeconds);
+    state.idlePan = gate.idle;
+    state.panX *= gate.decay;
+    state.panY *= gate.decay;
+    state.panZ *= gate.decay;
   }
 
   // Dolly (wheel): input bumps a target; the applied distance eases toward it for a
@@ -1589,29 +1600,27 @@ export function stepCameraOverride(
   } else {
     const dd = input?.dollyDelta ?? 0;
     state.dollyTargetOffset += dd;
-    const hadDolly = Math.abs(dd) > OVERRIDE_INPUT_EPSILON;
-    state.idleDolly = hadDolly ? 0 : state.idleDolly + Math.max(0, deltaSeconds);
-    if (dollyMode === "recenter" && !hadDolly && state.idleDolly >= (control?.dolly?.recenterWait ?? 1)) {
-      state.dollyTargetOffset *= 1 - recenterAlpha(control?.dolly?.recenterTime ?? 1, deltaSeconds);
-    }
-    const alpha = 1 - Math.exp(-(12 / OVERRIDE_DOLLY_DAMPING) * Math.max(0, deltaSeconds));
-    state.dollyOffset += (state.dollyTargetOffset - state.dollyOffset) * alpha;
+    const gate = idleRecenterDecay(state.idleDolly, Math.abs(dd) > OVERRIDE_INPUT_EPSILON, control?.dolly, deltaSeconds);
+    state.idleDolly = gate.idle;
+    state.dollyTargetOffset *= gate.decay;
+    state.dollyOffset += (state.dollyTargetOffset - state.dollyOffset) * easeAlpha(OVERRIDE_DOLLY_RATE, deltaSeconds);
   }
 
   const active =
     Math.abs(state.azimuthOffsetDeg) > OVERRIDE_INPUT_EPSILON ||
     Math.abs(state.elevationOffsetDeg) > OVERRIDE_INPUT_EPSILON ||
-    Math.abs(state.panX) > OVERRIDE_INPUT_EPSILON ||
-    Math.abs(state.panY) > OVERRIDE_INPUT_EPSILON ||
-    Math.abs(state.panZ) > OVERRIDE_INPUT_EPSILON ||
+    Math.hypot(state.panX, state.panY, state.panZ) > OVERRIDE_INPUT_EPSILON ||
     Math.abs(state.dollyOffset) > OVERRIDE_INPUT_EPSILON;
 
   if (!active) return { snapshot: coded, active: false };
 
-  const azE = az0 + state.azimuthOffsetDeg;
-  const elE = clamp(el0 + state.elevationOffsetDeg, -ORBIT_ELEVATION_LIMIT, ORBIT_ELEVATION_LIMIT);
-  const rE = clamp(r0 + state.dollyOffset, control?.minDistance ?? 0.01, control?.maxDistance ?? Infinity);
-  const off = orbitOffset(azE, elE, rE);
+  // Elevation stays in range via the offset windup clamp above (and orbitOffset
+  // clamps internally), so no clamp is needed here.
+  const off = orbitOffset(
+    az0 + state.azimuthOffsetDeg,
+    el0 + state.elevationOffsetDeg,
+    clamp(r0 + state.dollyOffset, control?.minDistance ?? 0.01, control?.maxDistance ?? Infinity)
+  );
   const position = {
     x: pivot.x + state.panX + off.x,
     y: pivot.y + state.panY + off.y,
@@ -1619,6 +1628,28 @@ export function stepCameraOverride(
   };
   const quaternion = cameraQuaternionFromFrame({ x: -off.x, y: -off.y, z: -off.z }, OVERRIDE_WORLD_UP);
   return { snapshot: { ...coded, position, quaternion }, active: true };
+}
+
+/**
+ * Driver-shared shot override: fast-paths a shot with no `control` (the common,
+ * authored case — no pivot resolve, no decompose), else resolves the pivot and
+ * runs stepCameraOverride. Both the activation and timeline drivers call this, so
+ * pivot derivation + the passthrough short-circuit live in one place.
+ */
+export function stepShotOverride(
+  definition: VirtualCameraDefinition,
+  coded: VirtualCameraSnapshot,
+  resolveTarget: (id: string) => Vec3 | null,
+  state: RigBodyState,
+  input: CameraOverrideInput | undefined,
+  deltaSeconds: number
+): CameraOverrideResult {
+  if (!definition.control) {
+    state.vcamId = null;
+    return { snapshot: coded, active: false };
+  }
+  const pivot = resolveCameraPivot(definition, coded, resolveTarget);
+  return stepCameraOverride(coded, pivot, definition.id, definition.control, state, input, deltaSeconds);
 }
 
 /** Pixel/wheel → CameraOverrideInput sensitivities (the twin's OrbitControls feel). */
@@ -1778,12 +1809,10 @@ export function driveActivation(
   const coded = resolveVirtualCameraDefinition(definition, context);
   let overrideActive = false;
   if (coded) {
-    const pivot = resolveCameraPivot(definition, coded, resolveTarget);
-    const override = stepCameraOverride(
+    const override = stepShotOverride(
+      definition,
       coded,
-      pivot,
-      definition.id,
-      definition.control,
+      resolveTarget,
       state.body,
       params.overrideInput,
       deltaSeconds
