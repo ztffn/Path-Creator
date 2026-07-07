@@ -73,6 +73,10 @@ export function clamp01(v: number): number {
   return Math.max(0, Math.min(1, v));
 }
 
+export function clamp(v: number, min: number, max: number): number {
+  return Math.max(min, Math.min(max, v));
+}
+
 export function lerp(a: number, b: number, t: number): number {
   return a + (b - a) * t;
 }

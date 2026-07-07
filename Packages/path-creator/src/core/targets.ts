@@ -5,6 +5,7 @@
 // centroid, matching Cinemachine's target-group concept. Engine-agnostic.
 import { type Vec3 } from "./types";
 import { vec3 } from "./vec3";
+import type { QuaternionLike } from "./virtual-camera";
 
 export interface TargetGroupMember {
   targetId: string;
@@ -17,6 +18,8 @@ export type TrackingTargetDefinition =
   | { id: string; name?: string; type: "group"; members: TargetGroupMember[] };
 
 export type TargetSource = () => Vec3 | null;
+/** Optional world-orientation pull for a target; consumed by target-relative orbit binding. */
+export type TargetOrientationSource = () => QuaternionLike | null;
 
 export interface RegisteredTarget {
   id: string;
@@ -29,13 +32,22 @@ export interface RegisteredTarget {
  * read at its current pose — nothing is cached between frames.
  */
 export class TargetRegistry {
-  private readonly sources = new Map<string, { name: string; source: TargetSource }>();
+  private readonly sources = new Map<
+    string,
+    { name: string; source: TargetSource; orientation?: TargetOrientationSource }
+  >();
   private readonly listeners = new Set<() => void>();
   private version_ = 0;
 
-  /** Registers a target source; returns an unregister function. */
-  register(id: string, source: TargetSource, name = id): () => void {
-    this.sources.set(id, { name, source });
+  /** Registers a target source; the optional orientation source feeds target-relative
+   *  orbit binding. Returns an unregister function. */
+  register(
+    id: string,
+    source: TargetSource,
+    name = id,
+    orientation?: TargetOrientationSource
+  ): () => void {
+    this.sources.set(id, { name, source, ...(orientation && { orientation }) });
     this.notify();
     return () => {
       if (this.sources.get(id)?.source === source) {
@@ -63,6 +75,12 @@ export class TargetRegistry {
 
   resolve(id: string): Vec3 | null {
     return this.sources.get(id)?.source() ?? null;
+  }
+
+  /** Live world orientation of a target, or null when the target is unknown or
+   *  registered without an orientation source. */
+  resolveOrientation(id: string): QuaternionLike | null {
+    return this.sources.get(id)?.orientation?.() ?? null;
   }
 
   /** Weighted centroid of resolvable members; null when nothing resolves. */

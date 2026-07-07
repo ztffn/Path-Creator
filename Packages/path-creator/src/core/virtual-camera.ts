@@ -78,9 +78,67 @@ export interface VirtualCameraSnapshot {
   settings?: Record<string, number>;
 }
 
+/**
+ * How an orbit body interprets its azimuth/elevation offset frame:
+ * - `world`: angles in world (rig) axes; the target's rotation is ignored (a
+ *   compass-anchored orbit — the shot holds as the target spins underneath).
+ * - `lockYaw`: the frame follows the target's yaw only, world up preserved
+ *   (level horizon, no roll); the camera stays on the same side as the target
+ *   turns. The default target-relative mode.
+ * - `lock`: the frame inherits the target's full orientation (yaw+pitch+roll);
+ *   the camera is welded to the target and rolls/tilts with it.
+ * Target-relative modes need the target's orientation from the resolve context;
+ * when it is unavailable (a literal point, or no orientation registered) they
+ * degrade to `world`.
+ */
+export type OrbitBinding = "world" | "lockYaw" | "lock";
+
+/**
+ * Per-axis interactive control for an orbit body, Cinemachine OrbitalFollow's
+ * input-axis + recentering model:
+ * - `locked`: user input ignored; the coded value is authoritative (the pure
+ *   default — the camera holds its authored/auto-orbit pose).
+ * - `free`: user input drives the axis and it stays where the user leaves it.
+ * - `recenter`: user input drives the axis, then after `recenterWait` idle
+ *   seconds it eases back to the coded value over ~`recenterTime` seconds
+ *   (shortest angular path for azimuth).
+ */
+export type OrbitAxisMode = "locked" | "free" | "recenter";
+
+export interface OrbitAxisControl {
+  mode: OrbitAxisMode;
+  /** Idle seconds before recentering begins (recenter mode; default 1). */
+  recenterWait?: number;
+  /** Seconds to ease back to the coded value (recenter mode; default 1). */
+  recenterTime?: number;
+}
+
+/** Per-axis interactive control; an omitted axis (or omitted `control`) is `locked`. */
+export interface OrbitControlSettings {
+  azimuth?: OrbitAxisControl;
+  elevation?: OrbitAxisControl;
+  radius?: OrbitAxisControl;
+}
+
 export type VirtualCameraBodyDefinition =
   | { type: "static"; position: Vec3; quaternion: QuaternionLike }
-  | { type: "cart"; cartId: string; positionOffset?: Vec3 };
+  | { type: "cart"; cartId: string; positionOffset?: Vec3 }
+  | {
+      type: "orbit";
+      /** Position source (distinct from the aim target); orbits around this point. */
+      target: Vec3 | { targetId: string };
+      /** Azimuth around the frame up in degrees; 0 sits on the frame +Z of the target. */
+      azimuthDeg: number;
+      /** Elevation above the horizon in degrees; clamped to ±80 off the poles. */
+      elevationDeg: number;
+      radius: number;
+      /** Offset frame; defaults to `world` (compass-anchored). */
+      binding?: OrbitBinding;
+      /** Pure time-driven spin: azimuth advances by this × the resolve clock. */
+      autoOrbitDegPerSec?: number;
+      /** Interactive control per axis; omitted = all axes `locked` (coded-only). */
+      control?: OrbitControlSettings;
+    };
 
 /**
  * Screen-composer framing: dead/soft zones as frame fractions (0..1), per-axis
@@ -160,6 +218,9 @@ export function vcamTrackTargetId(def: VirtualCameraDefinition): string | null {
 export interface VirtualCameraResolveContext {
   getCartFrame?: (cartId: string) => CartFrame | null;
   getTargetPosition?: (targetId: string) => Vec3 | null;
-  /** Clock feeding the noise stage; same time always yields the same pose. */
+  /** Live world orientation of a target, for target-relative orbit binding
+   *  (`lockYaw`/`lock`); null (or absent) makes those bindings fall back to `world`. */
+  getTargetOrientation?: (targetId: string) => QuaternionLike | null;
+  /** Clock feeding the noise stage and auto-orbit; same time always yields the same pose. */
   elapsedSeconds?: number;
 }
