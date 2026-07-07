@@ -252,15 +252,20 @@ export function driveTimeline(
   let pose = sample.camera;
   let overrideActive = false;
   if (definition) {
+    // Mid-blend the override is stepped (to keep its damping/recenter state alive)
+    // but not applied, so transitions stay the authored blend. Withhold input while
+    // blending so a gesture doesn't silently accumulate and then jump the pose the
+    // frame the blend completes — piloting takes effect once the block is fully live.
+    const midBlend = sample.blendProgress < 1;
     const override = stepShotOverride(
       definition,
       sample.camera,
       resolveTarget,
       state.body,
-      params.overrideInput,
+      midBlend ? undefined : params.overrideInput,
       deltaSeconds
     );
-    if (sample.blendProgress >= 1) {
+    if (!midBlend) {
       pose = override.snapshot;
       overrideActive = override.active;
     }
