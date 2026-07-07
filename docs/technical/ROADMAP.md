@@ -109,6 +109,34 @@ Remaining 3c-4 cleanup: *none.* The composer-config reconciliation is DONE —
 `ScreenComposerOptions` is gone; the composer consumes flat `ComposerSettings`
 throughout (no consumer-side flat→nested mapping).
 
+### Camera bodies — orbit DONE; follow / positionCompose / stateful channel deferred
+**Orbit body DONE (this session).** A pure `orbit` body (`azimuth/elevation/radius`
++ `autoOrbitDegPerSec` advanced from the resolve clock, so scrub-safe) with three
+binding modes — `world` (compass-anchored), `lockYaw` (follows target heading, level
+horizon), `lock` (welded) — resolving in `resolveVirtualCameraDefinition` (`/three`).
+Target orientation flows through `getTargetOrientation` on the resolve context, backed
+by `TargetRegistry.resolveOrientation` + `registerObjectTarget` (pulls world quaternion);
+target-relative binding degrades to `world` when orientation is absent. Shared placement
+helpers (`orbitOffset`/`orbitParamsFromLocalOffset`/`orbitBindingQuaternion`/
+`buildOrbitRingPoints`) back both resolution and the `OrbitVcamGlyphRig` authoring/debug
+gizmo (ring + radius arm + binding-frame triad + camera glyph + translate handle). The
+minimal demo authors orbit bodies against a spinning turbine target. Covers the twin's
+overview (world) and detail (lockYaw) wind-turbine views. Model = body (position) + aim
+(orientation) independent, per Cinemachine's Position/Rotation-Control split.
+
+**Interactive control DONE** (Cinemachine OrbitalFollow input axes + recentering): per-axis
+`locked`/`free`/`recenter` on the orbit body, live `OrbitInput` (pointer/wheel) fed via the
+activation driver into a stateful `RigBodyState` post-stage (`stepOrbitBody`/`applyOrbitLive`)
+that mirrors `RigComposerState`/`stepComposerAim` — resolution stays pure, timeline playback
+stays scrub-safe. The twin's manual-override + return-to-coded orbit is matched, not regressed.
+Demo pilots it via a PiP pad + per-axis mode UI.
+
+**Deferred (planned):** the `follow`/third-person body, the `positionCompose` body, and
+binding-frame **position damping** (smoothing the camera toward a moving coded target — the
+`RigBodyState` channel now exists and can host it). Research synthesis, architecture, task
+breakdown, risks, and alternatives:
+[the deferred-camera-bodies plan](../plans/2026-07-06-deferred-camera-bodies-v1.md).
+
 ### F3 — dolly motion as an editable speed curve
 Replace discrete dolly move-blocks with a per-dolly **motion curve** (keyframes of
 position-over-time on the dolly lane): flat = parked, sloped = moving, curve shape =
@@ -122,6 +150,19 @@ not 2D keyframe curves).
 > timeline reuse): the same limitation (blocks/actions, not 2D curves) plus its
 > unmaintained transitive `react-virtualized` argue for a lighter in-house lane —
 > do F3's curve lane and P2.2's reuse together.
+
+### Scroll-driven timeline (scrollytelling demo)
+A demo where **page scroll scrubs the timeline**: scrolling down advances `t`,
+scrolling up rewinds — carts move, cameras cut/blend, and views change as the
+reader scrolls, for a scrollytelling narrative. Cheap by construction: the
+timeline is a **pure evaluator** (`evaluateTimeline(timeline, ctx, t)` is a
+function of `t` with no internal clock), so a scroll handler just maps scroll
+progress → `t` via `seekTimelinePlayer` (scrub semantics, no event double-fire)
+and drives a frame — no playback clock needed. Build as a new `examples/`
+scrollytelling scene (map `scrollTop/scrollHeight` → `t`, optionally smooth/damp
+the mapping so scroll feels inertial). Pairs well with the new follow/orbit
+camera bodies for "view changes as you scroll". Consider a small reusable
+`useScrollTime` hook in `/r3f` if the mapping proves generally useful.
 
 ## Known gaps / smaller items
 

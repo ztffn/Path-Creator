@@ -90,7 +90,8 @@ const shot: VirtualCameraDefinition = {
 };
 ```
 
-- **body**: `static` (explicit pose) or `cart` (mounted on a dolly).
+- **body**: `static` (explicit pose), `cart` (mounted on a dolly), or `orbit`
+  (orbit a follow target at azimuth/elevation/radius).
 - **aim**: keep body orientation, or look at a fixed `Vec3` / registered target id.
 - **noise**: seeded value noise, a pure function of `(settings, time)`.
 - **lens**: fov/zoom/near/far/orthographicSize/`dutchDeg` (roll). Leaving `lens`
@@ -104,12 +105,92 @@ import { resolveVirtualCameraDefinition } from "@huma/path-creator/three";
 const snapshot = resolveVirtualCameraDefinition(shot, {
   getCartFrame: (cartId) => frames.get(cartId) ?? null,
   getTargetPosition: (targetId) => registry.resolve(targetId),
+  getTargetOrientation: (targetId) => registry.resolveOrientation(targetId),
   elapsedSeconds: t
 });
 ```
 
-Returns `null` when a referenced cart is unavailable; an unresolvable aim
-target keeps the body orientation.
+Returns `null` when a referenced cart/orbit target is unavailable; an
+unresolvable aim target keeps the body orientation.
+
+#### Orbit body
+
+The `orbit` body places the camera on a sphere around a follow target, defaulting
+its orientation to look back at that target — so `aim: { type: "body" }` alone
+gives a working orbit, and a `track` aim frames a *different* target for
+"auto-orbit while looking elsewhere" (body position and aim are independent, per
+Cinemachine's Position-Control vs Rotation-Control split).
+
+```typescript
+body: {
+  type: "orbit",
+  target: { targetId: "turbine/Nacelle" }, // position source (a Vec3 also works)
+  azimuthDeg: 45,        // around the frame up; 0 sits on the frame +Z
+  elevationDeg: 20,      // above the horizon; clamped ±80 off the poles
+  radius: 6,
+  binding: "lockYaw",    // offset frame — see below
+  autoOrbitDegPerSec: 12, // optional: pure time-driven spin (scrub-safe)
+  control: {             // optional: per-axis interactive control (see below)
+    azimuth: { mode: "free" },
+    elevation: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
+    radius: { mode: "free" }
+  }
+}
+```
+
+Resolution stays pure. Auto-orbit advances azimuth by
+`autoOrbitDegPerSec × elapsedSeconds`, so scrubbing to the same instant
+reproduces the identical pose — no per-frame state. `binding` selects the offset
+frame:
+
+- `world` — angles in world (rig) axes; the target's rotation is ignored
+  (a compass-anchored orbit that holds as the target spins underneath).
+- `lockYaw` — the frame follows the target's **yaw only**, world up preserved
+  (level horizon, no roll); the camera stays on the same side as the target
+  turns. Needs `getTargetOrientation`.
+- `lock` — the frame inherits the target's **full** orientation; the camera is
+  welded to the target and rolls/tilts with it.
+
+Target-relative bindings (`lockYaw`/`lock`) read the target's live orientation
+through `getTargetOrientation`; when it is unavailable (a literal `Vec3`, or no
+orientation registered) they degrade gracefully to `world`. Register orientation
+via `registerObjectTarget` (pulls `getWorldQuaternion`) or a fourth argument to
+`TargetRegistry.register`.
+
+The pure placement math is shared with the authoring gizmo: `orbitOffset`
+(params → local offset), `orbitParamsFromLocalOffset` (its inverse, for drag),
+`orbitBindingQuaternion` (binding → frame), and `buildOrbitRingPoints` (the ring
+polyline). The r3f `OrbitVcamGlyphRig` draws the debug/authoring gizmo — the
+orbit ring, radius arm, a binding-frame axis triad, and a camera glyph on the
+ring — and, when selected, a translate `PivotGizmo` at the camera position that
+maps drags back to azimuth/elevation/radius. The frame follows the target each
+frame, so `lockYaw`/`lock` visibly track a rotating target. See the minimal demo
+(Add Orbit VCam) for end-to-end authoring against a spinning turbine target.
+
+#### Interactive control (Cinemachine input axes + recentering)
+
+An orbit body retains live user control — pan/tilt/zoom the camera at runtime —
+per axis, matching Cinemachine `OrbitalFollow`'s input-axis + recentering model.
+Each of `control.azimuth` / `control.elevation` / `control.radius` takes a mode:
+
+- `locked` (default when `control` is omitted) — input ignored; the coded (or
+  auto-orbit) value is authoritative. This is the pure body.
+- `free` — user input drives the axis and it stays where the user leaves it.
+- `recenter` — user input drives the axis, then after `recenterWait` idle seconds
+  it eases back to the coded value over ~`recenterTime` seconds (shortest angular
+  path for azimuth).
+
+Resolution stays pure: the live per-axis offsets live in a **stateful post-stage**
+(`RigBodyState`, held in `RigDriveState` alongside the brain and composer, mirroring
+`stepComposerAim`). `stepOrbitBody` integrates the per-frame `OrbitInput` (pointer/
+wheel deltas the host feeds via `RigActivationParams.orbitInput`) under each axis's
+mode; `applyOrbitLive` then patches the definition with the effective params so the
+pure resolver produces the piloted pose. This runs **only on the activation driver**
+— timeline playback stays pure/scrub-safe (the body channel is cleared there and on
+idle). Elevation offsets are clamped so `coded + offset` stays off the ±80 poles;
+azimuth wraps to (-180,180] for shortest-path recentering. The minimal demo feeds a
+PiP "pilot pad" (drag = rotate, wheel = zoom) into `orbitInput` and exposes the
+per-axis modes in the shot panel.
 
 Two orientation conventions exist and must not be mixed:
 `applyCartFrameToObject(object, frame)` aligns a **prop's +Z** with travel;
