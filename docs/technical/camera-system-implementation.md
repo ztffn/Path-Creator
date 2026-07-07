@@ -200,15 +200,25 @@ front of the coded pose, so any shot has something to orbit/pan/dolly around.
 **Purity is preserved.** Resolution never sees the override — it's a **stateful
 post-stage** (`RigBodyState` in `RigDriveState`, alongside the brain and composer,
 mirroring `stepComposerAim`). Each frame `stepCameraOverride(coded, pivot, id,
-control, state, input, dt)` decomposes the coded offset from the pivot into spherical
-(the exact inverse of `orbitOffset`), applies the per-axis deltas, and recomposes the
-pose — clamping elevation off the ±80 poles, wrapping azimuth to (-180,180], damping
-the dolly toward its target, and clamping distance to min/max. With no live offset it
+control, state, input, dt)` recomposes the pose as a **rigid rotation of the coded
+offset about the pivot**: azimuth yaws the pivot→camera offset about world-up,
+elevation pitches it about the horizontal axis in its azimuth plane, dolly scales
+its length, pan trucks the pivot — and the **same rotation is applied to the coded
+orientation**. Because it rotates the coded offset itself (not a spherical
+reconstruction of it), a zero offset reproduces the coded pose **bit-for-bit**,
+preserving any authored roll and steep (near-pole) framing that a world-axis
+decompose would flatten or clamp to ±80. Elevation is clamped ±80 off horizontal but
+never tighter than the coded elevation (a steep shot holds, then only tilts back);
+azimuth wraps to (-180,180]; the dolly is damped toward a target bounded to the
+reachable band `[min,max]` (widened to include the coded distance, so an out-of-range
+shot never jumps and the wheel reverses without a dead zone). With no live offset it
 returns the coded snapshot unchanged (exact passthrough) and reports `active: false`;
 when live it owns position **and** aim (look at the panned pivot) and the caller
 skips the composer. It reseeds on a shot change. Both drivers apply it:
-`driveActivation` and `driveTimeline` (on the active block's pose, skipped mid-blend),
-so piloting works under an activated shot **and** under timeline playback — the
+`driveActivation` and `driveTimeline` (on the active block's pose, skipped mid-blend;
+input is withheld while blending so a gesture never accumulates into a jump when the
+blend completes), so piloting works under an activated shot **and** under timeline
+playback — the
 timeline picks the vcam and blends, the override axes still respond, just like
 Cinemachine input axes under a timeline.
 
