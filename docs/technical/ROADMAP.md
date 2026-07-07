@@ -109,8 +109,8 @@ Remaining 3c-4 cleanup: *none.* The composer-config reconciliation is DONE —
 `ScreenComposerOptions` is gone; the composer consumes flat `ComposerSettings`
 throughout (no consumer-side flat→nested mapping).
 
-### Camera bodies — orbit DONE; follow / positionCompose / stateful channel deferred
-**Orbit body DONE (this session).** A pure `orbit` body (`azimuth/elevation/radius`
+### Camera bodies — orbit + manual override DONE; follow / positionCompose deferred
+**Orbit body DONE.** A pure `orbit` body (`azimuth/elevation/radius`
 + `autoOrbitDegPerSec` advanced from the resolve clock, so scrub-safe) with three
 binding modes — `world` (compass-anchored), `lockYaw` (follows target heading, level
 horizon), `lock` (welded) — resolving in `resolveVirtualCameraDefinition` (`/three`).
@@ -124,18 +124,33 @@ minimal demo authors orbit bodies against a spinning turbine target. Covers the 
 overview (world) and detail (lockYaw) wind-turbine views. Model = body (position) + aim
 (orientation) independent, per Cinemachine's Position/Rotation-Control split.
 
-**Interactive control DONE** (Cinemachine OrbitalFollow input axes + recentering): per-axis
-`locked`/`free`/`recenter` on the orbit body, live `OrbitInput` (pointer/wheel) fed via the
-activation driver into a stateful `RigBodyState` post-stage (`stepOrbitBody`/`applyOrbitLive`)
-that mirrors `RigComposerState`/`stepComposerAim` — resolution stays pure, timeline playback
-stays scrub-safe. The twin's manual-override + return-to-coded orbit is matched, not regressed.
-Demo pilots it via a PiP pad + per-axis mode UI.
+**Manual override DONE — unified pivot-orbit, any vcam** (the twin's OrbitControls model).
+`control: CameraOverrideSettings` lives on the vcam **definition** (not the body), so any
+shot — `static`/`cart`/`orbit` — can be flown: **LMB** orbit azimuth/elevation around a
+pivot, **RMB** pan the pivot (re-frames), **wheel** damped dolly (min/max clamp), per-axis
+`locked`/`free`/`recenter`. The pivot is the aim target → orbit target → a synthesized
+point-in-front. Resolution stays pure: `stepCameraOverride` + `resolveCameraPivot` are a
+stateful post-stage (`RigBodyState` in `RigDriveState`, mirroring `stepComposerAim`) that
+decomposes/recomposes the coded pose around the pivot; exact passthrough when idle, owns
+pose+aim (composer skipped) when live. **Both** drivers apply it — `driveActivation` and
+`driveTimeline` (on the active block, skipped mid-blend) — so piloting works under an
+activated shot and under timeline playback. Input mapping is **promoted to the package**:
+`createOverrideInputAccumulator` (`/three`, framework-agnostic pointer/wheel → override) +
+`<CameraOverrideSurface>` (`/r3f`, transparent capture layer owning pointer/wheel). The twin
+mounts the surface while a vcam is live, disables its own OrbitControls, and passes
+`accumulator.drain()` as the drive intent's `overrideInput` — no re-implementation. Matches
+the twin's manual-override + return-to-coded orbit, not a regression of it.
 
 **Deferred (planned):** the `follow`/third-person body, the `positionCompose` body, and
-binding-frame **position damping** (smoothing the camera toward a moving coded target — the
-`RigBodyState` channel now exists and can host it). Research synthesis, architecture, task
-breakdown, risks, and alternatives:
+binding-frame **position damping** (smoothing the camera toward a *moving coded target* —
+distinct from the manual override; the `RigBodyState` channel can host it). Research
+synthesis, architecture, task breakdown, risks, and alternatives:
 [the deferred-camera-bodies plan](../plans/2026-07-06-deferred-camera-bodies-v1.md).
+
+**Not promoted (deliberate):** the demo's edit/play `viewMode` + camera-swap compositor +
+OrbitControls gating are app-shell — the twin has its own shell (OrbitControls, PiP,
+path-rig gating), so imposing one isn't wanted. The reusable seam is the override + input
+surface + drive `overrideInput`, which *is* in the package.
 
 ### F3 — dolly motion as an editable speed curve
 Replace discrete dolly move-blocks with a per-dolly **motion curve** (keyframes of

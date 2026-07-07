@@ -129,13 +129,10 @@ body: {
   elevationDeg: 20,      // above the horizon; clamped ±80 off the poles
   radius: 6,
   binding: "lockYaw",    // offset frame — see below
-  autoOrbitDegPerSec: 12, // optional: pure time-driven spin (scrub-safe)
-  control: {             // optional: per-axis interactive control (see below)
-    azimuth: { mode: "free" },
-    elevation: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
-    radius: { mode: "free" }
-  }
+  autoOrbitDegPerSec: 12 // optional: pure time-driven spin (scrub-safe)
 }
+// Manual override (drag/zoom at runtime) is authored on the DEFINITION, not the
+// body — it applies to any vcam. See "Manual override" below.
 ```
 
 Resolution stays pure. Auto-orbit advances azimuth by
@@ -167,30 +164,63 @@ maps drags back to azimuth/elevation/radius. The frame follows the target each
 frame, so `lockYaw`/`lock` visibly track a rotating target. See the minimal demo
 (Add Orbit VCam) for end-to-end authoring against a spinning turbine target.
 
-#### Interactive control (Cinemachine input axes + recentering)
+### Manual override (pivot-orbit, any vcam)
 
-An orbit body retains live user control — pan/tilt/zoom the camera at runtime —
-per axis, matching Cinemachine `OrbitalFollow`'s input-axis + recentering model.
-Each of `control.azimuth` / `control.elevation` / `control.radius` takes a mode:
+Any vcam can be grabbed and flown at runtime — the twin's OrbitControls model,
+generalized: **LMB → orbit** azimuth/elevation around a pivot, **RMB → pan** the
+pivot (re-frames what's centred), **wheel → damped dolly** toward the pivot. This
+is authored on the **definition**, not the body, as `control: CameraOverrideSettings`
+so it applies to `static`, `cart`, and `orbit` alike:
 
-- `locked` (default when `control` is omitted) — input ignored; the coded (or
-  auto-orbit) value is authoritative. This is the pure body.
+```typescript
+const shot: VirtualCameraDefinition = {
+  id: "overview",
+  body: { type: "orbit", /* … */ },
+  control: {
+    azimuth: { mode: "free" },                                 // holds where left
+    elevation: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
+    pan: { mode: "recenter", recenterWait: 1.5, recenterTime: 1 },
+    dolly: { mode: "free" },
+    minDistance: 1, maxDistance: 40                             // dolly clamp
+  }
+};
+```
+
+Each axis takes a mode:
+
+- `locked` (default when `control`/the axis is omitted) — input ignored; the shot
+  plays exactly as authored.
 - `free` — user input drives the axis and it stays where the user leaves it.
-- `recenter` — user input drives the axis, then after `recenterWait` idle seconds
-  it eases back to the coded value over ~`recenterTime` seconds (shortest angular
-  path for azimuth).
+- `recenter` — user input drives it, then after `recenterWait` idle seconds it eases
+  back to the coded value over ~`recenterTime` (shortest angular path for azimuth).
 
-Resolution stays pure: the live per-axis offsets live in a **stateful post-stage**
-(`RigBodyState`, held in `RigDriveState` alongside the brain and composer, mirroring
-`stepComposerAim`). `stepOrbitBody` integrates the per-frame `OrbitInput` (pointer/
-wheel deltas the host feeds via `RigActivationParams.orbitInput`) under each axis's
-mode; `applyOrbitLive` then patches the definition with the effective params so the
-pure resolver produces the piloted pose. This runs **only on the activation driver**
-— timeline playback stays pure/scrub-safe (the body channel is cleared there and on
-idle). Elevation offsets are clamped so `coded + offset` stays off the ±80 poles;
-azimuth wraps to (-180,180] for shortest-path recentering. The minimal demo feeds a
-PiP "pilot pad" (drag = rotate, wheel = zoom) into `orbitInput` and exposes the
-per-axis modes in the shot panel.
+**The pivot** is the vcam's aim target → its orbit target → a synthesized point in
+front of the coded pose, so any shot has something to orbit/pan/dolly around.
+
+**Purity is preserved.** Resolution never sees the override — it's a **stateful
+post-stage** (`RigBodyState` in `RigDriveState`, alongside the brain and composer,
+mirroring `stepComposerAim`). Each frame `stepCameraOverride(coded, pivot, id,
+control, state, input, dt)` decomposes the coded offset from the pivot into spherical
+(the exact inverse of `orbitOffset`), applies the per-axis deltas, and recomposes the
+pose — clamping elevation off the ±80 poles, wrapping azimuth to (-180,180], damping
+the dolly toward its target, and clamping distance to min/max. With no live offset it
+returns the coded snapshot unchanged (exact passthrough) and reports `active: false`;
+when live it owns position **and** aim (look at the panned pivot) and the caller
+skips the composer. It reseeds on a shot change. Both drivers apply it:
+`driveActivation` and `driveTimeline` (on the active block's pose, skipped mid-blend),
+so piloting works under an activated shot **and** under timeline playback — the
+timeline picks the vcam and blends, the override axes still respond, just like
+Cinemachine input axes under a timeline.
+
+**Input mapping is packaged** so hosts don't re-implement it:
+`createOverrideInputAccumulator()` (`/three`, framework-agnostic) maps pointer/wheel
+gestures — `orbit(dx,dy)` / `pan(dx,dy)` / `dolly(deltaY)` — to `CameraOverrideInput`
+and `drain()`s once per frame into the drive intent's `overrideInput`. The r3f
+`<CameraOverrideSurface accumulator={…}>` is a transparent capture layer that owns
+pointer + wheel (non-passive wheel `preventDefault`, RMB context-menu suppression) —
+severing R3F's editor-camera picking and stopping scroll/zoom leakage — and feeds the
+accumulator. A host (twin) mounts the surface while a vcam is live, disables its own
+OrbitControls, and passes `accumulator.drain()` as `overrideInput`.
 
 Two orientation conventions exist and must not be mixed:
 `applyCartFrameToObject(object, frame)` aligns a **prop's +Z** with travel;
