@@ -36,6 +36,7 @@ import {
   markEditorHelpers,
   orbitOffset,
   orbitParamsFromLocalOffset,
+  createOverrideInputAccumulator,
   resolveCameraPivot,
   stepCameraOverride,
   setVirtualCameraBrainLive,
@@ -791,6 +792,28 @@ describe("manual pivot-orbit override (OrbitControls model on any vcam)", () => 
     // radius to synth pivot is 10; +90° azimuth swings to +X of the pivot.
     expect(r.snapshot.position.x).toBeCloseTo(10);
     expect(r.snapshot.position.z).toBeCloseTo(-5);
+  });
+});
+
+describe("override input accumulator", () => {
+  it("maps LMB/RMB/wheel gestures to override input with the twin's signs", () => {
+    const acc = createOverrideInputAccumulator();
+    acc.orbit(10, -5); // drag right + up
+    acc.pan(4, 2);
+    acc.dolly(200);
+    const input = acc.drain()!;
+    expect(input.azimuthDeltaDeg).toBeCloseTo(10 * 0.4);
+    expect(input.elevationDeltaDeg).toBeCloseTo(5 * 0.4); // up (−dy) raises elevation
+    expect(input.panXDelta).toBeCloseTo(-4 * 0.02);
+    expect(input.panYDelta).toBeCloseTo(2 * 0.02);
+    expect(input.dollyDelta).toBeCloseTo(200 * 0.01);
+  });
+
+  it("drain clears; returns null when nothing pending", () => {
+    const acc = createOverrideInputAccumulator({ orbitDegPerPixel: 1 });
+    acc.orbit(3, 0);
+    expect(acc.drain()?.azimuthDeltaDeg).toBeCloseTo(3);
+    expect(acc.drain()).toBeNull(); // cleared
   });
 });
 

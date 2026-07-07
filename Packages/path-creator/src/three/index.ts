@@ -1621,6 +1621,66 @@ export function stepCameraOverride(
   return { snapshot: { ...coded, position, quaternion }, active: true };
 }
 
+/** Pixel/wheel → CameraOverrideInput sensitivities (the twin's OrbitControls feel). */
+export interface OverrideInputSensitivity {
+  /** Degrees of orbit per pixel dragged (LMB). Default 0.4. */
+  orbitDegPerPixel?: number;
+  /** Scene units of pan per pixel dragged (RMB). Default 0.02. */
+  panPerPixel?: number;
+  /** Scene units of dolly per wheel delta unit. Default 0.01. */
+  dollyPerWheel?: number;
+}
+
+/**
+ * Accumulates pointer/wheel gestures into a CameraOverrideInput between frames.
+ * Framework-agnostic (no DOM/react/three) so any host maps its own input: LMB
+ * drag → orbit(dx,dy), RMB drag → pan(dx,dy), wheel → dolly(deltaY). The host
+ * calls drain() once per frame and passes the result as the drive intent's
+ * `overrideInput`. Signs match the twin: drag-right orbits +azimuth, drag-up
+ * raises elevation and pans up, wheel-down dollies out.
+ */
+export interface OverrideInputAccumulator {
+  orbit(dxPixels: number, dyPixels: number): void;
+  pan(dxPixels: number, dyPixels: number): void;
+  dolly(wheelDeltaY: number): void;
+  /** Reads and clears the accumulated input; null when nothing is pending. */
+  drain(): CameraOverrideInput | null;
+}
+
+export function createOverrideInputAccumulator(
+  sensitivity: OverrideInputSensitivity = {}
+): OverrideInputAccumulator {
+  const orbitK = sensitivity.orbitDegPerPixel ?? 0.4;
+  const panK = sensitivity.panPerPixel ?? 0.02;
+  const dollyK = sensitivity.dollyPerWheel ?? 0.01;
+  let acc: CameraOverrideInput = {};
+  return {
+    orbit(dx, dy) {
+      acc.azimuthDeltaDeg = (acc.azimuthDeltaDeg ?? 0) + dx * orbitK;
+      acc.elevationDeltaDeg = (acc.elevationDeltaDeg ?? 0) - dy * orbitK;
+    },
+    pan(dx, dy) {
+      acc.panXDelta = (acc.panXDelta ?? 0) - dx * panK;
+      acc.panYDelta = (acc.panYDelta ?? 0) + dy * panK;
+    },
+    dolly(wheelDeltaY) {
+      acc.dollyDelta = (acc.dollyDelta ?? 0) + wheelDeltaY * dollyK;
+    },
+    drain() {
+      const pending =
+        (acc.azimuthDeltaDeg ?? 0) !== 0 ||
+        (acc.elevationDeltaDeg ?? 0) !== 0 ||
+        (acc.panXDelta ?? 0) !== 0 ||
+        (acc.panYDelta ?? 0) !== 0 ||
+        (acc.dollyDelta ?? 0) !== 0;
+      if (!pending) return null;
+      const out = acc;
+      acc = {};
+      return out;
+    }
+  };
+}
+
 export interface RigDriveState {
   brain: VirtualCameraBrainState;
   composer: RigComposerState;

@@ -273,6 +273,7 @@ export * from "./point-targets";
 export * from "./cart-gizmo";
 export * from "./rig-gizmo";
 export * from "./orbit-gizmo";
+export * from "./override-input";
 export * from "./vcam-glyph";
 export * from "./rig-drive";
 
