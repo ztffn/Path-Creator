@@ -94,30 +94,44 @@ export interface VirtualCameraSnapshot {
 export type OrbitBinding = "world" | "lockYaw" | "lock";
 
 /**
- * Per-axis interactive control for an orbit body, Cinemachine OrbitalFollow's
- * input-axis + recentering model:
- * - `locked`: user input ignored; the coded value is authoritative (the pure
- *   default — the camera holds its authored/auto-orbit pose).
+ * Per-axis mode for the manual camera override (Cinemachine OrbitalFollow's
+ * input-axis + recentering model, generalized to any vcam):
+ * - `locked`: user input ignored; the coded shot is authoritative.
  * - `free`: user input drives the axis and it stays where the user leaves it.
  * - `recenter`: user input drives the axis, then after `recenterWait` idle
  *   seconds it eases back to the coded value over ~`recenterTime` seconds
  *   (shortest angular path for azimuth).
  */
-export type OrbitAxisMode = "locked" | "free" | "recenter";
+export type CameraOverrideAxisMode = "locked" | "free" | "recenter";
 
-export interface OrbitAxisControl {
-  mode: OrbitAxisMode;
+export interface CameraOverrideAxis {
+  mode: CameraOverrideAxisMode;
   /** Idle seconds before recentering begins (recenter mode; default 1). */
   recenterWait?: number;
   /** Seconds to ease back to the coded value (recenter mode; default 1). */
   recenterTime?: number;
 }
 
-/** Per-axis interactive control; an omitted axis (or omitted `control`) is `locked`. */
-export interface OrbitControlSettings {
-  azimuth?: OrbitAxisControl;
-  elevation?: OrbitAxisControl;
-  radius?: OrbitAxisControl;
+/**
+ * Manual override control for ANY vcam — the viewer grabs the active shot and
+ * orbits/pans/dollies around its pivot (its aim/orbit target, or a synthesized
+ * point in front), then it recenters to the coded shot per axis. Mirrors the
+ * twin's OrbitControls: LMB → azimuth/elevation, RMB → pan the pivot, wheel →
+ * damped dolly (distance). An omitted axis (or omitted `control`) is `locked`,
+ * so a vcam with no `control` plays exactly as authored.
+ */
+export interface CameraOverrideSettings {
+  /** LMB-horizontal: orbit around the pivot's up axis. */
+  azimuth?: CameraOverrideAxis;
+  /** LMB-vertical: orbit pitch. */
+  elevation?: CameraOverrideAxis;
+  /** RMB: move the pivot in the view plane (re-frames what's centred). */
+  pan?: CameraOverrideAxis;
+  /** Wheel: damped dolly toward/from the pivot (distance). */
+  dolly?: CameraOverrideAxis;
+  /** Dolly distance clamp (scene units); defaults to (0.01, ∞). */
+  minDistance?: number;
+  maxDistance?: number;
 }
 
 export type VirtualCameraBodyDefinition =
@@ -136,8 +150,6 @@ export type VirtualCameraBodyDefinition =
       binding?: OrbitBinding;
       /** Pure time-driven spin: azimuth advances by this × the resolve clock. */
       autoOrbitDegPerSec?: number;
-      /** Interactive control per axis; omitted = all axes `locked` (coded-only). */
-      control?: OrbitControlSettings;
     };
 
 /**
@@ -206,6 +218,9 @@ export interface VirtualCameraDefinition {
   noise?: VirtualCameraNoiseSettings;
   lens?: VirtualCameraLens;
   settings?: Record<string, number>;
+  /** Manual override: the viewer can orbit/pan/dolly this shot around its pivot,
+   *  per-axis locked/free/recenter. Omitted = plays exactly as authored. */
+  control?: CameraOverrideSettings;
 }
 
 /** The tracked target id of a `track` aim that references a target by id, or null. */
