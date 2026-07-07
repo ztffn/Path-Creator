@@ -29,9 +29,15 @@ import {
   stepComposerAim,
   evaluateVirtualCameraBlendCurve,
   getVirtualCameraBrainProgress,
+  applyOrbitLive,
   applyVirtualCameraNoise,
+  buildOrbitRingPoints,
+  createRigBodyState,
   hideEditorHelpers,
   markEditorHelpers,
+  orbitOffset,
+  orbitParamsFromLocalOffset,
+  stepOrbitBody,
   setVirtualCameraBrainLive,
   showEditorHelpers,
   resolveVirtualCameraDefinition,
@@ -372,6 +378,373 @@ describe("virtual camera bodies", () => {
       { getCartFrame }
     );
     expect(snapshot).toBeNull();
+  });
+});
+
+describe("orbit body", () => {
+  const lookDir = (s: { quaternion: { x: number; y: number; z: number; w: number } }) =>
+    new Vector3(0, 0, -1).applyQuaternion(
+      new Quaternion(s.quaternion.x, s.quaternion.y, s.quaternion.z, s.quaternion.w)
+    );
+
+  it("places at radius/azimuth/elevation around the target and looks back at it (world binding)", () => {
+    const snapshot = resolveVirtualCameraDefinition({
+      id: "orbit-world",
+      body: {
+        type: "orbit",
+        target: { x: 0, y: 0, z: 0 },
+        azimuthDeg: 0,
+        elevationDeg: 0,
+        radius: 5
+      }
+    });
+
+    // azimuth 0, elevation 0 sits on +Z at the radius.
+    expect(snapshot?.position.x).toBeCloseTo(0);
+    expect(snapshot?.position.y).toBeCloseTo(0);
+    expect(snapshot?.position.z).toBeCloseTo(5);
+    // Default body aim looks back at the target (-Z).
+    const look = lookDir(snapshot!);
+    expect(look.x).toBeCloseTo(0);
+    expect(look.z).toBeCloseTo(-1);
+  });
+
+  it("swings azimuth around +Y", () => {
+    const snapshot = resolveVirtualCameraDefinition({
+      id: "orbit-az",
+      body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 90, elevationDeg: 0, radius: 5 }
+    });
+    expect(snapshot?.position.x).toBeCloseTo(5);
+    expect(snapshot?.position.z).toBeCloseTo(0);
+  });
+
+  it("auto-orbits purely from the resolve clock (deterministic)", () => {
+    const def: VirtualCameraDefinition = {
+      id: "orbit-auto",
+      body: {
+        type: "orbit",
+        target: { x: 0, y: 0, z: 0 },
+        azimuthDeg: 0,
+        elevationDeg: 0,
+        radius: 5,
+        autoOrbitDegPerSec: 90
+      }
+    };
+    const at0 = resolveVirtualCameraDefinition(def, { elapsedSeconds: 0 });
+    const at1 = resolveVirtualCameraDefinition(def, { elapsedSeconds: 1 });
+    const at1again = resolveVirtualCameraDefinition(def, { elapsedSeconds: 1 });
+    // 1s * 90deg/s = azimuth 90 -> from +Z to +X.
+    expect(at0?.position.z).toBeCloseTo(5);
+    expect(at1?.position.x).toBeCloseTo(5);
+    expect(at1?.position.z).toBeCloseTo(0);
+    // Same clock -> identical pose (scrub-safe).
+    expect(at1again?.position).toEqual(at1?.position);
+  });
+
+  it("clamps elevation off the poles (±80)", () => {
+    const snapshot = resolveVirtualCameraDefinition({
+      id: "orbit-el",
+      body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 200, radius: 5 }
+    });
+    const expected = Math.sin((80 * Math.PI) / 180) * 5;
+    expect(snapshot?.position.y).toBeCloseTo(expected);
+  });
+
+  it("follows the target's yaw (lockYaw): the orbit stays on the same side as it turns", () => {
+    const yaw90 = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2);
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-lockyaw",
+        body: {
+          type: "orbit",
+          target: { targetId: "t" },
+          azimuthDeg: 0,
+          elevationDeg: 0,
+          radius: 5,
+          binding: "lockYaw"
+        }
+      },
+      {
+        getTargetPosition: () => ({ x: 0, y: 0, z: 0 }),
+        getTargetOrientation: () => ({ x: yaw90.x, y: yaw90.y, z: yaw90.z, w: yaw90.w })
+      }
+    );
+    // The +Z offset rotates with the 90° yaw to +X.
+    expect(snapshot?.position.x).toBeCloseTo(5);
+    expect(snapshot?.position.z).toBeCloseTo(0);
+  });
+
+  it("lockYaw strips target pitch (level horizon): the offset stays horizontal", () => {
+    const pitched = new Quaternion().multiplyQuaternions(
+      new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 3),
+      new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), Math.PI / 4)
+    );
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-lockyaw-pitch",
+        body: {
+          type: "orbit",
+          target: { targetId: "t" },
+          azimuthDeg: 0,
+          elevationDeg: 0,
+          radius: 5,
+          binding: "lockYaw"
+        }
+      },
+      {
+        getTargetPosition: () => ({ x: 0, y: 0, z: 0 }),
+        getTargetOrientation: () => ({ x: pitched.x, y: pitched.y, z: pitched.z, w: pitched.w })
+      }
+    );
+    // Yaw-only frame keeps a horizontal-plane offset despite the target's pitch.
+    expect(snapshot?.position.y).toBeCloseTo(0);
+  });
+
+  it("inherits full target orientation (lock): the up rolls with the target", () => {
+    const roll90 = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), Math.PI / 2);
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-lock",
+        body: {
+          type: "orbit",
+          target: { targetId: "t" },
+          azimuthDeg: 0,
+          elevationDeg: 0,
+          radius: 5,
+          binding: "lock"
+        }
+      },
+      {
+        getTargetPosition: () => ({ x: 0, y: 0, z: 0 }),
+        getTargetOrientation: () => ({ x: roll90.x, y: roll90.y, z: roll90.z, w: roll90.w })
+      }
+    );
+    // Roll about the view axis leaves +Z offset unchanged but tilts the camera up.
+    expect(snapshot?.position.z).toBeCloseTo(5);
+    const up = new Vector3(0, 1, 0).applyQuaternion(
+      new Quaternion(
+        snapshot!.quaternion.x,
+        snapshot!.quaternion.y,
+        snapshot!.quaternion.z,
+        snapshot!.quaternion.w
+      )
+    );
+    // World-up would give +Y; a rolled frame does not.
+    expect(up.y).toBeLessThan(0.99);
+  });
+
+  it("falls back to world binding when the target has no orientation", () => {
+    const yaw90 = new Quaternion().setFromAxisAngle(new Vector3(0, 1, 0), Math.PI / 2);
+    const withOrientation = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-fb",
+        body: {
+          type: "orbit",
+          target: { targetId: "t" },
+          azimuthDeg: 0,
+          elevationDeg: 0,
+          radius: 5,
+          binding: "lockYaw"
+        }
+      },
+      {
+        getTargetPosition: () => ({ x: 0, y: 0, z: 0 }),
+        getTargetOrientation: () => null // no orientation registered
+      }
+    );
+    // No orientation -> behaves like world binding (offset unrotated on +Z).
+    expect(withOrientation?.position.x).toBeCloseTo(0);
+    expect(withOrientation?.position.z).toBeCloseTo(5);
+    void yaw90;
+  });
+
+  it("keeps body position independent of a track aim on a different target", () => {
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-aim",
+        body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5 },
+        aim: { type: "track", target: { targetId: "aimee" } }
+      },
+      { getTargetPosition: (id) => (id === "aimee" ? { x: 10, y: 0, z: 5 } : null) }
+    );
+    // Body still orbits the origin at +Z...
+    expect(snapshot?.position.z).toBeCloseTo(5);
+    // ...but the aim orients toward the (different) tracked target.
+    const look = lookDir(snapshot!);
+    const expected = new Vector3(10, 0, 5 - 5).normalize();
+    expect(look.x).toBeCloseTo(expected.x);
+    expect(look.y).toBeCloseTo(expected.y);
+    expect(look.z).toBeCloseTo(expected.z);
+  });
+
+  it("returns null when the orbit target id cannot resolve", () => {
+    const snapshot = resolveVirtualCameraDefinition(
+      {
+        id: "orbit-missing",
+        body: { type: "orbit", target: { targetId: "nope" }, azimuthDeg: 0, elevationDeg: 0, radius: 5 }
+      },
+      { getTargetPosition: () => null }
+    );
+    expect(snapshot).toBeNull();
+  });
+});
+
+describe("orbit placement helpers", () => {
+  it("orbitOffset round-trips through orbitParamsFromLocalOffset", () => {
+    for (const [az, el, r] of [
+      [0, 0, 5],
+      [37, 20, 3],
+      [-120, -15, 8],
+      [175, 45, 2]
+    ] as const) {
+      const offset = orbitOffset(az, el, r);
+      const back = orbitParamsFromLocalOffset(offset);
+      expect(back.azimuthDeg).toBeCloseTo(az);
+      expect(back.elevationDeg).toBeCloseTo(el);
+      expect(back.radius).toBeCloseTo(r);
+    }
+  });
+
+  it("orbitParamsFromLocalOffset clamps elevation off the poles", () => {
+    // A near-vertical offset recovers a clamped 80°, not 90°.
+    const back = orbitParamsFromLocalOffset({ x: 0, y: 5, z: 0.0001 });
+    expect(back.elevationDeg).toBeCloseTo(80);
+  });
+
+  it("orbitParamsFromLocalOffset is safe at the origin", () => {
+    expect(orbitParamsFromLocalOffset({ x: 0, y: 0, z: 0 })).toEqual({
+      azimuthDeg: 0,
+      elevationDeg: 0,
+      radius: 0
+    });
+  });
+
+  it("buildOrbitRingPoints is a closed ring at the elevation height", () => {
+    const points = buildOrbitRingPoints(5, 0, 32);
+    expect(points.length).toBe(33); // n+1, closed
+    const last = points[points.length - 1];
+    expect(last.x).toBeCloseTo(points[0].x);
+    expect(last.y).toBeCloseTo(points[0].y);
+    expect(last.z).toBeCloseTo(points[0].z);
+    // Every point sits at radius 5 in the horizontal plane (elevation 0).
+    for (const p of points) {
+      expect(Math.hypot(p.x, p.z)).toBeCloseTo(5);
+      expect(p.y).toBeCloseTo(0);
+    }
+  });
+
+  it("buildOrbitRingPoints lifts the ring and shrinks its radius with elevation", () => {
+    const points = buildOrbitRingPoints(5, 30, 32);
+    const y = Math.sin((30 * Math.PI) / 180) * 5;
+    const ringR = Math.cos((30 * Math.PI) / 180) * 5;
+    for (const p of points) {
+      expect(p.y).toBeCloseTo(y);
+      expect(Math.hypot(p.x, p.z)).toBeCloseTo(ringR);
+    }
+  });
+});
+
+describe("interactive orbit body (Cinemachine input axes + recentering)", () => {
+  const def = (body: Record<string, unknown>): VirtualCameraDefinition => ({
+    id: "orbit-i",
+    body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5, ...body }
+  });
+
+  it("locked axis ignores input and holds the coded value", () => {
+    const state = createRigBodyState();
+    const d = def({ control: { azimuth: { mode: "locked" } } });
+    stepOrbitBody(d, state, { azimuthDeltaDeg: 45 }, 0.016);
+    expect(state.azimuthOffsetDeg).toBe(0);
+    // applyOrbitLive leaves the definition untouched (no offset).
+    expect(applyOrbitLive(d, state)).toBe(d);
+  });
+
+  it("free axis accumulates input and holds it (no recentering)", () => {
+    const state = createRigBodyState();
+    const d = def({ control: { azimuth: { mode: "free" } } });
+    stepOrbitBody(d, state, { azimuthDeltaDeg: 30 }, 0.016);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(30);
+    // Idle for a long time: free never decays.
+    stepOrbitBody(d, state, {}, 5);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(30);
+    const live = applyOrbitLive(d, state);
+    expect((live.body as { azimuthDeg: number }).azimuthDeg).toBeCloseTo(30);
+  });
+
+  it("recenter axis holds until the wait, then eases back to the coded value", () => {
+    const state = createRigBodyState();
+    const d = def({ control: { azimuth: { mode: "recenter", recenterWait: 0.5, recenterTime: 0.5 } } });
+    stepOrbitBody(d, state, { azimuthDeltaDeg: 40 }, 0.016);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(40);
+    // Before the wait elapses: still holding.
+    stepOrbitBody(d, state, {}, 0.4);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(40);
+    // Past the wait: decays toward 0.
+    stepOrbitBody(d, state, {}, 0.4);
+    expect(Math.abs(state.azimuthOffsetDeg)).toBeLessThan(40);
+    for (let i = 0; i < 200; i += 1) stepOrbitBody(d, state, {}, 0.05);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(0, 2);
+  });
+
+  it("recentering yields to live input (idle timer resets on input)", () => {
+    const state = createRigBodyState();
+    const d = def({ control: { azimuth: { mode: "recenter", recenterWait: 0.2, recenterTime: 0.5 } } });
+    // Feed input every frame well past the wait window: it must never decay.
+    for (let i = 0; i < 30; i += 1) stepOrbitBody(d, state, { azimuthDeltaDeg: 5 }, 0.1);
+    // 30 × 5° = 150° accumulated (within ±180, no wrap), and the idle timer stayed
+    // reset the whole time, so recentering never fired.
+    expect(state.azimuthOffsetDeg).toBeCloseTo(150);
+    expect(state.idleAzimuth).toBe(0);
+  });
+
+  it("takes the shortest angular path (wraps azimuth to ±180)", () => {
+    const state = createRigBodyState();
+    const d = def({ control: { azimuth: { mode: "free" } } });
+    stepOrbitBody(d, state, { azimuthDeltaDeg: 350 }, 0.016);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(-10);
+  });
+
+  it("clamps elevation so coded + offset stays off the poles", () => {
+    const state = createRigBodyState();
+    const d = def({ elevationDeg: 70, control: { elevation: { mode: "free" } } });
+    stepOrbitBody(d, state, { elevationDeltaDeg: 40 }, 0.016);
+    // Coded 70 + offset clamped to +10 => effective 80.
+    expect(state.elevationOffsetDeg).toBeCloseTo(10);
+    expect((applyOrbitLive(d, state).body as { elevationDeg: number }).elevationDeg).toBeCloseTo(80);
+  });
+
+  it("free radius zooms and never goes below the minimum", () => {
+    const state = createRigBodyState();
+    const d = def({ radius: 5, control: { radius: { mode: "free" } } });
+    stepOrbitBody(d, state, { radiusDelta: 3 }, 0.016);
+    expect((applyOrbitLive(d, state).body as { radius: number }).radius).toBeCloseTo(8);
+    stepOrbitBody(d, state, { radiusDelta: -100 }, 0.016);
+    expect((applyOrbitLive(d, state).body as { radius: number }).radius).toBeGreaterThan(0);
+  });
+
+  it("reseeds (zeroes offsets) when the driven vcam changes", () => {
+    const state = createRigBodyState();
+    const a = def({ control: { azimuth: { mode: "free" } } });
+    stepOrbitBody(a, state, { azimuthDeltaDeg: 30 }, 0.016);
+    expect(state.azimuthOffsetDeg).toBeCloseTo(30);
+    const b: VirtualCameraDefinition = {
+      id: "orbit-other",
+      body: { type: "orbit", target: { x: 0, y: 0, z: 0 }, azimuthDeg: 0, elevationDeg: 0, radius: 5, control: { azimuth: { mode: "free" } } }
+    };
+    stepOrbitBody(b, state, {}, 0.016);
+    expect(state.azimuthOffsetDeg).toBe(0);
+    expect(state.vcamId).toBe("orbit-other");
+  });
+
+  it("clears the body state for a non-orbit body", () => {
+    const state = createRigBodyState();
+    state.vcamId = "orbit-i";
+    const staticDef: VirtualCameraDefinition = {
+      id: "s",
+      body: { type: "static", position: { x: 0, y: 0, z: 0 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+    };
+    stepOrbitBody(staticDef, state, { azimuthDeltaDeg: 20 }, 0.016);
+    expect(state.vcamId).toBeNull();
   });
 });
 

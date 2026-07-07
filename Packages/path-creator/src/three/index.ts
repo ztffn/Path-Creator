@@ -3,11 +3,14 @@ import {
   DEFAULT_COMPOSER_SETTINGS,
   EndOfPathInstruction,
   PathSpace,
+  clamp,
   evaluateVirtualCameraBlendCurve,
   offsetAlongBasis,
   orthonormalBasis,
   type CartFrame,
   type ComposerSettings,
+  type OrbitAxisControl,
+  type OrbitBinding,
   type QuaternionLike,
   type TargetRegistry,
   type Vec3,
@@ -24,6 +27,7 @@ import {
 export { DEFAULT_COMPOSER_SETTINGS, evaluateVirtualCameraBlendCurve } from "../core";
 export type {
   ComposerSettings,
+  OrbitBinding,
   QuaternionLike,
   VirtualCameraAimDefinition,
   VirtualCameraBlendCurve,
@@ -131,10 +135,17 @@ export interface ObjectTargetsOptions {
 }
 
 const _targetWorldPosition = new Vector3();
+const _targetWorldQuaternion = new Quaternion();
+
+/** Plain-object snapshot of a three Quaternion (the QuaternionLike wire shape). */
+function quatToLike(q: Quaternion): QuaternionLike {
+  return { x: q.x, y: q.y, z: q.z, w: q.w };
+}
 
 /**
  * Registers a single Object3D as a tracking target; the registry pulls its
- * live world position at resolve time. Returns an unregister function.
+ * live world position (and world orientation, for target-relative orbit
+ * binding) at resolve time. Returns an unregister function.
  */
 export function registerObjectTarget(
   registry: TargetRegistry,
@@ -152,7 +163,8 @@ export function registerObjectTarget(
         z: _targetWorldPosition.z
       };
     },
-    name ?? (object.name || id)
+    name ?? (object.name || id),
+    () => quatToLike(object.getWorldQuaternion(_targetWorldQuaternion))
   );
 }
 
@@ -429,6 +441,105 @@ const _bodyRight = new Vector3();
 const _bodyBack = new Vector3();
 const _bodyMatrix = new Matrix4();
 const _bodyQuaternion = new Quaternion();
+const _orbitOffset = new Vector3();
+const _orbitUp = new Vector3();
+const _orbitQuat = new Quaternion();
+
+/**
+ * Twist component of a quaternion around world +Y (swing-twist decomposition):
+ * the target's heading with pitch/roll stripped, so `lockYaw` binding follows
+ * yaw while keeping a level horizon. Degenerates to identity for a 180° flip
+ * about a horizontal axis (yaw undefined). Safe to alias out === q.
+ */
+function yawOnlyQuaternion(q: Quaternion, out: Quaternion): void {
+  const y = q.y;
+  const w = q.w;
+  const len = Math.hypot(y, w);
+  if (len < 1e-6) {
+    out.set(0, 0, 0, 1);
+    return;
+  }
+  out.set(0, y / len, 0, w / len);
+}
+
+const ORBIT_ELEVATION_LIMIT = 80;
+
+/**
+ * Local-frame offset for an orbit placement: azimuth (deg, around +Y, 0 sits on
+ * +Z), elevation (deg above the horizon, clamped ±80 off the poles), and radius.
+ * The binding-frame quaternion (world/lockYaw/lock) is applied by the caller.
+ * Shared by the resolver and the authoring gizmo so both agree on the placement.
+ */
+export function orbitOffset(azimuthDeg: number, elevationDeg: number, radius: number): Vec3 {
+  const az = azimuthDeg * DEG_TO_RAD;
+  const el = clamp(elevationDeg, -ORBIT_ELEVATION_LIMIT, ORBIT_ELEVATION_LIMIT) * DEG_TO_RAD;
+  const cosEl = Math.cos(el);
+  return {
+    x: cosEl * Math.sin(az) * radius,
+    y: Math.sin(el) * radius,
+    z: cosEl * Math.cos(az) * radius
+  };
+}
+
+/**
+ * Inverse of `orbitOffset`: recover azimuth/elevation/radius from a local-frame
+ * offset — the authoring gizmo maps a dragged handle position back to params.
+ * Azimuth in (-180,180]; elevation clamped ±80 to match the resolver.
+ */
+export function orbitParamsFromLocalOffset(offset: Vec3): {
+  azimuthDeg: number;
+  elevationDeg: number;
+  radius: number;
+} {
+  const radius = Math.hypot(offset.x, offset.y, offset.z);
+  if (radius < 1e-9) return { azimuthDeg: 0, elevationDeg: 0, radius: 0 };
+  const azimuthDeg = Math.atan2(offset.x, offset.z) / DEG_TO_RAD;
+  const elevationDeg = clamp(
+    Math.asin(offset.y / radius) / DEG_TO_RAD,
+    -ORBIT_ELEVATION_LIMIT,
+    ORBIT_ELEVATION_LIMIT
+  );
+  return { azimuthDeg, elevationDeg, radius };
+}
+
+const _orbitBindingQuat = new Quaternion();
+
+/**
+ * The offset-frame quaternion for an orbit binding: identity for `world`, the
+ * target's yaw only for `lockYaw`, its full orientation for `lock`. A null
+ * orientation (or `world`) yields identity — the graceful fallback when a target
+ * has no orientation. Shared by the resolver and the authoring gizmo so the
+ * placement frame is defined once.
+ */
+export function orbitBindingQuaternion(
+  binding: OrbitBinding,
+  orientation: QuaternionLike | null
+): QuaternionLike {
+  if (binding === "world" || !orientation) return { x: 0, y: 0, z: 0, w: 1 };
+  if (binding === "lock") return { ...orientation };
+  _orbitBindingQuat.set(orientation.x, orientation.y, orientation.z, orientation.w);
+  yawOnlyQuaternion(_orbitBindingQuat, _orbitBindingQuat);
+  return quatToLike(_orbitBindingQuat);
+}
+
+/**
+ * Closed ring polyline (local frame) for the orbit gizmo: the circle the camera
+ * rides at the given radius/elevation, centred on the target. Pure geometry; the
+ * gizmo component orients it by the binding frame so it rotates with the target
+ * under lockYaw/lock. Matches buildDollyRailLines' style (points, not a mesh).
+ */
+export function buildOrbitRingPoints(radius: number, elevationDeg: number, segments = 64): Vec3[] {
+  const el = clamp(elevationDeg, -ORBIT_ELEVATION_LIMIT, ORBIT_ELEVATION_LIMIT) * DEG_TO_RAD;
+  const y = Math.sin(el) * radius;
+  const ringRadius = Math.cos(el) * radius;
+  const n = Math.max(8, Math.floor(segments));
+  const points: Vec3[] = [];
+  for (let i = 0; i <= n; i += 1) {
+    const az = (i / n) * Math.PI * 2;
+    points.push({ x: Math.sin(az) * ringRadius, y, z: Math.cos(az) * ringRadius });
+  }
+  return points;
+}
 
 /**
  * Camera-convention orientation: the camera looks along `forward` (local -Z)
@@ -472,7 +583,7 @@ export function resolveVirtualCameraDefinition(
       _bodyQuaternion.set(quaternion.x, quaternion.y, quaternion.z, quaternion.w)
     );
     bodyUp = { x: _bodyUp.x, y: _bodyUp.y, z: _bodyUp.z };
-  } else {
+  } else if (definition.body.type === "cart") {
     const frame = context.getCartFrame?.(definition.body.cartId) ?? null;
     if (!frame) return null;
 
@@ -483,6 +594,49 @@ export function resolveVirtualCameraDefinition(
     );
     quaternion = cameraQuaternionFromFrame(frame.forward, frame.up);
     bodyUp = frame.up;
+  } else if (definition.body.type === "orbit") {
+    // Orbit body: place at radius/azimuth/elevation around the follow target in
+    // the binding frame, defaulting the orientation to look back at the target.
+    const body = definition.body;
+    const target =
+      "targetId" in body.target
+        ? context.getTargetPosition?.(body.target.targetId) ?? null
+        : body.target;
+    if (!target) return null;
+
+    // Auto-orbit advances azimuth purely from the resolve clock (scrub-safe).
+    const azDeg = body.azimuthDeg + (body.autoOrbitDegPerSec ?? 0) * (context.elapsedSeconds ?? 0);
+    const off = orbitOffset(azDeg, body.elevationDeg, body.radius);
+    _orbitOffset.set(off.x, off.y, off.z);
+
+    const binding = body.binding ?? "world";
+    const orientation =
+      binding !== "world" && "targetId" in body.target
+        ? context.getTargetOrientation?.(body.target.targetId) ?? null
+        : null;
+    const frameQ = orbitBindingQuaternion(binding, orientation);
+    _orbitQuat.set(frameQ.x, frameQ.y, frameQ.z, frameQ.w);
+    // The binding quaternion is identity (world) or yaw-only (lockYaw) — both
+    // leave world up invariant — and full orientation only for `lock`, so the
+    // same rotation places the offset and rolls the up hint with no special case.
+    _orbitOffset.applyQuaternion(_orbitQuat);
+    _orbitUp.set(0, 1, 0).applyQuaternion(_orbitQuat);
+
+    position = {
+      x: target.x + _orbitOffset.x,
+      y: target.y + _orbitOffset.y,
+      z: target.z + _orbitOffset.z
+    };
+    bodyUp = { x: _orbitUp.x, y: _orbitUp.y, z: _orbitUp.z };
+    quaternion = cameraQuaternionFromFrame(
+      { x: -_orbitOffset.x, y: -_orbitOffset.y, z: -_orbitOffset.z },
+      bodyUp
+    );
+  } else {
+    // Exhaustiveness: the body union is closed. A new body type must add its own
+    // branch above rather than silently falling through to a wrong placement.
+    const _exhaustive: never = definition.body;
+    return _exhaustive;
   }
 
   // A "track" aim WITH settings is the damped composer: a live, stateful
@@ -1207,9 +1361,195 @@ export function getVirtualCameraBrainProgress(state: VirtualCameraBrainState): n
  * tracks the last activated shot to detect re-activations. Playback drivers park
  * the brain each frame; the activation driver blends it.
  */
+/** Live per-frame interactive input for an orbit body: per-axis deltas the host
+ *  feeds from pointer/wheel. Omitted axes get no input this frame. */
+export interface OrbitInput {
+  azimuthDeltaDeg?: number;
+  elevationDeltaDeg?: number;
+  /** Additive radius (zoom) delta in scene units; positive pulls the camera out. */
+  radiusDelta?: number;
+}
+
+/**
+ * The interactive orbit body's carried state (mirrors RigComposerState): the live
+ * per-axis offsets from the coded pose that user input accumulates and recentering
+ * decays, the idle timers that gate recentering, and the vcam id it belongs to (to
+ * reseed on a shot change). Held inside RigDriveState so it survives the
+ * timeline<->activation switch. Only the activation driver steps it; timeline
+ * playback stays pure/scrub-safe.
+ */
+export interface RigBodyState {
+  vcamId: string | null;
+  azimuthOffsetDeg: number;
+  elevationOffsetDeg: number;
+  radiusOffset: number;
+  idleAzimuth: number;
+  idleElevation: number;
+  idleRadius: number;
+}
+
+export function createRigBodyState(): RigBodyState {
+  return {
+    vcamId: null,
+    azimuthOffsetDeg: 0,
+    elevationOffsetDeg: 0,
+    radiusOffset: 0,
+    idleAzimuth: 0,
+    idleElevation: 0,
+    idleRadius: 0
+  };
+}
+
+const ORBIT_INPUT_EPSILON = 1e-6;
+
+/** Wraps degrees to (-180, 180] so recentering takes the shortest angular path. */
+function wrapDeg180(deg: number): number {
+  return ((((deg + 180) % 360) + 360) % 360) - 180;
+}
+
+/**
+ * Advances one interactive orbit axis: applies input under its mode, ticks the
+ * idle timer, and (recenter, once idle past the wait) eases the offset toward the
+ * coded value (0). `wrap` handles the angular azimuth axis. Locked ignores input
+ * and snaps the offset to 0.
+ */
+function stepOrbitAxis(
+  offset: number,
+  idle: number,
+  delta: number,
+  control: OrbitAxisControl | undefined,
+  dt: number,
+  wrap: boolean
+): { offset: number; idle: number } {
+  const mode = control?.mode ?? "locked";
+  if (mode === "locked") return { offset: 0, idle: 0 };
+
+  const hadInput = Math.abs(delta) > ORBIT_INPUT_EPSILON;
+  let next = offset + delta;
+  if (wrap) next = wrapDeg180(next);
+  const nextIdle = hadInput ? 0 : idle + Math.max(0, dt);
+
+  if (mode === "recenter" && !hadInput) {
+    const wait = control?.recenterWait ?? 1;
+    const time = control?.recenterTime ?? 1;
+    if (nextIdle >= wait) {
+      // Exponential ease toward the coded value; ~settled after `time` seconds.
+      const alpha = time > 0 ? 1 - Math.exp(-(5 / time) * Math.max(0, dt)) : 1;
+      next *= 1 - alpha;
+    }
+  }
+  return { offset: next, idle: nextIdle };
+}
+
+/**
+ * Steps the interactive orbit body state once per frame (the activation driver's
+ * post-input stage): integrates per-axis OrbitInput under each axis's mode,
+ * reseeding to the coded pose on a shot change. Pure state mutation — it never
+ * touches the camera; applyOrbitLive feeds the effective params into the (pure)
+ * resolver. A non-orbit body clears the state.
+ */
+export function stepOrbitBody(
+  definition: VirtualCameraDefinition,
+  state: RigBodyState,
+  input: OrbitInput | undefined,
+  deltaSeconds: number
+): void {
+  const body = definition.body;
+  if (body.type !== "orbit") {
+    state.vcamId = null;
+    return;
+  }
+  if (state.vcamId !== definition.id) {
+    state.vcamId = definition.id;
+    state.azimuthOffsetDeg = 0;
+    state.elevationOffsetDeg = 0;
+    state.radiusOffset = 0;
+    state.idleAzimuth = 0;
+    state.idleElevation = 0;
+    state.idleRadius = 0;
+  }
+
+  const control = body.control;
+  const az = stepOrbitAxis(
+    state.azimuthOffsetDeg,
+    state.idleAzimuth,
+    input?.azimuthDeltaDeg ?? 0,
+    control?.azimuth,
+    deltaSeconds,
+    true
+  );
+  state.azimuthOffsetDeg = az.offset;
+  state.idleAzimuth = az.idle;
+
+  const el = stepOrbitAxis(
+    state.elevationOffsetDeg,
+    state.idleElevation,
+    input?.elevationDeltaDeg ?? 0,
+    control?.elevation,
+    deltaSeconds,
+    false
+  );
+  // Clamp so coded + offset stays within the ±80 elevation limit (no windup).
+  state.elevationOffsetDeg = clamp(
+    el.offset,
+    -ORBIT_ELEVATION_LIMIT - body.elevationDeg,
+    ORBIT_ELEVATION_LIMIT - body.elevationDeg
+  );
+  state.idleElevation = el.idle;
+
+  const rad = stepOrbitAxis(
+    state.radiusOffset,
+    state.idleRadius,
+    input?.radiusDelta ?? 0,
+    control?.radius,
+    deltaSeconds,
+    false
+  );
+  state.radiusOffset = rad.offset;
+  state.idleRadius = rad.idle;
+}
+
+const ORBIT_MIN_RADIUS = 0.01;
+
+/**
+ * Patches an orbit definition with the live interactive offsets so the pure
+ * resolver produces the effective pose. Returns the definition unchanged when it
+ * is not the orbit vcam the body state owns, or when there is no live offset — so
+ * change-detection and non-interactive shots see the coded definition.
+ */
+export function applyOrbitLive(
+  definition: VirtualCameraDefinition,
+  state: RigBodyState
+): VirtualCameraDefinition {
+  const body = definition.body;
+  if (body.type !== "orbit" || state.vcamId !== definition.id) return definition;
+  if (
+    state.azimuthOffsetDeg === 0 &&
+    state.elevationOffsetDeg === 0 &&
+    state.radiusOffset === 0
+  ) {
+    return definition;
+  }
+  return {
+    ...definition,
+    body: {
+      ...body,
+      azimuthDeg: body.azimuthDeg + state.azimuthOffsetDeg,
+      elevationDeg: clamp(
+        body.elevationDeg + state.elevationOffsetDeg,
+        -ORBIT_ELEVATION_LIMIT,
+        ORBIT_ELEVATION_LIMIT
+      ),
+      radius: Math.max(ORBIT_MIN_RADIUS, body.radius + state.radiusOffset)
+    }
+  };
+}
+
 export interface RigDriveState {
   brain: VirtualCameraBrainState;
   composer: RigComposerState;
+  /** Interactive orbit-body offsets/recentering; stepped only by the activation driver. */
+  body: RigBodyState;
   activation: { key: number | null; vcamId: string | null };
 }
 
@@ -1217,6 +1557,7 @@ export function createRigDriveState(initial?: VirtualCameraSnapshot): RigDriveSt
   return {
     brain: createVirtualCameraBrainState(initial),
     composer: createRigComposerState(),
+    body: createRigBodyState(),
     activation: { key: null, vcamId: null }
   };
 }
@@ -1247,6 +1588,9 @@ export interface RigActivationParams {
    *  into world so the driven (world-root) camera frames level under a rotated
    *  parent. Omit for a rig at world root (the default). */
   rigMatrix?: Matrix4;
+  /** Per-frame interactive input for an orbit body (pointer/wheel deltas); the
+   *  axis's `control` mode decides whether it moves, holds, or recenters. */
+  orbitInput?: OrbitInput;
 }
 
 /**
@@ -1268,6 +1612,7 @@ export function driveActivation(
   if (!definition) {
     state.activation = { key: null, vcamId: null };
     state.composer.vcamId = null;
+    state.body.vcamId = null;
     return {
       cameraSnapshot: state.brain.live ?? null,
       activeVcamId: null,
@@ -1291,17 +1636,22 @@ export function driveActivation(
     state.activation = { key, vcamId: activeVcamId };
   }
 
+  // Integrate interactive orbit input (locked/free/recenter per axis), then drive
+  // the pure resolver with the effective params. Non-orbit bodies no-op.
+  stepOrbitBody(definition, state.body, params.orbitInput, deltaSeconds);
+  const drivenDefinition = applyOrbitLive(definition, state.body);
+
   const resolved = driveVirtualCameraBrain(
     camera,
     state.brain,
-    definition,
+    drivenDefinition,
     context,
     deltaSeconds,
     params.rigMatrix
   );
   const composerTarget = stepComposerAim(
     camera,
-    definition,
+    drivenDefinition,
     state.composer,
     resolveTarget,
     deltaSeconds,
