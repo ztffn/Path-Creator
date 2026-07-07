@@ -1476,6 +1476,14 @@ function stepOverrideAxis(
 const _ovQuat = new Quaternion();
 const _ovRight = new Vector3();
 const _ovUp = new Vector3();
+const _ovOffset = new Vector3();
+const _ovAxis = new Vector3();
+const _ovWorldUp = new Vector3(0, 1, 0);
+const _ovQAz = new Quaternion();
+const _ovQEl = new Quaternion();
+const _ovRot = new Quaternion();
+const _ovCodedQuat = new Quaternion();
+const _ovResultQuat = new Quaternion();
 
 /**
  * The vcam's pivot for manual override: its aim target (what the shot frames),
@@ -1513,8 +1521,6 @@ export interface CameraOverrideResult {
   active: boolean;
 }
 
-const OVERRIDE_WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
-
 /**
  * Manual pivot-orbit override on a resolved (coded) snapshot — the twin's
  * OrbitControls model, generalized to any vcam: LMB orbits azimuth/elevation
@@ -1524,6 +1530,14 @@ const OVERRIDE_WORLD_UP: Vec3 = { x: 0, y: 1, z: 0 };
  * returns the coded snapshot unchanged (exact passthrough, active=false); when
  * live it owns position + look-at-pivot orientation. Works in world/rig space, so
  * it composes through rigMatrix at apply-time like any snapshot.
+ *
+ * The recompose is a rigid rotation of the coded pose about the pivot: azimuth
+ * yaws the pivot→camera offset about world-up, elevation pitches it about the
+ * horizontal axis in its azimuth plane, dolly scales its length, and the SAME
+ * rotation is applied to the coded orientation. So at zero offset it reproduces
+ * the coded pose exactly — preserving any authored roll and steep (near-pole)
+ * framing that a world-axis spherical decompose would flatten or clamp — and any
+ * body (static/cart/orbit) pilots without popping when the override engages.
  */
 export function stepCameraOverride(
   coded: VirtualCameraSnapshot,
@@ -1538,14 +1552,12 @@ export function stepCameraOverride(
     Object.assign(state, createRigBodyState(), { vcamId });
   }
 
-  // Decompose the coded offset from the pivot into spherical (world axes) — the
-  // exact inverse of orbitOffset (reuses its published inverse), so a zero offset
-  // reconstructs the coded pose.
-  const { azimuthDeg: az0, elevationDeg: el0, radius: r0 } = orbitParamsFromLocalOffset({
-    x: coded.position.x - pivot.x,
-    y: coded.position.y - pivot.y,
-    z: coded.position.z - pivot.z
-  });
+  // The coded offset pivot→camera; recompose rotates THIS vector (not a spherical
+  // reconstruction of it), so the coded direction is preserved bit-for-bit at zero
+  // offset. el0 is the true elevation (unclamped) so a steep coded pose survives.
+  _ovOffset.set(coded.position.x - pivot.x, coded.position.y - pivot.y, coded.position.z - pivot.z);
+  const r0 = _ovOffset.length();
+  const el0 = r0 > 1e-9 ? Math.asin(clamp(_ovOffset.y / r0, -1, 1)) / DEG_TO_RAD : 0;
 
   const az = stepOverrideAxis(
     state.azimuthOffsetDeg,
@@ -1566,9 +1578,13 @@ export function stepCameraOverride(
     deltaSeconds,
     false
   );
-  // Clamp so coded + offset stays off the ±80 poles (no windup past the limit);
-  // this makes the effective-elevation clamp at recompose a provable no-op.
-  state.elevationOffsetDeg = clamp(el.offset, -ORBIT_ELEVATION_LIMIT - el0, ORBIT_ELEVATION_LIMIT - el0);
+  // Clamp the cumulative elevation so el0+offset stays within ±80 of horizontal —
+  // but never tighter than el0 itself, so a coded pose already past the limit (a
+  // steep/overhead shot) holds at zero input and can only tilt back toward the
+  // horizon, never further past vertical (which would flip the view).
+  const elMinOffset = Math.min(-ORBIT_ELEVATION_LIMIT, el0) - el0;
+  const elMaxOffset = Math.max(ORBIT_ELEVATION_LIMIT, el0) - el0;
+  state.elevationOffsetDeg = clamp(el.offset, elMinOffset, elMaxOffset);
   state.idleElevation = el.idle;
 
   // Pan (RMB): accumulate in world via the coded view basis; recenter to 0.
@@ -1592,6 +1608,11 @@ export function stepCameraOverride(
     state.panZ *= gate.decay;
   }
 
+  // The reachable distance band [min,max], widened to always include the coded r0 so
+  // an out-of-range shot does not jump radially when the override engages (dolly=0).
+  const distMin = Math.min(control?.minDistance ?? 0.01, r0);
+  const distMax = Math.max(control?.maxDistance ?? Infinity, r0);
+
   // Dolly (wheel): input bumps a target; the applied distance eases toward it for a
   // damped (smooth) zoom, matching the twin's damped dolly.
   const dollyMode = control?.dolly?.mode ?? "locked";
@@ -1603,6 +1624,9 @@ export function stepCameraOverride(
     const gate = idleRecenterDecay(state.idleDolly, Math.abs(dd) > OVERRIDE_INPUT_EPSILON, control?.dolly, deltaSeconds);
     state.idleDolly = gate.idle;
     state.dollyTargetOffset *= gate.decay;
+    // Bound the target to the reachable band so the wheel reverses immediately at a
+    // limit instead of unwinding an accumulated overshoot (a dead zone).
+    state.dollyTargetOffset = clamp(state.dollyTargetOffset, distMin - r0, distMax - r0);
     state.dollyOffset += (state.dollyTargetOffset - state.dollyOffset) * easeAlpha(OVERRIDE_DOLLY_RATE, deltaSeconds);
   }
 
@@ -1614,19 +1638,31 @@ export function stepCameraOverride(
 
   if (!active) return { snapshot: coded, active: false };
 
-  // Elevation stays in range via the offset windup clamp above (and orbitOffset
-  // clamps internally), so no clamp is needed here.
-  const off = orbitOffset(
-    az0 + state.azimuthOffsetDeg,
-    el0 + state.elevationOffsetDeg,
-    clamp(r0 + state.dollyOffset, control?.minDistance ?? 0.01, control?.maxDistance ?? Infinity)
-  );
+  // Rotate the coded offset about the pivot: elevation (pitch about the horizontal
+  // axis in the offset's azimuth plane), then azimuth (yaw about world-up).
+  _ovAxis.crossVectors(_ovOffset, _ovWorldUp);
+  if (_ovAxis.lengthSq() < 1e-12) {
+    // Offset parallel to world-up (overhead/underneath pole): pitch about the coded
+    // camera's own right axis so elevation input still tilts the view.
+    _ovCodedQuat.set(coded.quaternion.x, coded.quaternion.y, coded.quaternion.z, coded.quaternion.w);
+    _ovAxis.set(1, 0, 0).applyQuaternion(_ovCodedQuat);
+  }
+  _ovAxis.normalize();
+  _ovQEl.setFromAxisAngle(_ovAxis, state.elevationOffsetDeg * DEG_TO_RAD);
+  _ovQAz.setFromAxisAngle(_ovWorldUp, state.azimuthOffsetDeg * DEG_TO_RAD);
+  _ovRot.multiplyQuaternions(_ovQAz, _ovQEl); // elevation applied first, then azimuth
+
+  _ovOffset.applyQuaternion(_ovRot).setLength(clamp(r0 + state.dollyOffset, distMin, distMax));
   const position = {
-    x: pivot.x + state.panX + off.x,
-    y: pivot.y + state.panY + off.y,
-    z: pivot.z + state.panZ + off.z
+    x: pivot.x + state.panX + _ovOffset.x,
+    y: pivot.y + state.panY + _ovOffset.y,
+    z: pivot.z + state.panZ + _ovOffset.z
   };
-  const quaternion = cameraQuaternionFromFrame({ x: -off.x, y: -off.y, z: -off.z }, OVERRIDE_WORLD_UP);
+  // Apply the same rotation to the coded orientation: preserves authored roll and,
+  // at zero offset, reproduces the coded quaternion exactly (no orientation pop).
+  _ovCodedQuat.set(coded.quaternion.x, coded.quaternion.y, coded.quaternion.z, coded.quaternion.w);
+  _ovResultQuat.multiplyQuaternions(_ovRot, _ovCodedQuat);
+  const quaternion = { x: _ovResultQuat.x, y: _ovResultQuat.y, z: _ovResultQuat.z, w: _ovResultQuat.w };
   return { snapshot: { ...coded, position, quaternion }, active: true };
 }
 
@@ -1789,11 +1825,16 @@ export function driveActivation(
     };
   }
 
+  // Resolve the coded pose once; reused to seed the blend on an activation change
+  // and, below, as the base the manual pivot-orbit override (LMB/RMB/wheel) pilots.
+  // When the override is active it owns position + aim, so the composer is skipped
+  // this frame; otherwise the shot plays as coded.
+  const coded = resolveVirtualCameraDefinition(definition, context);
   const key = params.activationKey ?? null;
   const changed =
     state.activation.vcamId !== activeVcamId || (key !== null && state.activation.key !== key);
   if (changed) {
-    const start = resolveVirtualCameraDefinition(definition, context) ?? params.fallbackSnapshot;
+    const start = coded ?? params.fallbackSnapshot;
     if (start) {
       activateVirtualCameraBrain(state.brain, start, {
         durationSeconds: params.blend?.durationSeconds ?? 0,
@@ -1803,10 +1844,6 @@ export function driveActivation(
     state.activation = { key, vcamId: activeVcamId };
   }
 
-  // Resolve the coded pose, then apply the manual pivot-orbit override (LMB/RMB/
-  // wheel around the shot's pivot). When the override is active it owns position +
-  // aim, so the composer is skipped this frame; otherwise the shot plays as coded.
-  const coded = resolveVirtualCameraDefinition(definition, context);
   let overrideActive = false;
   if (coded) {
     const override = stepShotOverride(

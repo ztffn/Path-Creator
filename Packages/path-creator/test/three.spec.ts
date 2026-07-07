@@ -793,6 +793,75 @@ describe("manual pivot-orbit override (OrbitControls model on any vcam)", () => 
     expect(r.snapshot.position.x).toBeCloseTo(10);
     expect(r.snapshot.position.z).toBeCloseTo(-5);
   });
+
+  it("preserves authored roll — the override does not flatten the horizon", () => {
+    // Coded pose with 30° roll about the view axis. Pan makes the override active
+    // with no orbit rotation (delta = identity), so the recomposed orientation must
+    // be the coded (rolled) quaternion — a world-up look-at would level it.
+    const roll = new Quaternion().setFromAxisAngle(new Vector3(0, 0, 1), (30 * Math.PI) / 180);
+    const rolled: VirtualCameraSnapshot = {
+      position: { x: 0, y: 0, z: 5 },
+      quaternion: { x: roll.x, y: roll.y, z: roll.z, w: roll.w }
+    };
+    const state = createRigBodyState();
+    const r = stepCameraOverride(rolled, PIVOT, "v", { pan: { mode: "free" } }, state, { panXDelta: 1 }, 0.016);
+    expect(r.active).toBe(true);
+    expect(r.snapshot.quaternion.z).toBeCloseTo(roll.z);
+    expect(r.snapshot.quaternion.w).toBeCloseTo(roll.w);
+  });
+
+  it("a steep (overhead) shot holds its pose when the override engages — no ±80 pop", () => {
+    // Camera 10 directly above the pivot (elevation 90°, past the ±80 orbit limit).
+    // Azimuth (yaw about world-up) leaves an overhead offset unmoved; the old
+    // spherical recompose clamped elevation to 80 and dropped the camera to y≈9.85.
+    const overhead: VirtualCameraSnapshot = {
+      position: { x: 0, y: 10, z: 0 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    };
+    const state = createRigBodyState();
+    const r = stepCameraOverride(overhead, PIVOT, "v", { azimuth: { mode: "free" } }, state, { azimuthDeltaDeg: 45 }, 0.016);
+    expect(r.active).toBe(true);
+    expect(r.snapshot.position.y).toBeCloseTo(10);
+    expect(Math.hypot(r.snapshot.position.x, r.snapshot.position.z)).toBeCloseTo(0, 5);
+  });
+
+  it("elevation clamps ±80 off horizontal relative to a nonzero coded elevation", () => {
+    // Coded pose at elevation 45° (radius 5). Pushing elevation past the limit clamps
+    // the RESULT to 80° — the windup bound is relative to the coded 45°, not to zero,
+    // so this exercises the el0≠0 branch (position stays on the radius-5 sphere).
+    const el45: VirtualCameraSnapshot = {
+      position: { x: 0, y: 5 * Math.sin(Math.PI / 4), z: 5 * Math.cos(Math.PI / 4) },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    };
+    const state = createRigBodyState();
+    const r = stepCameraOverride(el45, PIVOT, "v", { elevation: { mode: "free" } }, state, { elevationDeltaDeg: 200 }, 0.016);
+    expect(r.snapshot.position.y).toBeCloseTo(5 * Math.sin((80 * Math.PI) / 180));
+    expect(Math.hypot(r.snapshot.position.x, r.snapshot.position.y, r.snapshot.position.z)).toBeCloseTo(5);
+  });
+
+  it("an out-of-range coded radius does not jump when the override engages", () => {
+    // Coded 50 units out; control caps distance at 40. Azimuth only (dolly 0) must
+    // not clamp the radius inward — the reachable band widens to include the coded r0.
+    const state = createRigBodyState();
+    const far: VirtualCameraSnapshot = { position: { x: 0, y: 0, z: 50 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } };
+    const ctrl = { azimuth: { mode: "free" as const }, minDistance: 1, maxDistance: 40 };
+    const r = stepCameraOverride(far, PIVOT, "v", ctrl, state, { azimuthDeltaDeg: 30 }, 0.016);
+    expect(Math.hypot(r.snapshot.position.x, r.snapshot.position.z)).toBeCloseTo(50);
+  });
+
+  it("dolly reverses immediately at a distance limit (no wind-up dead zone)", () => {
+    const state = createRigBodyState();
+    const ctrl = { dolly: { mode: "free" as const }, minDistance: 2, maxDistance: 12 };
+    // Over-scroll inward far past minDistance, then settle at the clamp (radius 2).
+    stepCameraOverride(coded(), PIVOT, "v", ctrl, state, { dollyDelta: -100 }, 0.016);
+    let z = 5;
+    for (let i = 0; i < 300; i += 1) z = stepCameraOverride(coded(), PIVOT, "v", ctrl, state, {}, 0.05).snapshot.position.z;
+    expect(z).toBeCloseTo(2);
+    // A single outward notch moves the radius out right away (the target was bounded,
+    // not wound up to -100), rather than sitting in a dead zone.
+    const after = stepCameraOverride(coded(), PIVOT, "v", ctrl, state, { dollyDelta: 5 }, 0.05).snapshot.position.z;
+    expect(after).toBeGreaterThan(z);
+  });
 });
 
 describe("override input accumulator", () => {
