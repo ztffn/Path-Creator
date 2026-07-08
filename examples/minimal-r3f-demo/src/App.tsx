@@ -51,7 +51,7 @@ import {
   type TimelinePlayer,
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
-import { useEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
@@ -59,6 +59,27 @@ import {
   serializeScene,
   type DemoScene
 } from "./scene-io";
+import {
+  Activatable,
+  ActivatablesProvider,
+  ActivatablesRegistry,
+  ActivationDirector,
+  useActivatables,
+  useActivatablesRegistry
+} from "./activatables";
+import {
+  EMPTY_DESIRED,
+  EMPTY_EXTRA_TRACKS,
+  evaluateAudio,
+  maxClipEnd,
+  type ActivationTrack,
+  type AudioTrack,
+  type ExtraTracks
+} from "./extra-tracks";
+import { AudioTrackPlayer } from "./audio-player";
+import { ActivationTracksEditor, AudioTracksEditor } from "./extra-tracks-panel";
+import { Section as SettingsSection, CollapsibleGroup, panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
+import { IconEye, IconEyeOff, IconVideo, IconDirector, IconTrack, IconVolume } from "./icons";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
@@ -91,6 +112,23 @@ const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // The scene is persisted as a portable RigDocument; the two keys above are only
 // read for one-time migration of shows saved before this format.
 const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
+// Activation/audio tracks persist in a demo sidecar (not the portable RigDocument,
+// whose Timeline union is closed to camera/cart/event).
+const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
+
+function loadExtraTracks(): ExtraTracks {
+  try {
+    const raw = localStorage.getItem(EXTRA_STORAGE_KEY);
+    if (!raw) return EMPTY_EXTRA_TRACKS;
+    const parsed = JSON.parse(raw) as Partial<ExtraTracks>;
+    return {
+      activationTracks: parsed.activationTracks ?? [],
+      audioTracks: parsed.audioTracks ?? []
+    };
+  } catch {
+    return EMPTY_EXTRA_TRACKS;
+  }
+}
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 // A production can run several dollies, all riding the demo's one rail;
@@ -259,6 +297,29 @@ function SpinningTargetProbe({
   );
 }
 
+// A few bindable demo props so an Activation track has something obvious to
+// show/hide (the demo's stand-in for "GameObjects you drag onto the track").
+const DEMO_PROP_DEFS: { id: string; name: string; position: [number, number, number]; color: string }[] = [
+  { id: "prop/beacon", name: "Beacon", position: [2.6, 0.6, 1.8], color: "#ef4444" },
+  { id: "prop/marker", name: "Marker", position: [-1.4, 1.4, 1.2], color: "#22c55e" },
+  { id: "prop/pylon", name: "Pylon", position: [0.4, 1.9, -1.6], color: "#3b82f6" }
+];
+
+function DemoProps() {
+  return (
+    <>
+      {DEMO_PROP_DEFS.map((prop) => (
+        <Activatable key={prop.id} id={prop.id} name={prop.name}>
+          <mesh position={prop.position}>
+            <boxGeometry args={[0.5, 0.5, 0.5]} />
+            <meshStandardMaterial color={prop.color} emissive={prop.color} emissiveIntensity={0.25} />
+          </mesh>
+        </Activatable>
+      ))}
+    </>
+  );
+}
+
 function shotRowLabelStyle(columns: string): CSSProperties {
   return {
     gridColumn: "1 / -1",
@@ -319,7 +380,6 @@ function Scene({
   bezierPath,
   vertexPath,
   pathVersion,
-  speed,
   debugPreview,
   debugFrustum,
   playMode,
@@ -357,12 +417,14 @@ function Scene({
   dollies,
   vertexPaths,
   activeTimeline,
-  timelinePlayerRef
+  timelinePlayerRef,
+  activationTracks,
+  audioTracks,
+  audioPlayer
 }: {
   bezierPath: BezierPath | null;
   vertexPath: VertexPath | null;
   pathVersion: number;
-  speed: number;
   debugPreview: boolean;
   debugFrustum: boolean;
   playMode: boolean;
@@ -410,8 +472,14 @@ function Scene({
   /** Non-null while the timeline owns the PiP. */
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
+  activationTracks: ActivationTrack[];
+  audioTracks: AudioTrack[];
+  audioPlayer: AudioTrackPlayer;
 }) {
   useEditorHelpersVisible();
+  const activatablesRegistry = useActivatablesRegistry();
+  // Owns the per-frame activation state machine (Unity director semantics).
+  const activationDirector = useMemo(() => new ActivationDirector(), []);
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
@@ -432,14 +500,14 @@ function Scene({
     () => ({
       rig: {
         paths: vertexPaths,
-        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed, endOfPathInstruction: dolly.endOfPathInstruction })])),
+        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed: dolly.speed, endOfPathInstruction: dolly.endOfPathInstruction })])),
         cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
       },
       vcams: vcamDefById,
       getTargetPosition: (id) => targetRegistry.resolve(id),
       getTargetOrientation: (id) => targetRegistry.resolveOrientation(id)
     }),
-    [speed, targetRegistry, vertexPaths, vcamDefById, dollies]
+    [targetRegistry, vertexPaths, vcamDefById, dollies]
   );
   const brainCamera = useMemo(() => {
     const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
@@ -574,6 +642,23 @@ function Scene({
       resolvedVirtualCameraKeyRef.current = null;
     }
 
+    // Activation + audio tracks drive off the timeline clock (they aren't part of
+    // the core Timeline). The director applies Unity Post-Playback semantics; audio
+    // sounds only during forward playback (silent on scrub/pause), matching
+    // stepTimelinePlayer's forward-only event semantics.
+    const player = timelinePlayerRef.current;
+    const timelineDriving = Boolean(activeTimeline);
+    activationDirector.sync(
+      activatablesRegistry,
+      activationTracks,
+      timelineDriving,
+      activeTimeline?.duration ?? 0,
+      player.time,
+      player.playing
+    );
+    const audioLive = timelineDriving && player.playing;
+    audioPlayer.reconcile(audioLive ? evaluateAudio(audioTracks, player.time) : EMPTY_DESIRED, audioLive);
+
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
     const composerVcam = result.activeVcamId
@@ -648,13 +733,16 @@ function Scene({
         />
       ) : null}
 
-      <SpinningTargetProbe
-        targetRegistry={targetRegistry}
-        id="turbine/Nacelle"
-        name="Turbine (spinning)"
-        position={[-3.2, 1, -2.2]}
-        degPerSec={18}
-      />
+      <Activatable id="turbine/Nacelle" name="Turbine (spinning)">
+        <SpinningTargetProbe
+          targetRegistry={targetRegistry}
+          id="turbine/Nacelle"
+          name="Turbine (spinning)"
+          position={[-3.2, 1, -2.2]}
+          degPerSec={18}
+        />
+      </Activatable>
+      <DemoProps />
 
       <EditorHelpers>
       {dollies.map((dolly) => (
@@ -1053,15 +1141,6 @@ function DollyPipZone({
 }
 
 
-function SettingsSection({ title, children }: { title: string; children: ReactNode }) {
-  return (
-    <div style={{ borderTop: "1px solid rgba(148, 163, 184, 0.18)", paddingTop: 10, marginTop: 10 }}>
-      <div style={{ fontSize: 11, fontWeight: 800, color: "#cbd5e1", marginBottom: 8 }}>{title}</div>
-      <div style={{ display: "grid", gap: 8 }}>{children}</div>
-    </div>
-  );
-}
-
 function NumberSlider({
   label,
   value,
@@ -1258,20 +1337,19 @@ function VirtualCameraPanel({
   const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
   return (
     <div
+      className="pc-panel"
       style={{
         width: "100%",
         boxSizing: "border-box",
         padding: 12,
-        borderRadius: 8,
-        background: "rgba(10, 16, 28, 0.92)",
-        color: "#f8fafc",
-        fontFamily: "ui-sans-serif, system-ui, sans-serif",
-        boxShadow: "0 24px 60px rgba(15, 23, 42, 0.32)",
-        border: "1px solid rgba(148, 163, 184, 0.22)"
+        borderRadius: 0,
+        background: BG,
+        boxShadow: "0 24px 60px rgba(0, 0, 0, 0.45)",
+        border: `1px solid ${BORDER}`
       }}
     >
       <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 800 }}>Virtual Cameras</div>
+        <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>Virtual Cameras</div>
         {activeId ? (
           <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
             <span style={{ fontSize: 11, color: "#22c55e" }}>
@@ -1552,13 +1630,9 @@ function VirtualCameraPanel({
                   <div
                     onClick={(event) => event.stopPropagation()}
                     style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
+                    title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
                   >
-                    <div
-                      style={{ fontSize: 10, color: "#94a3b8", marginTop: 2 }}
-                      title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
-                    >
-                      Manual control (Play mode: LMB orbit, RMB pan, wheel dolly)
-                    </div>
+                    <CollapsibleGroup title="Manual control · LMB orbit / RMB pan / wheel dolly">
                     {(["azimuth", "elevation", "pan", "dolly"] as const).map((axis) => (
                       <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
                         <span style={{ textTransform: "capitalize" }}>{axis}</span>
@@ -1582,6 +1656,7 @@ function VirtualCameraPanel({
                         </select>
                       </label>
                     ))}
+                    </CollapsibleGroup>
                   </div>
                 </div>
               );
@@ -1642,7 +1717,6 @@ export function App() {
   });
 
   const [pathVersion, setPathVersion] = useState(0);
-  const [speed, setSpeed] = useState(() => loadedScene?.dollies[0]?.speed ?? 1);
   const [debugPreview, setDebugPreview] = useState(true);
   const [debugFrustum, setDebugFrustum] = useState(true);
   // Edit vs Play mode. Edit: the editor camera owns the main viewport with
@@ -1671,6 +1745,32 @@ export function App() {
     return () => window.removeEventListener("keydown", onKey);
   }, []);
   const targetRegistry = useMemo(() => new TargetRegistry(), []);
+  const activatablesRegistry = useMemo(() => new ActivatablesRegistry(), []);
+  const audioPlayer = useMemo(() => new AudioTrackPlayer(), []);
+  const activatables = useActivatables(activatablesRegistry);
+  const [extraTracks, setExtraTracks] = useState<ExtraTracks>(loadExtraTracks);
+  // Persist activation/audio tracks; unlock audio on the first user gesture.
+  useEffect(() => {
+    localStorage.setItem(EXTRA_STORAGE_KEY, JSON.stringify(extraTracks));
+  }, [extraTracks]);
+  useEffect(() => {
+    const unlock = () => audioPlayer.resume();
+    window.addEventListener("pointerdown", unlock);
+    return () => window.removeEventListener("pointerdown", unlock);
+  }, [audioPlayer]);
+  useEffect(() => () => audioPlayer.dispose(), [audioPlayer]);
+  // DEV-only oracle handle: lets the Playwright verification read a bound object's
+  // visibility and drive the timeline clock without brittle UI scripting. Stripped
+  // from production builds (import.meta.env.DEV is false there).
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    (window as unknown as { __demo?: unknown }).__demo = {
+      isVisible: (id: string) => activatablesRegistry.resolve(id)?.visible ?? null,
+      player: timelinePlayerRef.current,
+      setExtraTracks,
+      enterTimeline: () => setPipDriver("timeline")
+    };
+  }, [activatablesRegistry]);
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
   const dollyFramesRef = useRef<Map<string, CartFrame>>(new Map());
   // Manual-override input: the capture surface accumulates, the drive loop drains.
@@ -1911,12 +2011,12 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vcamDefs, editorVcams, shotTiming]
   );
-  // Persist the scene as a portable RigDocument. Cart speed carries the global
-  // rig speed so a loaded document plays faithfully.
+  // Persist the scene as a portable RigDocument. Each dolly carries its own
+  // free-run speed (per-cart), so a loaded document plays faithfully.
   const currentScene: DemoScene = {
     paths,
     activePathId,
-    dollies: dollies.map((dolly) => ({ ...dolly, speed })),
+    dollies,
     vcamDefs,
     editorVcams,
     shotTiming,
@@ -1927,7 +2027,7 @@ export function App() {
     localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
     // currentScene is rebuilt each render from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, paths, activePathId, pointTargets, speed]);
+  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, paths, activePathId, pointTargets]);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -1936,7 +2036,6 @@ export function App() {
     setActivePathId(active?.id ?? null);
     setBezierPath(active ? BezierPath.fromJSON(active.bezier) : null);
     setDollies(scene.dollies);
-    setSpeed(scene.dollies[0]?.speed ?? 1);
     setVcamDefs(scene.vcamDefs);
     setEditorVcams(scene.editorVcams);
     setShotTiming(scene.shotTiming);
@@ -2097,21 +2196,25 @@ export function App() {
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
   // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.
-  // Built whenever there's ANY content — cameras OR dolly moves — so a dolly-only
-  // (or object-only) show still plays; the timeline is not vcam-coupled.
+  // Latest clip end across activation/audio tracks: the show must run long enough
+  // to cover object-only content (the core Timeline drives the player clock).
+  const extraDuration = useMemo(() => maxClipEnd(extraTracks), [extraTracks]);
+  // Built whenever there's ANY content — cameras, dolly moves, OR activation/audio
+  // clips — so an object-only (or audio-only) show still plays; not vcam-coupled.
   const hasTimelineContent =
-    vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0);
-  const demoTimeline = useMemo(
-    () =>
-      hasTimelineContent
-        ? buildShowTimeline(vcamDefs, shotTiming, dollyRuns, (cartId) => {
-            const dolly = dollies.find((d) => d.id === cartId);
-            return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
-          })
-        : null,
+    vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0;
+  const demoTimeline = useMemo(() => {
+    if (!hasTimelineContent) return null;
+    const base = buildShowTimeline(vcamDefs, shotTiming, dollyRuns, (cartId) => {
+      const dolly = dollies.find((d) => d.id === cartId);
+      return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
+    });
+    // Extend the clock to cover activation/audio clips that outlast the camera/cart
+    // content. (The exported RigDocument timeline is intentionally NOT extended —
+    // extra tracks persist in a separate sidecar, not the portable document.)
+    return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [shotTimingKey, dollyRunKey]
-  );
+  }, [shotTimingKey, dollyRunKey, extraDuration]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
@@ -2517,9 +2620,71 @@ export function App() {
     }
   }
 
+  // Activation + audio tracks as timeline lanes (alongside shot/dolly lanes). Lane
+  // id encodes the kind (act:/aud:) + track id; clip create/move routes back into
+  // extraTracks. Delete stays in the side-panel editors, like dolly moves.
+  const newClipId = (): string => `clip-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  const extraLanes = [
+    ...extraTracks.activationTracks.map((track) => ({
+      id: `act:${track.id}`,
+      name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Activation",
+      color: "rgba(56, 189, 248, 0.6)",
+      icon: <IconEye size={14} />,
+      clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.end }))
+    })),
+    ...extraTracks.audioTracks.map((track) => ({
+      id: `aud:${track.id}`,
+      name: track.name ?? "Audio",
+      color: "rgba(167, 139, 250, 0.6)",
+      icon: <IconVolume size={14} />,
+      clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.start + c.duration, label: c.src }))
+    }))
+  ];
+  const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
+    if (laneId.startsWith("act:")) {
+      const trackId = laneId.slice(4);
+      setExtraTracks((prev) => ({
+        ...prev,
+        activationTracks: prev.activationTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, start, end } : c)) } : t
+        )
+      }));
+    } else if (laneId.startsWith("aud:")) {
+      const trackId = laneId.slice(4);
+      setExtraTracks((prev) => ({
+        ...prev,
+        audioTracks: prev.audioTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, start, duration: Math.max(0.25, end - start) } : c)) } : t
+        )
+      }));
+    }
+  };
+  const addExtraClip = (laneId: string, time: number): void => {
+    const start = Math.max(0, Math.round(time * 4) / 4);
+    if (laneId.startsWith("act:")) {
+      const trackId = laneId.slice(4);
+      setExtraTracks((prev) => ({
+        ...prev,
+        activationTracks: prev.activationTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: [...t.clips, { id: newClipId(), start, end: start + 2 }] } : t
+        )
+      }));
+    } else if (laneId.startsWith("aud:")) {
+      const trackId = laneId.slice(4);
+      setExtraTracks((prev) => ({
+        ...prev,
+        audioTracks: prev.audioTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: [...t.clips, { id: newClipId(), src: "tone:440", start, duration: 4, gain: 1 }] } : t
+        )
+      }));
+    }
+  };
+
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
+      <style>{panelGlobalCss}</style>
       <div
+        className="pc-panel"
         style={{
           position: "fixed",
           top: 12,
@@ -2527,24 +2692,23 @@ export function App() {
           zIndex: 10,
           width: 380,
           maxHeight: "calc(100vh - 24px)",
-          overflowY: "auto",
-          padding: 12,
-          borderRadius: 8,
-          background: "rgba(10, 16, 28, 0.92)",
-          color: "#f8fafc",
-          fontFamily: "ui-sans-serif, system-ui, sans-serif",
-          boxShadow: "0 24px 60px rgba(15, 23, 42, 0.28)",
-          border: "1px solid rgba(148, 163, 184, 0.22)",
-          boxSizing: "border-box"
+          display: "flex",
+          flexDirection: "column",
+          borderRadius: 0,
+          boxShadow: "0 24px 60px rgba(0, 0, 0, 0.45)",
+          border: `1px solid ${BORDER}`,
+          boxSizing: "border-box",
+          overflow: "hidden"
         }}
       >
-        <div>
-          <div style={{ fontSize: 14, fontWeight: 800 }}>Path Creator Demo</div>
-          <div style={{ fontSize: 11, color: "#94a3b8", marginTop: 2 }}>
+        <header style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}` }}>
+          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>Path Creator Demo</div>
+          <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
             Edit spline, drive rigs, validate cameras
           </div>
-        </div>
+        </header>
 
+        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 14px 12px" }}>
         <SettingsSection title="Path Editing">
           {!bezierPath ? (
             <div style={{ fontSize: 12, color: "#94a3b8" }}>
@@ -2651,6 +2815,21 @@ export function App() {
                   </select>
                   <button onClick={() => deleteDolly(dolly.id)}>Del</button>
                 </div>
+                {/* Per-dolly free-run speed (used where a dolly has no move keyframes). */}
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, paddingLeft: 10, color: MUTED }}>
+                  <span style={{ width: 30 }}>speed</span>
+                  <input
+                    type="range"
+                    min={0.2}
+                    max={3}
+                    step={0.1}
+                    value={dolly.speed}
+                    title="Free-run speed for this dolly"
+                    style={{ flex: 1 }}
+                    onChange={(event) => updateDolly(dolly.id, { speed: Number(event.target.value) })}
+                  />
+                  <span style={{ width: 26, textAlign: "right" }}>{dolly.speed.toFixed(1)}</span>
+                </div>
                 {/* Dolly moves: over [start,end] the dolly eases from→to (distance). */}
                 {(dollyRuns[dolly.id] ?? []).map((run) => (
                   <div
@@ -2679,23 +2858,21 @@ export function App() {
           </div>
         </SettingsSection>
 
-        <SettingsSection title="Scene">
-          <div style={{ display: "flex", gap: 6, flexWrap: "wrap" }}>
-            <button onClick={newScene}>New</button>
-            <button onClick={exportScene}>Export JSON</button>
-            <button onClick={() => importInputRef.current?.click()}>Import JSON</button>
-            <input
-              ref={importInputRef}
-              type="file"
-              accept=".json,application/json"
-              style={{ display: "none" }}
-              onChange={(event) => {
-                const file = event.target.files?.[0];
-                if (file) importSceneFile(file);
-                event.currentTarget.value = "";
-              }}
-            />
-          </div>
+        <SettingsSection title="Activation">
+          <ActivationTracksEditor
+            activationTracks={extraTracks.activationTracks}
+            audioTracks={extraTracks.audioTracks}
+            activatables={activatables}
+            onChange={setExtraTracks}
+          />
+        </SettingsSection>
+
+        <SettingsSection title="Audio">
+          <AudioTracksEditor
+            activationTracks={extraTracks.activationTracks}
+            audioTracks={extraTracks.audioTracks}
+            onChange={setExtraTracks}
+          />
         </SettingsSection>
 
         <SettingsSection title="Paths">
@@ -2776,12 +2953,11 @@ export function App() {
                     display: "inline-flex",
                     alignItems: "center",
                     justifyContent: "center",
-                    fontSize: 13,
-                    opacity: target.visibleInRender ? 1 : 0.4,
-                    textDecoration: target.visibleInRender ? "none" : "line-through"
+                    padding: 0,
+                    color: target.visibleInRender ? TEXT : MUTED
                   }}
                 >
-                  👁
+                  {target.visibleInRender ? <IconEye size={15} /> : <IconEyeOff size={15} />}
                 </button>
                 <button onClick={() => deletePointTarget(target.id)}>Del</button>
               </div>
@@ -2792,17 +2968,6 @@ export function App() {
               dolly to ride the rail. The eye hides it from the render (still an aim point).
             </div>
           </div>
-        </SettingsSection>
-
-        <SettingsSection title="Dolly Speed">
-          <NumberSlider
-            label="Speed"
-            value={speed}
-            min={0.2}
-            max={3}
-            step={0.1}
-            onChange={setSpeed}
-          />
         </SettingsSection>
 
         <SettingsSection title="Viewport Debug">
@@ -2819,11 +2984,15 @@ export function App() {
                   key={mode}
                   onClick={() => setViewMode(mode)}
                   style={{
+                    display: "inline-flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    gap: 6,
                     padding: "6px 8px",
                     fontSize: 12,
                     fontWeight: 700,
                     textTransform: "capitalize",
-                    borderRadius: 6,
+                    borderRadius: 0,
                     cursor: "pointer",
                     color: active ? "#0f172a" : "#cbd5e1",
                     background: active
@@ -2834,7 +3003,8 @@ export function App() {
                     border: `1px solid ${active ? "transparent" : "rgba(148, 163, 184, 0.25)"}`
                   }}
                 >
-                  {mode === "play" ? "▶ Play" : "✎ Edit"}
+                  {mode === "play" ? <IconVideo size={13} /> : <IconDirector size={13} />}
+                  {mode === "play" ? "Play" : "Edit"}
                 </button>
               );
             })}
@@ -2866,10 +3036,28 @@ export function App() {
             <span style={{ marginLeft: 6 }}>Path as dolly rail</span>
           </label>
 
-          <div style={{ fontSize: 11, color: "#94a3b8", lineHeight: 1.45 }}>
+          <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.45 }}>
             Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
           </div>
         </SettingsSection>
+        </div>
+
+        <footer style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderTop: `1px solid ${BORDER}` }}>
+          <button className="pc-danger" onClick={newScene}>New</button>
+          <button onClick={() => importInputRef.current?.click()}>Import</button>
+          <button onClick={exportScene}>Export</button>
+          <input
+            ref={importInputRef}
+            type="file"
+            accept=".json,application/json"
+            style={{ display: "none" }}
+            onChange={(event) => {
+              const file = event.target.files?.[0];
+              if (file) importSceneFile(file);
+              event.currentTarget.value = "";
+            }}
+          />
+        </footer>
       </div>
 
       <div
@@ -2909,6 +3097,7 @@ export function App() {
         />
       </div>
       <div
+        className="pc-controls"
         style={{
           position: "fixed",
           bottom: 12,
@@ -2918,6 +3107,12 @@ export function App() {
         }}
       >
         <TimelineLanes
+          theme={{ panelBackground: BG, panelBorder: BORDER, text: TEXT, mutedText: MUTED, subtleText: FAINT, fontFamily: SANS }}
+          shotIcon={<IconVideo size={15} />}
+          dollyIcon={<IconTrack size={15} />}
+          extraLanes={extraLanes}
+          onExtraClipTiming={setExtraClip}
+          onCreateExtraClip={addExtraClip}
           shots={virtualCameras.map((vcam) => ({
             id: vcam.id,
             name: vcam.name,
@@ -2988,6 +3183,7 @@ export function App() {
           dampingFactor={0.08}
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
         />
+        <ActivatablesProvider registry={activatablesRegistry}>
         <Scene
           bezierPath={bezierPath}
           vertexPath={vertexPath}
@@ -2998,8 +3194,10 @@ export function App() {
           vertexPaths={vertexPaths}
           activeTimeline={timelineActive ? demoTimeline : null}
           timelinePlayerRef={timelinePlayerRef}
+          activationTracks={extraTracks.activationTracks}
+          audioTracks={extraTracks.audioTracks}
+          audioPlayer={audioPlayer}
           pathVersion={pathVersion}
-          speed={speed}
           debugPreview={debugPreview}
           playMode={playMode}
           debugFrustum={debugFrustum}
@@ -3069,6 +3267,7 @@ export function App() {
           onMove={movePointTarget}
           onTransformingChange={setIsTransforming}
         />
+        </ActivatablesProvider>
       </Canvas>
     </div>
   );

@@ -184,7 +184,9 @@ camera bodies for "view changes as you scroll". Consider a small reusable
 - Legacy migration: pre-RigDocument saved shows (old `SHOW_STORAGE_KEY`) do NOT migrate
   dolly moves into per-dolly runs (edge case; only affects saves made before this session's
   storage change). Shots/paths/targets still migrate.
-- Dolly `speed` is global (rig speed applied to all carts at document-assemble time); per-cart
-  speed would be more capable. `RigCartDefinition.speed` already supports it.
+- ~~Dolly `speed` is global~~ **DONE (demo).** Each dolly now carries its own free-run
+  `speed` (per-cart), authored via a per-dolly slider in the Dollies section and threaded
+  into each cart's `createPathCart({ speed })`. Uses `RigCartDefinition.speed`, which always
+  supported it; the demo previously collapsed it to one global value.
 - The demo `TrackingTargetDefinition` group variant isn't authored (`SceneTarget` excludes it);
   target groups (weighted multi-subject framing) are unimplemented in the demo UI.

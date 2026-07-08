@@ -23,9 +23,44 @@ import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },
-  move: { id: "move", name: "Dolly move" }
+  move: { id: "move", name: "Dolly move" },
+  extra: { id: "extra", name: "Clip" }
 };
 const SNAP_SECONDS = 0.25;
+// Cap the visible lane area so a tall show doesn't eat the editing viewport;
+// beyond this the lane block scrolls vertically. 48px time ruler + N×36 lanes.
+const MAX_VISIBLE_LANES = 3;
+const RULER_HEIGHT = 48;
+const LANE_HEIGHT = 36;
+
+/** A clip block on a generic extra lane (activation, audio, …). */
+export interface ExtraLaneClip {
+  id: string;
+  start: number;
+  end: number;
+  label?: string;
+}
+
+/**
+ * A host-defined lane rendered alongside the shot/dolly lanes: its own row of
+ * clip blocks the host can move/resize/create. Delete is left to the host (e.g.
+ * a side-panel editor), mirroring how dolly moves are deleted off-lane.
+ */
+export interface ExtraLane {
+  id: string;
+  name: string;
+  color: string;
+  icon?: ReactNode;
+  clips: ExtraLaneClip[];
+}
+
+const EXTRA_ID = (laneId: string, clipId: string): string => `x|${laneId}|${clipId}`;
+const parseExtraId = (actionId: string): { laneId: string; clipId: string } | null => {
+  if (!actionId.startsWith("x|")) return null;
+  const sep = actionId.indexOf("|", 2);
+  return sep < 0 ? null : { laneId: actionId.slice(2, sep), clipId: actionId.slice(sep + 1) };
+};
+const EXTRA_ROW = (laneId: string): string => `xrow|${laneId}`;
 
 export interface LaneShot {
   id: string;
@@ -133,6 +168,11 @@ export interface TimelineLanesProps {
   duration: number;
   driving: boolean;
   theme?: TimelineLanesTheme;
+  /** Left-rail icons; default to emoji when omitted. */
+  shotIcon?: ReactNode;
+  dollyIcon?: ReactNode;
+  /** Host-defined lanes (activation, audio, …), each with its own clip blocks. */
+  extraLanes?: ExtraLane[];
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
@@ -143,6 +183,9 @@ export interface TimelineLanesProps {
   /** A dolly run block was dragged/resized (ids are the cart and run). */
   onDollyRunTiming: (cartId: string, runId: string, start: number, end: number) => void;
   onCreateDollyRun: (cartId: string, timeSeconds: number) => void;
+  /** An extra-lane clip was dragged/resized, or a lane double-clicked to add one. */
+  onExtraClipTiming?: (laneId: string, clipId: string, start: number, end: number) => void;
+  onCreateExtraClip?: (laneId: string, timeSeconds: number) => void;
 }
 
 export function TimelineLanes({
@@ -154,6 +197,9 @@ export function TimelineLanes({
   duration,
   driving,
   theme,
+  shotIcon = "🎥",
+  dollyIcon = "🛤",
+  extraLanes = [],
   onShotTiming,
   onSelectShot,
   onSeek,
@@ -162,7 +208,9 @@ export function TimelineLanes({
   onCreateDolly,
   onCreatePath,
   onDollyRunTiming,
-  onCreateDollyRun
+  onCreateDollyRun,
+  onExtraClipTiming,
+  onCreateExtraClip
 }: TimelineLanesProps) {
   const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
@@ -192,7 +240,10 @@ export function TimelineLanes({
   const timingKey =
     shots.map((shot) => `${shot.id}:${shot.start}:${shot.end}`).join("|") +
     dollies.map((dolly) => `${dolly.id}:${dolly.name}`).join(",") +
-    dollyMoves.map((move) => `${move.shotId}:${move.dollyId}:${move.start}:${move.end}`).join("|");
+    dollyMoves.map((move) => `${move.shotId}:${move.dollyId}:${move.start}:${move.end}`).join("|") +
+    extraLanes
+      .map((lane) => `${lane.id}:${lane.color}:${lane.clips.map((c) => `${c.id}@${c.start}-${c.end}`).join(",")}`)
+      .join("|");
   // One lane per dolly (even with no runs), so the lane is always there to
   // double-click / right-click for the first run.
   const dollyLanes = useMemo(
@@ -229,6 +280,17 @@ export function TimelineLanes({
           movable: true,
           flexible: true
         }))
+      })),
+      ...extraLanes.map((lane) => ({
+        id: EXTRA_ROW(lane.id),
+        actions: lane.clips.map((clip) => ({
+          id: EXTRA_ID(lane.id, clip.id),
+          start: clip.start,
+          end: clip.end,
+          effectId: "extra",
+          movable: true,
+          flexible: true
+        }))
       }))
     ],
     // timingKey covers everything this memo reads except names, which render
@@ -237,6 +299,10 @@ export function TimelineLanes({
     [timingKey]
   );
   const moveLabels = new Map(dollyMoves.map((move) => [`move-${move.shotId}`, move.label]));
+  const extraActionStyle = new Map<string, { color: string; label: string }>();
+  for (const lane of extraLanes) {
+    for (const clip of lane.clips) extraActionStyle.set(EXTRA_ID(lane.id, clip.id), { color: lane.color, label: clip.label ?? "" });
+  }
 
   // Blend zones: fraction of each clip's width overlapped by the previous
   // clip (in start order), Cinemachine's blend-in region.
@@ -300,7 +366,7 @@ export function TimelineLanes({
           width: "100%",
           boxSizing: "border-box",
           padding: 10,
-          borderRadius: 8,
+          borderRadius: 0,
           background: t.panelBackground,
           color: t.text,
           fontFamily: t.fontFamily,
@@ -358,10 +424,23 @@ export function TimelineLanes({
         </div>
 
         {(
-          <div style={{ display: "flex", alignItems: "stretch", gap: 4 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "flex-start",
+              gap: 4,
+              maxHeight: RULER_HEIGHT + MAX_VISIBLE_LANES * LANE_HEIGHT,
+              overflowY: "auto",
+              overflowX: "hidden"
+            }}
+          >
             <div
               style={{
                 width: 22,
+                flex: "0 0 auto",
+                // Match the editor's full content height so the rail scrolls in
+                // lockstep with the rows (the leading gap aligns with the ruler).
+                height: RULER_HEIGHT + (1 + dollyLanes.length + extraLanes.length) * LANE_HEIGHT,
                 display: "flex",
                 flexDirection: "column",
                 justifyContent: "flex-end",
@@ -369,16 +448,25 @@ export function TimelineLanes({
                 textAlign: "center"
               }}
             >
-              <div style={{ height: 36, lineHeight: "36px" }} title="Shot track">
-                🎥
+              <div style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }} title="Shot track">
+                {shotIcon}
               </div>
               {dollyLanes.map(([dollyId, lane]) => (
                 <div
                   key={dollyId}
-                  style={{ height: 36, lineHeight: "36px" }}
+                  style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}
                   title={`${lane.name} moves`}
                 >
-                  🛤
+                  {dollyIcon}
+                </div>
+              ))}
+              {extraLanes.map((lane) => (
+                <div
+                  key={lane.id}
+                  style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}
+                  title={lane.name}
+                >
+                  {lane.icon ?? "▮"}
                 </div>
               ))}
             </div>
@@ -391,24 +479,30 @@ export function TimelineLanes({
           scaleWidth={110}
           scaleSplitCount={5}
           startLeft={12}
-          rowHeight={36}
+          rowHeight={LANE_HEIGHT}
           autoScroll
           dragLine
-          style={{ width: "100%", height: 48 + (1 + dollyLanes.length) * 36 }}
+          style={{ width: "100%", height: RULER_HEIGHT + (1 + dollyLanes.length + extraLanes.length) * LANE_HEIGHT }}
           onActionMoving={({ action, start, end }) =>
-            // Only shot clips obey Cinemachine's no-containment rule; dolly runs move freely.
-            action.id.startsWith("move-") ? undefined : wouldFullyContain(action.id, start, end) ? false : undefined
+            // Only shot clips obey Cinemachine's no-containment rule; dolly runs + extra clips move freely.
+            action.id.startsWith("move-") || action.id.startsWith("x|")
+              ? undefined
+              : wouldFullyContain(action.id, start, end) ? false : undefined
           }
           onActionResizing={({ action, start, end }) =>
-            action.id.startsWith("move-") ? undefined : wouldFullyContain(action.id, start, end) ? false : undefined
+            action.id.startsWith("move-") || action.id.startsWith("x|")
+              ? undefined
+              : wouldFullyContain(action.id, start, end) ? false : undefined
           }
           onClickRow={(_event, { time }) => onSeek(time)}
           onDoubleClickRow={(_event, { row, time }) => {
             if (row.id === "shot-track") onCreateShot("cart", time);
             else if (row.id.startsWith("dolly-")) onCreateDollyRun(row.id.slice(6), time);
+            else if (row.id.startsWith("xrow|")) onCreateExtraClip?.(row.id.slice(5), time);
           }}
           onContextMenuRow={(event, { row, time }) => {
             event.preventDefault();
+            if (row.id.startsWith("xrow|")) return; // extra lanes: create by double-click, delete off-lane
             setContextMenu({
               x: event.clientX,
               y: event.clientY,
@@ -419,6 +513,7 @@ export function TimelineLanes({
           }}
           onContextMenuAction={(event, { row, time }) => {
             event.preventDefault();
+            if (row.id.startsWith("xrow|")) return;
             setContextMenu({
               x: event.clientX,
               y: event.clientY,
@@ -433,6 +528,11 @@ export function TimelineLanes({
               for (const action of row.actions) {
                 const start = Math.max(0, Math.round(action.start / SNAP_SECONDS) * SNAP_SECONDS);
                 const end = Math.max(start + SNAP_SECONDS, Math.round(action.end / SNAP_SECONDS) * SNAP_SECONDS);
+                const extra = parseExtraId(action.id);
+                if (extra) {
+                  onExtraClipTiming?.(extra.laneId, extra.clipId, start, end);
+                  continue;
+                }
                 if (cartId && action.id.startsWith("move-")) {
                   const move = dollyMoves.find((m) => `move-${m.shotId}` === action.id);
                   if (move && (Math.abs(start - move.start) > 1e-6 || Math.abs(end - move.end) > 1e-6)) {
@@ -448,8 +548,8 @@ export function TimelineLanes({
             }
           }}
           onClickAction={(_event, { action }) => {
-            // Dolly runs (move-*) aren't shots; clicking one just seeks (via the row).
-            if (!action.id.startsWith("move-")) onSelectShot(action.id);
+            // Only shot clips select; dolly runs + extra clips just seek (via the row).
+            if (!action.id.startsWith("move-") && !action.id.startsWith("x|")) onSelectShot(action.id);
           }}
           onClickTimeArea={(time) => {
             onSeek(time);
@@ -457,6 +557,28 @@ export function TimelineLanes({
           }}
           onCursorDrag={onSeek}
           getActionRender={(action) => {
+            if (action.effectId === "extra") {
+              const style = extraActionStyle.get(action.id);
+              return (
+                <div
+                  style={{
+                    height: "100%",
+                    display: "flex",
+                    alignItems: "center",
+                    padding: "0 8px",
+                    fontSize: 10,
+                    color: "#e2e8f0",
+                    whiteSpace: "nowrap",
+                    overflow: "hidden",
+                    textOverflow: "ellipsis",
+                    borderRadius: 4,
+                    background: style?.color ?? "rgba(148,163,184,0.4)"
+                  }}
+                >
+                  {style?.label ?? ""}
+                </div>
+              );
+            }
             if (action.effectId === "move") {
               const ownerSelected = action.id === `move-${selectedShotId}`;
               return (
