@@ -77,6 +77,8 @@ import {
   type ExtraTracks
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
+import { ensurePeaks } from "./audio-peaks";
+import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { ActivationTracksEditor, AudioTracksEditor } from "./extra-tracks-panel";
 import { Section as SettingsSection, CollapsibleGroup, panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
 import { IconEye, IconEyeOff, IconVideo, IconDirector, IconTrack, IconVolume } from "./icons";
@@ -116,6 +118,12 @@ const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
 // Activation/audio tracks persist in a demo sidecar (not the portable RigDocument,
 // whose Timeline union is closed to camera/cart/event).
 const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
+// Bundled sample voices under public/audio (pretend-uploaded assets); new audio
+// clips cycle through these so the waveform preview has real content to draw.
+const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3"];
+// Dolly moves are authored with easeInOut (see scene-io.ts), so every move shares the
+// same accel-decel speed profile; compute the normalized curve once.
+const DOLLY_SPEED_SERIES = dollyMoveSpeedSeries("easeInOut");
 
 function loadExtraTracks(): ExtraTracks {
   try {
@@ -2187,6 +2195,8 @@ export function App() {
   const [virtualCameraBlendDuration, setVirtualCameraBlendDuration] = useState(1.2);
   const [virtualCameraTransitionProgress, setVirtualCameraTransitionProgress] = useState(1);
   const [useWorldSpaceGizmo, setUseWorldSpaceGizmo] = useState(false);
+  // Bumped when a lazily-decoded waveform finishes, so audio clips repaint with peaks.
+  const [, setPeaksTick] = useState(0);
   const [pathStyle, setPathStyle] = useState<"line" | "rail">("rail");
   const [isTransforming, setIsTransforming] = useState(false);
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
@@ -2664,7 +2674,16 @@ export function App() {
       name: track.name ?? "Audio",
       color: "rgba(167, 139, 250, 0.6)",
       icon: <IconVolume size={14} />,
-      clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.start + c.duration, label: c.src }))
+      clips: track.clips.map((c) => {
+        const peaks = c.peaks ?? ensurePeaks(c.src, () => setPeaksTick((t) => t + 1));
+        return {
+          id: c.id,
+          start: c.start,
+          end: c.start + c.duration,
+          label: c.src,
+          ...(peaks && { series: { kind: "envelope", points: peaks } as const })
+        };
+      })
     }))
   ];
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
@@ -2701,7 +2720,9 @@ export function App() {
       setExtraTracks((prev) => ({
         ...prev,
         audioTracks: prev.audioTracks.map((t) =>
-          t.id === trackId ? { ...t, clips: [...t.clips, { id: newClipId(), src: "tone:440", start, duration: 4, gain: 1 }] } : t
+          t.id === trackId
+            ? { ...t, clips: [...t.clips, { id: newClipId(), src: SAMPLE_AUDIO[t.clips.length % SAMPLE_AUDIO.length]!, start, duration: 4, gain: 1 }] }
+            : t
         )
       }));
     }
@@ -3154,7 +3175,9 @@ export function App() {
               dollyName: dollies.find((dolly) => dolly.id === cartId)?.name ?? cartId,
               start: run.start,
               end: run.end,
-              label: `${run.fromT.toFixed(1)} → ${run.toT.toFixed(1)}`
+              label: `${run.fromT.toFixed(1)} → ${run.toT.toFixed(1)}`,
+              // Speed profile only when the move actually travels.
+              ...(run.fromT !== run.toT && { series: DOLLY_SPEED_SERIES })
             }))
           )}
           selectedShotId={selectedVirtualCameraId}

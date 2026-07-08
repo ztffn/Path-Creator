@@ -20,6 +20,8 @@ import {
   type ReactNode
 } from "react";
 import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
+import { BlockSeries, type BlockSeriesData } from "./block-series";
+export { BlockSeries, type BlockSeriesData, type BlockSeriesKind } from "./block-series";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },
@@ -39,6 +41,8 @@ export interface ExtraLaneClip {
   start: number;
   end: number;
   label?: string;
+  /** Optional sparkline drawn behind the label (waveform, transform curve, …). */
+  series?: BlockSeriesData;
 }
 
 /**
@@ -77,6 +81,8 @@ export interface LaneDollyMove {
   start: number;
   end: number;
   label: string;
+  /** Optional speed/transform sparkline drawn behind the label. */
+  series?: BlockSeriesData;
 }
 
 /**
@@ -299,9 +305,17 @@ export function TimelineLanes({
     [timingKey]
   );
   const moveLabels = new Map(dollyMoves.map((move) => [`move-${move.shotId}`, move.label]));
-  const extraActionStyle = new Map<string, { color: string; label: string }>();
+  const moveSeries = new Map<string, BlockSeriesData>(
+    dollyMoves.flatMap((move) => (move.series ? [[`move-${move.shotId}`, move.series] as [string, BlockSeriesData]] : []))
+  );
+  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData }>();
   for (const lane of extraLanes) {
-    for (const clip of lane.clips) extraActionStyle.set(EXTRA_ID(lane.id, clip.id), { color: lane.color, label: clip.label ?? "" });
+    for (const clip of lane.clips)
+      extraActionStyle.set(EXTRA_ID(lane.id, clip.id), {
+        color: lane.color,
+        label: clip.label ?? "",
+        ...(clip.series && { series: clip.series })
+      });
   }
 
   // Blend zones: fraction of each clip's width overlapped by the previous
@@ -562,6 +576,7 @@ export function TimelineLanes({
               return (
                 <div
                   style={{
+                    position: "relative",
                     height: "100%",
                     display: "flex",
                     alignItems: "center",
@@ -575,15 +590,20 @@ export function TimelineLanes({
                     background: style?.color ?? "rgba(148,163,184,0.4)"
                   }}
                 >
-                  {style?.label ?? ""}
+                  {style?.series ? <BlockSeries data={style.series} color="rgba(255,255,255,0.32)" /> : null}
+                  <span style={{ position: "relative", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {style?.label ?? ""}
+                  </span>
                 </div>
               );
             }
             if (action.effectId === "move") {
               const ownerSelected = action.id === `move-${selectedShotId}`;
+              const series = moveSeries.get(action.id);
               return (
                 <div
                   style={{
+                    position: "relative",
                     height: "100%",
                     display: "flex",
                     alignItems: "center",
@@ -598,7 +618,10 @@ export function TimelineLanes({
                     border: `1px dashed ${ownerSelected ? t.moveSelectedBorder : t.moveBorder}`
                   }}
                 >
-                  {moveLabels.get(action.id) ?? "move"}
+                  {series ? <BlockSeries data={series} color={ownerSelected ? t.moveSelectedBorder : t.moveBorder} /> : null}
+                  <span style={{ position: "relative", overflow: "hidden", textOverflow: "ellipsis" }}>
+                    {moveLabels.get(action.id) ?? "move"}
+                  </span>
                 </div>
               );
             }

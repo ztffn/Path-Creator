@@ -33,6 +33,8 @@ export interface AudioClip {
   /** 0..1 (default 1). */
   gain?: number;
   loop?: boolean;
+  /** Precomputed waveform envelope (flat [min,max,…], -1..1). Set at import; else derived lazily. */
+  peaks?: number[];
 }
 
 export interface AudioTrack {
