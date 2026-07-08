@@ -19,6 +19,8 @@ npm install react @react-three/fiber
 - `@huma/path-creator/core`
 - `@huma/path-creator/three`
 - `@huma/path-creator/r3f`
+- `@huma/path-creator/timeline` — headless timeline model + player (`buildShowTimeline`, `createTimelinePlayer`, `evaluateTimeline`, `seekTimelinePlayer`)
+- `@huma/path-creator/timeline-ui` — `TimelineLanes`, a themeable DOM multilane editor (renderer-agnostic)
 
 ## Core Quick Start
 
@@ -173,6 +175,46 @@ function frame(camera: PerspectiveCamera, target: Vec3, railUp: Vec3, deltaSecon
 Screen coordinates are Cinemachine-style normalized coordinates: `{ x: 0, y: 0 }`
 is the viewport center, positive `x` moves right, and positive `y` moves up. The
 dead/soft/hard zones are expressed as normalized viewport width/height.
+
+## Timeline UI Example
+
+`TimelineLanes` (`@huma/path-creator/timeline-ui`) is a DOM (renderer-agnostic)
+multilane editor for shot and dolly lanes, plus host-defined `extraLanes` for
+anything else (activation, audio, …). It is fully host-driven: the host owns the
+data and selection, supplies a `theme` and left-rail icons, and receives edits via
+callbacks. Selection is bidirectional — pass `selectedShotId`/`selectedLaneId` in,
+handle `onSelectShot`/`onSelectLane` out.
+
+```tsx
+import { TimelineLanes } from "@huma/path-creator/timeline-ui";
+
+<TimelineLanes
+  shots={shots}
+  dollies={dollies}
+  dollyMoves={dollyMoves}
+  duration={timeline.duration}
+  playerRef={playerRef}
+  driving={playing}
+  theme={{ panelBackground: "#101820", text: "#e8eef5", fontFamily: "system-ui" }}
+  shotIcon={<CameraIcon />}
+  dollyIcon={<TrackIcon />}
+  // Host-defined lanes; each id is opaque to the editor and echoed back in callbacks.
+  extraLanes={[{ id: "aud:voice", name: "Voice", color: "rgba(167,139,250,0.6)", icon: <AudioIcon />, clips }]}
+  // Selection (bidirectional):
+  selectedShotId={selectedShotId}
+  onSelectShot={(shotId) => select(shotId)}
+  selectedLaneId={selectedLaneId}
+  onSelectLane={(laneId) => selectLane(laneId)}
+  // Edits route back to the host to mutate its own data:
+  onShotTiming={onShotTiming}
+  onExtraClipTiming={onExtraClipTiming}
+  onCreateExtraClip={onCreateExtraClip}
+  onSeek={onSeek}
+/>;
+```
+
+Deletion is intentionally left off-lane (a host side-panel/inspector), mirroring
+how dolly moves are removed — the lane editor only creates, moves, and resizes.
 
 ## Tested Coverage
 

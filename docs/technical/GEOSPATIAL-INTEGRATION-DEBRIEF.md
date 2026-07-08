@@ -191,6 +191,14 @@ PiP/frustum preview needs P0's WebGPU-safe line/gizmo, and (b) de-risk the
 boundary, or plan a lighter in-house lane UI per `ROADMAP.md` F3).
 - Accept: a host mounts multi-vcam/cart lanes with a theme and no WebGPU concern
   for the lanes; documented integration.
+- **Status (2026-07-08):** the host-driven surface has shipped — `theme`, host
+  left-rail icons (`shotIcon`/`dollyIcon`/lane `icon`), host-defined `extraLanes`
+  with clip create/move/resize callbacks, and bidirectional selection
+  (`selectedShotId`/`selectedLaneId` + `onSelectShot`/`onSelectLane`); documented in
+  the package README ("Timeline UI Example"). Proven in `examples/minimal-r3f-demo`
+  (activation + audio lanes wired to the demo's unified selection). Remaining:
+  de-risk the `@xzdarcy` + `react-virtualized` dependency (pin/wrap or the lighter
+  in-house lane per `ROADMAP.md` F3), and the optional in-canvas PiP still needs P0.
 
 ### P3 — Distribution
 
