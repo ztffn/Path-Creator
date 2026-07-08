@@ -79,9 +79,10 @@ import {
 import { AudioTrackPlayer } from "./audio-player";
 import { ensurePeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
-import { ActivationTracksEditor, AudioTracksEditor } from "./extra-tracks-panel";
-import { Section as SettingsSection, CollapsibleGroup, panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
-import { IconEye, IconEyeOff, IconVideo, IconDirector, IconTrack, IconVolume } from "./icons";
+import { Hierarchy } from "./hierarchy";
+import { Inspector } from "./inspector";
+import { panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
+import { IconEye, IconVideo, IconTrack, IconVolume } from "./icons";
 import { isSelected, selectedIdOf, type EntityKind, type Selection } from "./selection";
 import {
   DEFAULT_COMPOSER_SETTINGS,
@@ -93,6 +94,7 @@ import {
   toVcamView,
   vcamDefFromView,
   type DemoNoisePreset,
+  type DemoShotPatch,
   type DemoVirtualCamera,
   type DollyRun,
   type EditorVcam,
@@ -148,26 +150,6 @@ const INITIAL_DOLLIES: RigCartDefinition[] = [FALLBACK_DOLLY];
 const DOLLY_PIP_ASPECT = 16 / 9;
 const DOLLY_PIP_MARGIN = 16;
 
-type DemoShotPatch = Partial<
-  Pick<
-    DemoVirtualCamera,
-    | "trackTargetId"
-    | "noisePreset"
-    | "dutchDeg"
-    | "shotStart"
-    | "shotEnd"
-    | "cartOffset"
-    | "cartId"
-    | "orbitTargetId"
-    | "orbitAzimuthDeg"
-    | "orbitElevationDeg"
-    | "orbitRadius"
-    | "orbitBinding"
-    | "orbitAutoDegPerSec"
-    | "overrideControl"
-  >
->;
-
 // Fallbacks for a vcam whose sidecar entry is missing (shouldn't happen, but
 // keeps the derived view total). Stable identities, so hoisted out of render.
 const DEFAULT_EDITOR_VCAM: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
@@ -215,11 +197,6 @@ function createDefaultBezier(): BezierPath {
       controlMode: ControlMode.Automatic
     }
   );
-}
-
-function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
-  const lens = snapshot.lens?.fov ? `${snapshot.lens.fov.toFixed(0)}deg` : "lens";
-  return `${snapshot.position.x.toFixed(1)}, ${snapshot.position.y.toFixed(1)}, ${snapshot.position.z.toFixed(1)} - ${lens}`;
 }
 
 function getSnapshotMatrix(snapshot: VirtualCameraSnapshot): Matrix4 {
@@ -333,18 +310,6 @@ function DemoProps({ selectedId, onSelect }: { selectedId?: string | null; onSel
       ))}
     </>
   );
-}
-
-function shotRowLabelStyle(columns: string): CSSProperties {
-  return {
-    gridColumn: "1 / -1",
-    display: "grid",
-    gridTemplateColumns: columns,
-    alignItems: "center",
-    gap: 6,
-    fontSize: 11,
-    color: "#94a3b8"
-  };
 }
 
 // Targets are cyan across the demo (look-target ball, point targets). Point
@@ -1169,534 +1134,6 @@ function DollyPipZone({
   );
 }
 
-
-function NumberSlider({
-  label,
-  value,
-  min,
-  max,
-  step,
-  unit,
-  onChange
-}: {
-  label: string;
-  value: number;
-  min: number;
-  max: number;
-  step: number;
-  unit?: string;
-  onChange: (value: number) => void;
-}) {
-  return (
-    <label
-      style={{
-        display: "grid",
-        gridTemplateColumns: "minmax(72px, 96px) minmax(48px, 1fr) 52px",
-        alignItems: "center",
-        gap: 8,
-        fontSize: 12,
-        minWidth: 0
-      }}
-    >
-      <span style={{ overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
-        {label}
-      </span>
-      <input
-        type="range"
-        min={min}
-        max={max}
-        step={step}
-        value={value}
-        style={{ width: "100%", minWidth: 0 }}
-        onChange={(event) => onChange(Number(event.target.value))}
-      />
-      <input
-        type="number"
-        min={min}
-        max={max}
-        step={step}
-        value={Number.isInteger(value) ? value : Number(value.toFixed(2))}
-        onChange={(event) => onChange(Number(event.target.value))}
-        style={{ width: "100%", boxSizing: "border-box" }}
-        aria-label={`${label}${unit ? ` ${unit}` : ""}`}
-      />
-    </label>
-  );
-}
-
-// Per-vcam screen-composer framing editor: screen position, dead/soft/hard
-// zones, damping, and lookahead. Edits VirtualCameraDefinition.settings.
-function RigSettingsPanel({
-  settings,
-  noisePreset,
-  dutchDeg,
-  onChange,
-  onNoisePresetChange,
-  onDutchChange,
-  onClose,
-  onReset
-}: {
-  settings: ComposerSettings;
-  noisePreset: DemoNoisePreset;
-  dutchDeg: number;
-  onChange: (next: ComposerSettings) => void;
-  onNoisePresetChange: (preset: DemoNoisePreset) => void;
-  onDutchChange: (deg: number) => void;
-  onClose: () => void;
-  onReset: () => void;
-}) {
-  function setValue<K extends keyof ComposerSettings>(key: K, value: ComposerSettings[K]): void {
-    onChange({ ...settings, [key]: value });
-  }
-
-  return (
-    <div
-      style={{
-        width: "100%",
-        boxSizing: "border-box",
-        padding: 10,
-        borderRadius: 6,
-        background: "rgba(10, 16, 28, 0.92)",
-        border: "1px solid rgba(148, 163, 184, 0.22)"
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: 8 }}>
-        <div style={{ fontSize: 12, fontWeight: 800 }}>Screen composer</div>
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={onReset}>Reset</button>
-          <button onClick={onClose}>Close</button>
-        </div>
-      </div>
-
-      <SettingsSection title="Camera">
-        <label style={{ display: "grid", gridTemplateColumns: "96px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-          <span>Noise</span>
-          <select value={noisePreset} onChange={(event) => onNoisePresetChange(event.target.value as DemoNoisePreset)}>
-            <option value="off">Off</option>
-            <option value="subtle">Subtle handheld</option>
-            <option value="rough">Rough handheld</option>
-          </select>
-        </label>
-        <NumberSlider label="Dutch" value={dutchDeg} min={-45} max={45} step={1} unit="°" onChange={onDutchChange} />
-      </SettingsSection>
-
-      <SettingsSection title="Screen">
-        <button onClick={() => onChange({ ...settings, screenX: 0, screenY: 0 })}>Center screen</button>
-        <NumberSlider label="Screen X" value={settings.screenX} min={-0.4} max={0.4} step={0.01} onChange={(v) => setValue("screenX", v)} />
-        <NumberSlider label="Screen Y" value={settings.screenY} min={-0.4} max={0.4} step={0.01} onChange={(v) => setValue("screenY", v)} />
-      </SettingsSection>
-
-      <SettingsSection title="Zones">
-        <NumberSlider label="Dead W" value={settings.deadWidth} min={0} max={1} step={0.01} onChange={(v) => setValue("deadWidth", v)} />
-        <NumberSlider label="Dead H" value={settings.deadHeight} min={0} max={1} step={0.01} onChange={(v) => setValue("deadHeight", v)} />
-        <NumberSlider label="Soft W" value={settings.softWidth} min={0} max={1} step={0.01} onChange={(v) => setValue("softWidth", v)} />
-        <NumberSlider label="Soft H" value={settings.softHeight} min={0} max={1} step={0.01} onChange={(v) => setValue("softHeight", v)} />
-      </SettingsSection>
-
-      <SettingsSection title="Damping">
-        <NumberSlider label="Horizontal" value={settings.dampingX} min={0} max={20} step={0.1} onChange={(v) => setValue("dampingX", v)} />
-        <NumberSlider label="Vertical" value={settings.dampingY} min={0} max={20} step={0.1} onChange={(v) => setValue("dampingY", v)} />
-      </SettingsSection>
-
-      <SettingsSection title="Lookahead">
-        <NumberSlider label="Time" value={settings.lookaheadTime} min={0} max={1.5} step={0.01} unit="s" onChange={(v) => setValue("lookaheadTime", v)} />
-        <NumberSlider label="Smoothing" value={settings.lookaheadSmoothing} min={0} max={20} step={0.1} onChange={(v) => setValue("lookaheadSmoothing", v)} />
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={settings.lookaheadIgnoreY}
-            onChange={(event) => setValue("lookaheadIgnoreY", event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Ignore Y</span>
-        </label>
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={settings.centerOnActivate}
-            onChange={(event) => setValue("centerOnActivate", event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Center on activate</span>
-        </label>
-      </SettingsSection>
-    </div>
-  );
-}
-
-function VirtualCameraPanel({
-  cameras,
-  activeId,
-  selectedId,
-  blendCurve,
-  blendDuration,
-  transitionProgress,
-  onBlendCurveChange,
-  onBlendDurationChange,
-  onCapture,
-  onAddCart,
-  onAddOrbit,
-  onSelect,
-  onActivate,
-  onDelete,
-  onRelease,
-  trackTargets,
-  onUpdateShot,
-  onUpdateComposer,
-  dollies
-}: {
-  cameras: DemoVirtualCamera[];
-  activeId: string | null;
-  selectedId: string | null;
-  blendCurve: VirtualCameraBlendCurve;
-  blendDuration: number;
-  transitionProgress: number;
-  onBlendCurveChange: (curve: VirtualCameraBlendCurve) => void;
-  onBlendDurationChange: (duration: number) => void;
-  onCapture: () => void;
-  onAddCart: () => void;
-  onAddOrbit: () => void;
-  onSelect: (id: string) => void;
-  onActivate: (id: string) => void;
-  onDelete: (id: string) => void;
-  onRelease: () => void;
-  trackTargets: RegisteredTarget[];
-  onUpdateShot: (id: string, patch: DemoShotPatch) => void;
-  onUpdateComposer: (id: string, settings: ComposerSettings) => void;
-  dollies: RigCartDefinition[];
-}) {
-  const [composerOpenId, setComposerOpenId] = useState<string | null>(null);
-  return (
-    <div
-      className="pc-panel"
-      style={{
-        width: "100%",
-        boxSizing: "border-box",
-        padding: 12,
-        borderRadius: 0,
-        background: BG,
-        boxShadow: "0 24px 60px rgba(0, 0, 0, 0.45)",
-        border: `1px solid ${BORDER}`
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
-        <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>Virtual Cameras</div>
-        {activeId ? (
-          <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-            <span style={{ fontSize: 11, color: "#22c55e" }}>
-              Live: {cameras.find((camera) => camera.id === activeId)?.name ?? "Camera"}
-            </span>
-            <button onClick={onRelease}>Release</button>
-          </div>
-        ) : null}
-      </div>
-
-      <SettingsSection title="Cameras">
-        <div style={{ display: "flex", gap: 6 }}>
-          <button onClick={onCapture}>Add VCam (from viewport)</button>
-          <button onClick={onAddCart}>Add Cart VCam</button>
-          <button onClick={onAddOrbit}>Add Orbit VCam</button>
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title="Blend">
-        <label style={{ display: "grid", gridTemplateColumns: "96px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-          <span>Curve</span>
-          <select
-            value={blendCurve}
-            onChange={(event) => onBlendCurveChange(event.target.value as VirtualCameraBlendCurve)}
-          >
-            <option value="cut">Cut</option>
-            <option value="easeInOut">Ease In Out</option>
-            <option value="easeIn">Ease In</option>
-            <option value="easeOut">Ease Out</option>
-            <option value="hardIn">Hard In</option>
-            <option value="hardOut">Hard Out</option>
-            <option value="linear">Linear</option>
-          </select>
-        </label>
-        <NumberSlider
-          label="Duration"
-          value={blendDuration}
-          min={0}
-          max={5}
-          step={0.1}
-          unit="s"
-          onChange={onBlendDurationChange}
-        />
-        <div
-          style={{
-            height: 6,
-            borderRadius: 999,
-            background: "rgba(148, 163, 184, 0.2)",
-            overflow: "hidden"
-          }}
-        >
-          <div
-            style={{
-              width: `${Math.round(transitionProgress * 100)}%`,
-              height: "100%",
-              background: "#22c55e"
-            }}
-          />
-        </div>
-      </SettingsSection>
-
-      <SettingsSection title="Shots">
-        {cameras.length === 0 ? (
-          <div style={{ fontSize: 12, color: "#94a3b8" }}>
-            Capture a rig/viewport camera, or add a cart vcam.
-          </div>
-        ) : (
-          <div style={{ display: "grid", gap: 8 }}>
-            {cameras.map((camera) => {
-              const isActive = camera.id === activeId;
-              const isSelected = camera.id === selectedId;
-              return (
-                <div
-                  key={camera.id}
-                  onClick={() => onSelect(camera.id)}
-                  style={{
-                    display: "grid",
-                    gridTemplateColumns: "1fr auto auto",
-                    minWidth: 0,
-                    gap: 6,
-                    alignItems: "center",
-                    padding: 8,
-                    borderRadius: 6,
-                    cursor: "pointer",
-                    background: isActive
-                      ? "rgba(34, 197, 94, 0.16)"
-                      : isSelected
-                        ? "rgba(249, 115, 22, 0.16)"
-                        : "rgba(15, 23, 42, 0.6)",
-                    border: `1px solid ${
-                      isActive
-                        ? "rgba(34, 197, 94, 0.54)"
-                        : isSelected
-                          ? "rgba(249, 115, 22, 0.58)"
-                          : "rgba(148, 163, 184, 0.18)"
-                    }`
-                  }}
-                >
-                  <div style={{ minWidth: 0 }}>
-                    <div style={{ fontSize: 12, fontWeight: 800 }}>{camera.name}</div>
-                    <div style={{ fontSize: 11, color: "#94a3b8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
-                      {camera.bodyType === "cart"
-                        ? "rides the rail cart"
-                        : getSnapshotLabel(camera.snapshot)}
-                    </div>
-                  </div>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onActivate(camera.id);
-                    }}
-                  >
-                    {isActive ? "Reapply" : "Go"}
-                  </button>
-                  <button
-                    onClick={(event) => {
-                      event.stopPropagation();
-                      onDelete(camera.id);
-                    }}
-                  >
-                    Del
-                  </button>
-                  <label
-                    onClick={(event) => event.stopPropagation()}
-                    style={shotRowLabelStyle("48px 1fr")}
-                  >
-                    <span>Track</span>
-                    <select
-                      value={camera.trackTargetId ?? ""}
-                      onChange={(event) =>
-                        onUpdateShot(camera.id, { trackTargetId: event.target.value || null })
-                      }
-                    >
-                      <option value="">Body aim (none)</option>
-                      {trackTargets.map((target) => (
-                        <option key={target.id} value={target.id}>
-                          {target.name}
-                        </option>
-                      ))}
-                    </select>
-                  </label>
-                  <div
-                    onClick={(event) => event.stopPropagation()}
-                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
-                  >
-                    <button
-                      style={{ fontSize: 11, textAlign: "left" }}
-                      onClick={() => setComposerOpenId(composerOpenId === camera.id ? null : camera.id)}
-                    >
-                      {composerOpenId === camera.id ? "▾ Composer settings" : "▸ Composer settings"}
-                    </button>
-                    {composerOpenId === camera.id ? (
-                      <RigSettingsPanel
-                        settings={camera.composerSettings}
-                        noisePreset={camera.noisePreset}
-                        dutchDeg={camera.dutchDeg}
-                        onChange={(settings) => onUpdateComposer(camera.id, settings)}
-                        onNoisePresetChange={(noisePreset) => onUpdateShot(camera.id, { noisePreset })}
-                        onDutchChange={(dutchDeg) => onUpdateShot(camera.id, { dutchDeg })}
-                        onClose={() => setComposerOpenId(null)}
-                        onReset={() => onUpdateComposer(camera.id, DEFAULT_COMPOSER_SETTINGS)}
-                      />
-                    ) : null}
-                  </div>
-                  {camera.bodyType === "cart" ? (
-                    <label
-                      onClick={(event) => event.stopPropagation()}
-                      title="Which dolly this camera rides; the dolly's motion is authored on its timeline lane"
-                      style={shotRowLabelStyle("48px 1fr")}
-                    >
-                      <span>Dolly</span>
-                      <select
-                        value={camera.cartId}
-                        onChange={(event) => onUpdateShot(camera.id, { cartId: event.target.value })}
-                      >
-                        {dollies.map((dolly) => (
-                          <option key={dolly.id} value={dolly.id}>
-                            {dolly.name}
-                          </option>
-                        ))}
-                      </select>
-                    </label>
-                  ) : null}
-                  {camera.bodyType === "orbit" ? (
-                    <div
-                      onClick={(event) => event.stopPropagation()}
-                      style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
-                    >
-                      <label style={shotRowLabelStyle("64px 1fr")} title="The target this camera orbits">
-                        <span>Orbit</span>
-                        <select
-                          value={camera.orbitTargetId}
-                          onChange={(event) => onUpdateShot(camera.id, { orbitTargetId: event.target.value })}
-                        >
-                          <option value="">(fixed origin)</option>
-                          {trackTargets.map((target) => (
-                            <option key={target.id} value={target.id}>
-                              {target.name}
-                            </option>
-                          ))}
-                        </select>
-                      </label>
-                      <label
-                        style={shotRowLabelStyle("64px 1fr")}
-                        title="World: compass-anchored (ignores target rotation). LockYaw: follows target heading, level horizon. Lock: welds to target (rolls with it)."
-                      >
-                        <span>Binding</span>
-                        <select
-                          value={camera.orbitBinding}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, {
-                              orbitBinding: event.target.value as DemoVirtualCamera["orbitBinding"]
-                            })
-                          }
-                        >
-                          <option value="world">World (compass-anchored)</option>
-                          <option value="lockYaw">Lock yaw (level horizon)</option>
-                          <option value="lock">Lock (welded)</option>
-                        </select>
-                      </label>
-                      <label style={shotRowLabelStyle("64px 1fr")}>
-                        <span>Azimuth</span>
-                        <input
-                          type="range"
-                          min={-180}
-                          max={180}
-                          step={1}
-                          value={camera.orbitAzimuthDeg}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, { orbitAzimuthDeg: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label style={shotRowLabelStyle("64px 1fr")}>
-                        <span>Elevation</span>
-                        <input
-                          type="range"
-                          min={-80}
-                          max={80}
-                          step={1}
-                          value={camera.orbitElevationDeg}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, { orbitElevationDeg: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label style={shotRowLabelStyle("64px 1fr")}>
-                        <span>Radius</span>
-                        <input
-                          type="range"
-                          min={0.5}
-                          max={20}
-                          step={0.1}
-                          value={camera.orbitRadius}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, { orbitRadius: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                      <label
-                        style={shotRowLabelStyle("64px 1fr")}
-                        title="Auto-orbit rate in degrees/second (0 holds a static angle)"
-                      >
-                        <span>Spin °/s</span>
-                        <input
-                          type="range"
-                          min={-90}
-                          max={90}
-                          step={1}
-                          value={camera.orbitAutoDegPerSec}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, { orbitAutoDegPerSec: Number(event.target.value) })
-                          }
-                        />
-                      </label>
-                    </div>
-                  ) : null}
-                  <div
-                    onClick={(event) => event.stopPropagation()}
-                    style={{ gridColumn: "1 / -1", display: "grid", gap: 6, minWidth: 0 }}
-                    title="How each axis responds to live piloting (drag/scroll the PiP while this shot is active)"
-                  >
-                    <CollapsibleGroup title="Manual control · LMB orbit / RMB pan / wheel dolly">
-                    {(["azimuth", "elevation", "pan", "dolly"] as const).map((axis) => (
-                      <label key={axis} style={shotRowLabelStyle("64px 1fr")}>
-                        <span style={{ textTransform: "capitalize" }}>{axis}</span>
-                        <select
-                          value={camera.overrideControl[axis]?.mode ?? "locked"}
-                          onChange={(event) =>
-                            onUpdateShot(camera.id, {
-                              overrideControl: {
-                                ...camera.overrideControl,
-                                [axis]:
-                                  event.target.value === "recenter"
-                                    ? { mode: "recenter", recenterWait: 1.5, recenterTime: 1 }
-                                    : { mode: event.target.value as CameraOverrideAxisMode }
-                              }
-                            })
-                          }
-                        >
-                          <option value="locked">Locked (coded only)</option>
-                          <option value="free">Free (override, holds)</option>
-                          <option value="recenter">Recenter (override, eases back)</option>
-                        </select>
-                      </label>
-                    ))}
-                    </CollapsibleGroup>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
-        )}
-      </SettingsSection>
-    </div>
-  );
-}
-
 export function App() {
   // The scene is a portable RigDocument. Load it if present; otherwise migrate a
   // pre-format show once (read here, rewritten in the new format on first save).
@@ -1864,6 +1301,13 @@ export function App() {
     select("target", id);
   }
 
+  // Hierarchy row → selection. A path row also becomes the editable path (loads
+  // its geometry + anchor sub-selection); every other kind just sets the atom.
+  function selectFromHierarchy(kind: EntityKind, id: string): void {
+    if (kind === "path") switchPath(id);
+    select(kind, id);
+  }
+
   function addPointTarget(): void {
     const id = `target-${Date.now()}`;
     setPointTargets((current) => [
@@ -1983,6 +1427,9 @@ export function App() {
   function deletePath(id: string): void {
     const remaining = paths.filter((path) => path.id !== id);
     setPaths(remaining);
+    if (isSelected(selection, "path", id)) {
+      setSelection(remaining[0] ? { kind: "path", id: remaining[0].id } : null);
+    }
     if (id === activePathId) {
       // Deleting the editable path: activate whatever remains, or clear the
       // editor entirely (empty world is valid).
@@ -2661,6 +2108,16 @@ export function App() {
   // id encodes the kind (act:/aud:) + track id; clip create/move routes back into
   // extraTracks. Delete stays in the side-panel editors, like dolly moves.
   const newClipId = (): string => `clip-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+  // Hierarchy "add audio track" affordance; the clip/gain/mute edits live in the
+  // Audio inspector, so a fresh track starts empty and selects itself.
+  function addAudioTrack(): void {
+    const id = `aud-${Date.now().toString(36)}`;
+    setExtraTracks((prev) => ({
+      ...prev,
+      audioTracks: [...prev.audioTracks, { id, name: `Audio ${prev.audioTracks.length + 1}`, clips: [], gain: 1 }]
+    }));
+    select("audio", id);
+  }
   const extraLanes = [
     ...extraTracks.activationTracks.map((track) => ({
       id: `act:${track.id}`,
@@ -2728,384 +2185,73 @@ export function App() {
     }
   };
 
+  // Inspector prop groups — resolve the selected entity per kind (null when absent)
+  // and its display name for the panel header. selectedVirtualCamera is derived above.
+  const selectedDolly = dollies.find((dolly) => dolly.id === selectedIdOf(selection, "dolly")) ?? null;
+  const selectedTargetEntity = pointTargets.find((target) => target.id === selectedPointTargetId) ?? null;
+  const selectedPathDef = paths.find((path) => path.id === selectedIdOf(selection, "path")) ?? null;
+  const selectedObject = activatables.find((object) => object.id === selectedIdOf(selection, "object")) ?? null;
+  const selectedAudioTrack = extraTracks.audioTracks.find((track) => track.id === selectedIdOf(selection, "audio")) ?? null;
+  const selectionName: string | null =
+    selection === null
+      ? null
+      : selection.kind === "scene"
+        ? "Scene"
+        : selection.kind === "path"
+          ? selectedPathDef?.name ?? null
+          : selection.kind === "dolly"
+            ? selectedDolly?.name ?? null
+            : selection.kind === "camera"
+              ? selectedVirtualCamera?.name ?? null
+              : selection.kind === "target"
+                ? selectedTargetEntity?.name ?? null
+                : selection.kind === "object"
+                  ? selectedObject?.name ?? null
+                  : selectedAudioTrack?.name ?? null;
+
   return (
     <div style={{ width: "100vw", height: "100vh" }}>
       <style>{panelGlobalCss}</style>
-      <div
-        className="pc-panel"
-        style={{
-          position: "fixed",
-          top: 12,
-          left: 12,
-          zIndex: 10,
-          width: 380,
-          maxHeight: "calc(100vh - 24px)",
-          display: "flex",
-          flexDirection: "column",
-          borderRadius: 0,
-          boxShadow: "0 24px 60px rgba(0, 0, 0, 0.45)",
-          border: `1px solid ${BORDER}`,
-          boxSizing: "border-box",
-          overflow: "hidden"
-        }}
-      >
-        <header style={{ padding: "12px 14px", borderBottom: `1px solid ${BORDER}` }}>
-          <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.02em" }}>Path Creator Demo</div>
-          <div style={{ fontSize: 11, color: MUTED, marginTop: 2 }}>
-            Edit spline, drive rigs, validate cameras
-          </div>
-        </header>
 
-        <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 14px 12px" }}>
-        <SettingsSection title="Path Editing">
-          {!bezierPath ? (
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>
-              No editable path. Add a path below (or right-click the timeline) to start editing.
-            </div>
-          ) : (
-          <>
-          {selectedAnchorScaleForUi !== null ? (
-            <div style={{ fontSize: 12, color: "#e2e8f0" }}>
-              Selected anchor scale: {selectedAnchorScaleForUi.toFixed(2)}
-            </div>
-          ) : (
-            <div style={{ fontSize: 12, color: "#94a3b8" }}>
-              Select an anchor to move, rotate, or scale it.
-            </div>
-          )}
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={useWorldSpaceGizmo}
-              onChange={(e) => setUseWorldSpaceGizmo(e.target.checked)}
-            />
-            <span style={{ marginLeft: 6 }}>World-space gizmo</span>
-          </label>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <button onClick={addAnchor}>Add Anchor</button>
-            <button onClick={insertAnchorAtSelectedSegment}>Insert Midpoint</button>
-            <button onClick={deleteSelectedAnchor}>Delete Anchor</button>
-            <button
-              onClick={() =>
-                mutatePath((p) => {
-                  p.autoSmooth();
-                })
-              }
-            >
-              Auto Smooth
-            </button>
-            <button onClick={() => mutatePath((p) => p.setClosed(!p.isClosed))}>
-              {bezierPath.isClosed ? "Open Path" : "Close Path"}
-            </button>
-            <button onClick={resetPath}>Reset Path</button>
-          </div>
-
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
-            <button onClick={savePath}>Save Path</button>
-            <button onClick={loadPath}>Load Path</button>
-          </div>
-
-          <label style={{ display: "grid", gridTemplateColumns: "112px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
-            <span>Control Mode</span>
-            <select
-              value={bezierPath.controlMode}
-              onChange={(e) => {
-                mutatePath((p) => p.setControlMode(e.target.value as ControlMode));
-              }}
-            >
-              <option value={ControlMode.Automatic}>Automatic</option>
-              <option value={ControlMode.Free}>Free</option>
-              <option value={ControlMode.Aligned}>Aligned</option>
-              <option value={ControlMode.Mirrored}>Mirrored</option>
-            </select>
-          </label>
-          </>
-          )}
-        </SettingsSection>
-
-        <SettingsSection title="Dollies">
-          <div style={{ display: "grid", gap: 4 }}>
-            {dollies.map((dolly) => (
-              <div key={dolly.id} style={{ display: "grid", gap: 3 }}>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
-                  <input
-                    type="text"
-                    value={dolly.name ?? ""}
-                    aria-label="Dolly name"
-                    onChange={(event) => updateDolly(dolly.id, { name: event.target.value })}
-                    style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
-                  />
-                  <select
-                    title="Which path this dolly rides"
-                    value={dolly.pathId}
-                    onChange={(event) => updateDolly(dolly.id, { pathId: event.target.value })}
-                  >
-                    {paths.map((path) => (
-                      <option key={path.id} value={path.id}>
-                        {path.name}
-                      </option>
-                    ))}
-                  </select>
-                  <select
-                    title="End-of-rail behavior for this dolly"
-                    value={dolly.endOfPathInstruction}
-                    onChange={(event) =>
-                      updateDolly(dolly.id, {
-                        endOfPathInstruction: event.target.value as EndOfPathInstruction
-                      })
-                    }
-                  >
-                    <option value={EndOfPathInstruction.Loop}>Loop</option>
-                    <option value={EndOfPathInstruction.Reverse}>Ping-pong</option>
-                    <option value={EndOfPathInstruction.Stop}>Stop</option>
-                  </select>
-                  <button onClick={() => deleteDolly(dolly.id)}>Del</button>
-                </div>
-                {/* Per-dolly free-run speed (used where a dolly has no move keyframes). */}
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, paddingLeft: 10, color: MUTED }}>
-                  <span style={{ width: 30 }}>speed</span>
-                  <input
-                    type="range"
-                    min={0.2}
-                    max={3}
-                    step={0.1}
-                    value={dolly.speed}
-                    title="Free-run speed for this dolly"
-                    style={{ flex: 1 }}
-                    onChange={(event) => updateDolly(dolly.id, { speed: Number(event.target.value) })}
-                  />
-                  <span style={{ width: 26, textAlign: "right" }}>{dolly.speed.toFixed(1)}</span>
-                </div>
-                {/* Dolly moves: over [start,end] the dolly eases from→to (distance). */}
-                {(dollyRuns[dolly.id] ?? []).map((run) => (
-                  <div
-                    key={run.id}
-                    style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, paddingLeft: 10, color: "#94a3b8" }}
-                  >
-                    <span style={{ width: 30 }}>move</span>
-                    <input type="number" title="start (s)" value={run.start} step={0.25} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { start: Number(event.target.value) })} />
-                    <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { end: Number(event.target.value) })} />
-                    <input type="number" title="from (0–1 along path)" value={run.fromT} min={0} max={1} step={0.05} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { fromT: Number(event.target.value) })} />
-                    <span>→</span>
-                    <input type="number" title="to (0–1 along path)" value={run.toT} min={0} max={1} step={0.05} style={{ width: 46 }}
-                      onChange={(event) => updateDollyRun(dolly.id, run.id, { toT: Number(event.target.value) })} />
-                    <button title="Delete move" onClick={() => deleteDollyRun(dolly.id, run.id)}>×</button>
-                  </div>
-                ))}
-                <button style={{ fontSize: 11, justifySelf: "start", marginLeft: 10 }} onClick={() => addDollyRun(dolly.id, 0)}>
-                  + move
-                </button>
-              </div>
-            ))}
-            <button onClick={addDolly}>Add Dolly</button>
-          </div>
-        </SettingsSection>
-
-        <SettingsSection title="Activation">
-          <ActivationTracksEditor
-            activationTracks={extraTracks.activationTracks}
-            audioTracks={extraTracks.audioTracks}
-            activatables={activatables}
-            onChange={setExtraTracks}
-          />
-        </SettingsSection>
-
-        <SettingsSection title="Audio">
-          <AudioTracksEditor
-            activationTracks={extraTracks.activationTracks}
-            audioTracks={extraTracks.audioTracks}
-            onChange={setExtraTracks}
-          />
-        </SettingsSection>
-
-        <SettingsSection title="Paths">
-          <div style={{ display: "grid", gap: 4 }}>
-            {paths.map((path) => (
-              <div
-                key={path.id}
-                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
-              >
-                <input
-                  type="radio"
-                  name="active-path"
-                  title="Edit this path in the viewport"
-                  checked={path.id === activePathId}
-                  onChange={() => switchPath(path.id)}
-                />
-                <input
-                  type="text"
-                  value={path.name ?? ""}
-                  aria-label="Path name"
-                  onChange={(event) => renamePath(path.id, event.target.value)}
-                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
-                />
-                <button onClick={() => deletePath(path.id)}>Del</button>
-              </div>
-            ))}
-            <button onClick={addPath}>Add Path</button>
-            <div style={{ fontSize: 11, color: "#94a3b8" }}>
-              The selected path is editable in the viewport; others render dashed.
-            </div>
-          </div>
-        </SettingsSection>
-
-        <SettingsSection title="Targets">
-          <div style={{ display: "grid", gap: 4 }}>
-            {pointTargets.map((target) => (
-              <div
-                key={target.id}
-                style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}
-              >
-                <input
-                  type="radio"
-                  name="selected-target"
-                  title="Select this target"
-                  checked={target.id === selectedPointTargetId}
-                  onChange={() => selectPointTarget(target.id)}
-                />
-                <input
-                  type="text"
-                  value={target.name ?? ""}
-                  aria-label="Target name"
-                  onChange={(event) => renamePointTarget(target.id, event.target.value)}
-                  onFocus={() => selectPointTarget(target.id)}
-                  style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
-                />
-                <select
-                  title="Mount: static, or ride a dolly"
-                  value={target.type === "cart" ? target.cartId : ""}
-                  onChange={(event) => setPointTargetMount(target.id, event.target.value || null)}
-                >
-                  <option value="">Static</option>
-                  {dollies.map((dolly) => (
-                    <option key={dolly.id} value={dolly.id}>
-                      {dolly.name}
-                    </option>
-                  ))}
-                </select>
-                <button
-                  title={
-                    target.visibleInRender
-                      ? "Visible in render — click to hide (invisible aim point)"
-                      : "Hidden in render — click to show"
-                  }
-                  aria-label={target.visibleInRender ? "Hide target in render" : "Show target in render"}
-                  onClick={() => togglePointTargetVisible(target.id)}
-                  style={{
-                    width: 28,
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    padding: 0,
-                    color: target.visibleInRender ? TEXT : MUTED
-                  }}
-                >
-                  {target.visibleInRender ? <IconEye size={15} /> : <IconEyeOff size={15} />}
-                </button>
-                <button onClick={() => deletePointTarget(target.id)}>Del</button>
-              </div>
-            ))}
-            <button onClick={addPointTarget}>Add Target</button>
-            <div style={{ fontSize: 11, color: "#94a3b8" }}>
-              A vcam aim can track any target. Static targets drag to place; mount one on a
-              dolly to ride the rail. The eye hides it from the render (still an aim point).
-            </div>
-          </div>
-        </SettingsSection>
-
-        <SettingsSection title="Viewport Debug">
-          <div
-            role="group"
-            aria-label="View mode"
-            title="Edit: editor camera + controls in the main view, driven camera in the PiP. Play: driven camera fills the main view and all interaction pilots it. Shortcut: P"
-            style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4, marginBottom: 8 }}
-          >
-            {(["edit", "play"] as const).map((mode) => {
-              const active = viewMode === mode;
-              return (
-                <button
-                  key={mode}
-                  onClick={() => setViewMode(mode)}
-                  style={{
-                    display: "inline-flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    gap: 6,
-                    padding: "6px 8px",
-                    fontSize: 12,
-                    fontWeight: 700,
-                    textTransform: "capitalize",
-                    borderRadius: 0,
-                    cursor: "pointer",
-                    color: active ? "#0f172a" : "#cbd5e1",
-                    background: active
-                      ? mode === "play"
-                        ? "rgba(34, 197, 94, 0.9)"
-                        : "rgba(148, 163, 184, 0.9)"
-                      : "rgba(15, 23, 42, 0.6)",
-                    border: `1px solid ${active ? "transparent" : "rgba(148, 163, 184, 0.25)"}`
-                  }}
-                >
-                  {mode === "play" ? <IconVideo size={13} /> : <IconDirector size={13} />}
-                  {mode === "play" ? "Play" : "Edit"}
-                </button>
-              );
-            })}
-          </div>
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={debugPreview}
-              onChange={(e) => setDebugPreview(e.target.checked)}
-            />
-            <span style={{ marginLeft: 6 }}>Show camera PiP</span>
-          </label>
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={debugFrustum}
-              onChange={(e) => setDebugFrustum(e.target.checked)}
-            />
-            <span style={{ marginLeft: 6 }}>Show camera frustum</span>
-          </label>
-
-          <label style={{ display: "block", fontSize: 12 }}>
-            <input
-              type="checkbox"
-              checked={pathStyle === "rail"}
-              onChange={(e) => setPathStyle(e.target.checked ? "rail" : "line")}
-            />
-            <span style={{ marginLeft: 6 }}>Path as dolly rail</span>
-          </label>
-
-          <div style={{ fontSize: 11, color: MUTED, lineHeight: 1.45 }}>
-            Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
-          </div>
-        </SettingsSection>
-        </div>
-
-        <footer style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 14px", borderTop: `1px solid ${BORDER}` }}>
-          <button className="pc-danger" onClick={newScene}>New</button>
-          <button onClick={() => importInputRef.current?.click()}>Import</button>
-          <button onClick={exportScene}>Export</button>
-          <input
-            ref={importInputRef}
-            type="file"
-            accept=".json,application/json"
-            style={{ display: "none" }}
-            onChange={(event) => {
-              const file = event.target.files?.[0];
-              if (file) importSceneFile(file);
-              event.currentTarget.value = "";
-            }}
-          />
-        </footer>
+      <div style={{ position: "fixed", top: 12, left: 12, zIndex: 10 }}>
+        <Hierarchy
+          viewMode={viewMode}
+          onViewModeChange={setViewMode}
+          selection={selection}
+          onSelect={selectFromHierarchy}
+          paths={paths.map((path) => ({ id: path.id, name: path.name ?? path.id }))}
+          dollies={dollies.map((dolly) => ({ id: dolly.id, name: dolly.name ?? dolly.id }))}
+          cameras={virtualCameras.map((camera) => ({
+            id: camera.id,
+            name: camera.name,
+            live: camera.id === (virtualCameraActivation?.toId ?? null)
+          }))}
+          targets={pointTargets.map((target) => ({ id: target.id, name: target.name ?? target.id }))}
+          objects={activatables}
+          audioTracks={extraTracks.audioTracks.map((track) => ({ id: track.id, name: track.name ?? "Audio" }))}
+          activePathId={activePathId}
+          onAddPath={addPath}
+          onAddDolly={addDolly}
+          onCaptureCamera={captureVirtualCamera}
+          onAddCartCamera={() => addCartVirtualCamera()}
+          onAddOrbitCamera={() => addOrbitVirtualCamera()}
+          onAddTarget={addPointTarget}
+          onAddAudioTrack={addAudioTrack}
+          onNewScene={newScene}
+          onImport={() => importInputRef.current?.click()}
+          onExport={exportScene}
+        />
+        <input
+          ref={importInputRef}
+          type="file"
+          accept=".json,application/json"
+          style={{ display: "none" }}
+          onChange={(event) => {
+            const file = event.target.files?.[0];
+            if (file) importSceneFile(file);
+            event.currentTarget.value = "";
+          }}
+        />
       </div>
 
       <div
@@ -3122,26 +2268,96 @@ export function App() {
           fontFamily: "ui-sans-serif, system-ui, sans-serif"
         }}
       >
-        <VirtualCameraPanel
-          cameras={virtualCameras}
-          activeId={virtualCameraActivation?.toId ?? null}
-          selectedId={selectedVirtualCameraId}
-          blendCurve={virtualCameraBlendCurve}
-          blendDuration={virtualCameraBlendDuration}
-          transitionProgress={virtualCameraTransitionProgress}
-          onBlendCurveChange={setVirtualCameraBlendCurve}
-          onBlendDurationChange={setVirtualCameraBlendDuration}
-          onCapture={captureVirtualCamera}
-          onAddCart={addCartVirtualCamera}
-          onAddOrbit={addOrbitVirtualCamera}
-          trackTargets={registeredTargets}
-          onUpdateShot={updateVirtualCameraShot}
-          onUpdateComposer={updateVirtualCameraComposer}
-          dollies={dollies}
-          onSelect={selectVirtualCamera}
-          onActivate={activateVirtualCamera}
-          onDelete={deleteVirtualCamera}
-          onRelease={releaseVirtualCamera}
+        <Inspector
+          selection={selection}
+          selectionName={selectionName}
+          scene={{
+            viewMode,
+            onViewModeChange: setViewMode,
+            debugPreview,
+            onDebugPreviewChange: setDebugPreview,
+            debugFrustum,
+            onDebugFrustumChange: setDebugFrustum,
+            pathStyle,
+            onPathStyleChange: setPathStyle,
+            blendCurve: virtualCameraBlendCurve,
+            onBlendCurveChange: setVirtualCameraBlendCurve,
+            blendDuration: virtualCameraBlendDuration,
+            onBlendDurationChange: setVirtualCameraBlendDuration,
+            transitionProgress: virtualCameraTransitionProgress,
+            liveCameraName: virtualCameraActivation
+              ? virtualCameras.find((camera) => camera.id === virtualCameraActivation.toId)?.name ?? "Camera"
+              : null,
+            onRelease: releaseVirtualCamera
+          }}
+          path={
+            selectedPathDef
+              ? {
+                  name: selectedPathDef.name ?? selectedPathDef.id,
+                  onRename: (name) => renamePath(selectedPathDef.id, name),
+                  onDelete: () => deletePath(selectedPathDef.id),
+                  bezierPath: selectedPathDef.id === activePathId ? bezierPath : null,
+                  useWorldSpaceGizmo,
+                  onWorldSpaceGizmoChange: setUseWorldSpaceGizmo,
+                  selectedAnchorScale: selectedAnchorScaleForUi,
+                  onAddAnchor: addAnchor,
+                  onInsertMidpoint: insertAnchorAtSelectedSegment,
+                  onDeleteAnchor: deleteSelectedAnchor,
+                  onAutoSmooth: () => mutatePath((p) => { p.autoSmooth(); }),
+                  onToggleClosed: () => mutatePath((p) => p.setClosed(!p.isClosed)),
+                  onReset: resetPath,
+                  onSave: savePath,
+                  onLoad: loadPath,
+                  onControlModeChange: (mode) => mutatePath((p) => p.setControlMode(mode))
+                }
+              : null
+          }
+          dolly={
+            selectedDolly
+              ? {
+                  dolly: selectedDolly,
+                  paths,
+                  runs: dollyRuns[selectedDolly.id] ?? [],
+                  onUpdate: (patch) => updateDolly(selectedDolly.id, patch),
+                  onDelete: () => deleteDolly(selectedDolly.id),
+                  onUpdateRun: (runId, patch) => updateDollyRun(selectedDolly.id, runId, patch),
+                  onAddRun: () => addDollyRun(selectedDolly.id, 0),
+                  onDeleteRun: (runId) => deleteDollyRun(selectedDolly.id, runId)
+                }
+              : null
+          }
+          camera={
+            selectedVirtualCamera
+              ? {
+                  camera: selectedVirtualCamera,
+                  isActive: selectedVirtualCamera.id === (virtualCameraActivation?.toId ?? null),
+                  trackTargets: registeredTargets,
+                  dollies,
+                  onActivate: () => activateVirtualCamera(selectedVirtualCamera.id),
+                  onDelete: () => deleteVirtualCamera(selectedVirtualCamera.id),
+                  onUpdateShot: (patch) => updateVirtualCameraShot(selectedVirtualCamera.id, patch),
+                  onUpdateComposer: (settings) => updateVirtualCameraComposer(selectedVirtualCamera.id, settings)
+                }
+              : null
+          }
+          target={
+            selectedTargetEntity
+              ? {
+                  target: selectedTargetEntity,
+                  dollies,
+                  onRename: (name) => renamePointTarget(selectedTargetEntity.id, name),
+                  onSetMount: (cartId) => setPointTargetMount(selectedTargetEntity.id, cartId),
+                  onToggleVisible: () => togglePointTargetVisible(selectedTargetEntity.id),
+                  onDelete: () => deletePointTarget(selectedTargetEntity.id)
+                }
+              : null
+          }
+          object={
+            selectedObject
+              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: setExtraTracks }
+              : null
+          }
+          audio={selectedAudioTrack ? { track: selectedAudioTrack, extraTracks, onChange: setExtraTracks } : null}
         />
       </div>
       <div

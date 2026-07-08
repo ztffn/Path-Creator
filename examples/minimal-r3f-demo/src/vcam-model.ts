@@ -119,6 +119,27 @@ export type DemoVirtualCamera = {
   composerSettings: ComposerSettings;
 };
 
+/** A patch of the editable per-shot fields (the panels/inspector mutate these). */
+export type DemoShotPatch = Partial<
+  Pick<
+    DemoVirtualCamera,
+    | "trackTargetId"
+    | "noisePreset"
+    | "dutchDeg"
+    | "shotStart"
+    | "shotEnd"
+    | "cartOffset"
+    | "cartId"
+    | "orbitTargetId"
+    | "orbitAzimuthDeg"
+    | "orbitElevationDeg"
+    | "orbitRadius"
+    | "orbitBinding"
+    | "orbitAutoDegPerSec"
+    | "overrideControl"
+  >
+>;
+
 /** All-locked override: input ignored, the shot plays exactly as authored. The
  *  body-agnostic default every view carries until an axis is set free/recenter. */
 export const DEFAULT_OVERRIDE_CONTROL: CameraOverrideSettings = {

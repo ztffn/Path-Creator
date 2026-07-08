@@ -34,9 +34,11 @@ export interface ActivationEditorProps {
   audioTracks: AudioTrack[];
   activatables: ActivatableInfo[];
   onChange: (next: ExtraTracks) => void;
+  /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
+  hideAdd?: boolean;
 }
 
-export function ActivationTracksEditor({ activationTracks, audioTracks, activatables, onChange }: ActivationEditorProps) {
+export function ActivationTracksEditor({ activationTracks, audioTracks, activatables, onChange, hideAdd = false }: ActivationEditorProps) {
   const emit = (next: ActivationTrack[]): void => onChange({ activationTracks: next, audioTracks });
   const patch = (id: string, p: Partial<ActivationTrack>): void => emit(activationTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
@@ -81,12 +83,14 @@ export function ActivationTracksEditor({ activationTracks, audioTracks, activata
           </button>
         </div>
       ))}
-      <button
-        disabled={activatables.length === 0}
-        onClick={() => emit([...activationTracks, { id: uid("act"), objectId: activatables[0]?.id ?? "", clips: [], postPlaybackState: "revert" }])}
-      >
-        Add Activation Track
-      </button>
+      {hideAdd ? null : (
+        <button
+          disabled={activatables.length === 0}
+          onClick={() => emit([...activationTracks, { id: uid("act"), objectId: activatables[0]?.id ?? "", clips: [], postPlaybackState: "revert" }])}
+        >
+          Add Activation Track
+        </button>
+      )}
     </div>
   );
 }
@@ -95,9 +99,11 @@ export interface AudioEditorProps {
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   onChange: (next: ExtraTracks) => void;
+  /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
+  hideAdd?: boolean;
 }
 
-export function AudioTracksEditor({ activationTracks, audioTracks, onChange }: AudioEditorProps) {
+export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hideAdd = false }: AudioEditorProps) {
   const emit = (next: AudioTrack[]): void => onChange({ activationTracks, audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
@@ -133,9 +139,11 @@ export function AudioTracksEditor({ activationTracks, audioTracks, onChange }: A
           </button>
         </div>
       ))}
-      <button onClick={() => emit([...audioTracks, { id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
-        Add Audio Track
-      </button>
+      {hideAdd ? null : (
+        <button onClick={() => emit([...audioTracks, { id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
+          Add Audio Track
+        </button>
+      )}
     </div>
   );
 }
