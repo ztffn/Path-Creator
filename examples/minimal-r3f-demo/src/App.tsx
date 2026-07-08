@@ -2140,6 +2140,25 @@ export function App() {
       })
     }))
   ];
+  // Timeline lane ↔ selection sync. Clicking an activation lane selects its bound
+  // object; an audio lane selects its track. The reverse drives the lane highlight.
+  const selectLaneEntity = (laneId: string): void => {
+    if (laneId.startsWith("act:")) {
+      const track = extraTracks.activationTracks.find((t) => t.id === laneId.slice(4));
+      if (track?.objectId) select("object", track.objectId);
+    } else if (laneId.startsWith("aud:")) {
+      select("audio", laneId.slice(4));
+    }
+  };
+  const selectedLaneId =
+    selection?.kind === "audio"
+      ? `aud:${selection.id}`
+      : selection?.kind === "object"
+        ? (() => {
+            const track = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
+            return track ? `act:${track.id}` : null;
+          })()
+        : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
     if (laneId.startsWith("act:")) {
       const trackId = laneId.slice(4);
@@ -2389,6 +2408,8 @@ export function App() {
             }))
           )}
           selectedShotId={selectedVirtualCameraId}
+          selectedLaneId={selectedLaneId}
+          onSelectLane={selectLaneEntity}
           playerRef={timelinePlayerRef}
           duration={demoTimeline?.duration ?? 0}
           driving={timelineActive}

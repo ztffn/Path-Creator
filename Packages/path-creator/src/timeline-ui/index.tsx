@@ -192,6 +192,10 @@ export interface TimelineLanesProps {
   /** An extra-lane clip was dragged/resized, or a lane double-clicked to add one. */
   onExtraClipTiming?: (laneId: string, clipId: string, start: number, end: number) => void;
   onCreateExtraClip?: (laneId: string, timeSeconds: number) => void;
+  /** An extra lane was clicked (its rail icon or a clip) — report it for selection. */
+  onSelectLane?: (laneId: string) => void;
+  /** The currently-selected extra lane, highlighted in the rail (mirrors selectedShotId). */
+  selectedLaneId?: string | null;
 }
 
 export function TimelineLanes({
@@ -216,7 +220,9 @@ export function TimelineLanes({
   onDollyRunTiming,
   onCreateDollyRun,
   onExtraClipTiming,
-  onCreateExtraClip
+  onCreateExtraClip,
+  onSelectLane,
+  selectedLaneId = null
 }: TimelineLanesProps) {
   const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
@@ -477,7 +483,16 @@ export function TimelineLanes({
               {extraLanes.map((lane) => (
                 <div
                   key={lane.id}
-                  style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }}
+                  onClick={onSelectLane ? () => onSelectLane(lane.id) : undefined}
+                  style={{
+                    height: 36,
+                    display: "flex",
+                    alignItems: "center",
+                    justifyContent: "center",
+                    cursor: onSelectLane ? "pointer" : "default",
+                    background: lane.id === selectedLaneId ? "rgba(249, 115, 22, 0.18)" : "transparent",
+                    boxShadow: lane.id === selectedLaneId ? "inset 2px 0 0 #f97316" : "none"
+                  }}
                   title={lane.name}
                 >
                   {lane.icon ?? "▮"}
@@ -562,8 +577,11 @@ export function TimelineLanes({
             }
           }}
           onClickAction={(_event, { action }) => {
-            // Only shot clips select; dolly runs + extra clips just seek (via the row).
-            if (!action.id.startsWith("move-") && !action.id.startsWith("x|")) onSelectShot(action.id);
+            // Shot clips select their shot; extra-lane clips select their lane; dolly
+            // runs just seek (via the row).
+            const extra = parseExtraId(action.id);
+            if (extra) onSelectLane?.(extra.laneId);
+            else if (!action.id.startsWith("move-")) onSelectShot(action.id);
           }}
           onClickTimeArea={(time) => {
             onSeek(time);
