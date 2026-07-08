@@ -5,8 +5,8 @@
 // every value + setter is threaded from App via the Inspector dispatcher.
 import type { VirtualCameraBlendCurve } from "@huma/path-creator/three";
 import { NumberSlider } from "./rig-settings-panel";
-import { Section as SettingsSection } from "./panel-theme";
-import { IconVideo, IconDirector } from "./icons";
+import { Section as SettingsSection, CheckRow } from "./panel-theme";
+import { ViewModeToggle } from "./view-mode-toggle";
 
 export interface SceneInspectorProps {
   viewMode: "edit" | "play";
@@ -46,44 +46,7 @@ export function SceneInspector({
   return (
     <>
       <SettingsSection title="View">
-        <div
-          role="group"
-          aria-label="View mode"
-          title="Edit: editor camera + controls in the main view, driven camera in the PiP. Play: driven camera fills the main view and all interaction pilots it. Shortcut: P"
-          style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}
-        >
-          {(["edit", "play"] as const).map((mode) => {
-            const active = viewMode === mode;
-            return (
-              <button
-                key={mode}
-                onClick={() => onViewModeChange(mode)}
-                style={{
-                  display: "inline-flex",
-                  alignItems: "center",
-                  justifyContent: "center",
-                  gap: 6,
-                  padding: "6px 8px",
-                  fontSize: 12,
-                  fontWeight: 700,
-                  textTransform: "capitalize",
-                  borderRadius: 0,
-                  cursor: "pointer",
-                  color: active ? "#0f172a" : "#cbd5e1",
-                  background: active
-                    ? mode === "play"
-                      ? "rgba(34, 197, 94, 0.9)"
-                      : "rgba(148, 163, 184, 0.9)"
-                    : "rgba(15, 23, 42, 0.6)",
-                  border: `1px solid ${active ? "transparent" : "rgba(148, 163, 184, 0.25)"}`
-                }}
-              >
-                {mode === "play" ? <IconVideo size={13} /> : <IconDirector size={13} />}
-                {mode === "play" ? "Play" : "Edit"}
-              </button>
-            );
-          })}
-        </div>
+        <ViewModeToggle viewMode={viewMode} onViewModeChange={onViewModeChange} variant="labeled" />
         {liveCameraName ? (
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
             <span style={{ fontSize: 11, color: "#22c55e" }}>Live: {liveCameraName}</span>
@@ -112,18 +75,9 @@ export function SceneInspector({
       </SettingsSection>
 
       <SettingsSection title="Viewport">
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input type="checkbox" checked={debugPreview} onChange={(e) => onDebugPreviewChange(e.target.checked)} />
-          <span style={{ marginLeft: 6 }}>Show camera PiP</span>
-        </label>
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input type="checkbox" checked={debugFrustum} onChange={(e) => onDebugFrustumChange(e.target.checked)} />
-          <span style={{ marginLeft: 6 }}>Show camera frustum</span>
-        </label>
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input type="checkbox" checked={pathStyle === "rail"} onChange={(e) => onPathStyleChange(e.target.checked ? "rail" : "line")} />
-          <span style={{ marginLeft: 6 }}>Path as dolly rail</span>
-        </label>
+        <CheckRow checked={debugPreview} onChange={onDebugPreviewChange}>Show camera PiP</CheckRow>
+        <CheckRow checked={debugFrustum} onChange={onDebugFrustumChange}>Show camera frustum</CheckRow>
+        <CheckRow checked={pathStyle === "rail"} onChange={(on) => onPathStyleChange(on ? "rail" : "line")}>Path as dolly rail</CheckRow>
         <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
           Orbit: right-drag. Pan: middle-drag. Zoom: wheel.
         </div>

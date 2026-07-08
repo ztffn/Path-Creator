@@ -6,7 +6,8 @@
 import type { ReactNode } from "react";
 import { isSelected, SCENE_ID, type EntityKind, type Selection } from "./selection";
 import { Section as SettingsSection, BG, BORDER, MUTED } from "./panel-theme";
-import { IconVideo, IconDirector, IconTrack, IconEye, IconVolume } from "./icons";
+import { IconVideo, IconTrack, IconVolume } from "./icons";
+import { ViewModeToggle } from "./view-mode-toggle";
 
 interface Entity {
   id: string;
@@ -102,26 +103,7 @@ export function Hierarchy(props: HierarchyProps) {
     >
       <header style={{ display: "flex", alignItems: "center", gap: 6, padding: "10px 12px", borderBottom: `1px solid ${BORDER}` }}>
         <div style={{ fontSize: 13, fontWeight: 700, letterSpacing: "0.02em", flex: 1 }}>Hierarchy</div>
-        <div role="group" aria-label="View mode" title="Edit / Play (P)" style={{ display: "flex", gap: 4 }}>
-          {(["edit", "play"] as const).map((mode) => {
-            const active = props.viewMode === mode;
-            return (
-              <button
-                key={mode}
-                onClick={() => props.onViewModeChange(mode)}
-                title={mode === "play" ? "Play" : "Edit"}
-                style={{
-                  padding: "4px 8px",
-                  color: active ? "#0f172a" : "#cbd5e1",
-                  background: active ? (mode === "play" ? "rgba(34, 197, 94, 0.9)" : "rgba(148, 163, 184, 0.9)") : "transparent",
-                  border: `1px solid ${active ? "transparent" : BORDER}`
-                }}
-              >
-                {mode === "play" ? <IconVideo size={13} /> : <IconDirector size={13} />}
-              </button>
-            );
-          })}
-        </div>
+        <ViewModeToggle viewMode={props.viewMode} onViewModeChange={props.onViewModeChange} variant="icons" />
       </header>
 
       <div style={{ flex: 1, minHeight: 0, overflowY: "auto", padding: "0 12px 12px" }}>

@@ -14,7 +14,10 @@ import {
   type PostPlaybackState
 } from "./extra-tracks";
 
-const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+export const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
+
+/** A blank activation track bound to `objectId` (shared by the panel + object inspector). */
+export const newActivationTrack = (objectId: string): ActivationTrack => ({ id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
 
 const POST_PLAYBACK_LABELS: Record<PostPlaybackState, string> = {
   revert: "Revert",
@@ -86,7 +89,7 @@ export function ActivationTracksEditor({ activationTracks, audioTracks, activata
       {hideAdd ? null : (
         <button
           disabled={activatables.length === 0}
-          onClick={() => emit([...activationTracks, { id: uid("act"), objectId: activatables[0]?.id ?? "", clips: [], postPlaybackState: "revert" }])}
+          onClick={() => emit([...activationTracks, newActivationTrack(activatables[0]?.id ?? "")])}
         >
           Add Activation Track
         </button>

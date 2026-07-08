@@ -4,6 +4,7 @@
 // gizmo toggle, control mode, and the selected-anchor scale readout. Anchor
 // sub-selection stays in App; this only surfaces + drives it. Pure presentation.
 import { BezierPath, ControlMode } from "@huma/path-creator/core";
+import { CheckRow } from "./panel-theme";
 
 export interface PathInspectorProps {
   name: string;
@@ -77,10 +78,7 @@ export function PathInspector({
         </div>
       )}
 
-      <label style={{ display: "block", fontSize: 12 }}>
-        <input type="checkbox" checked={useWorldSpaceGizmo} onChange={(e) => onWorldSpaceGizmoChange(e.target.checked)} />
-        <span style={{ marginLeft: 6 }}>World-space gizmo</span>
-      </label>
+      <CheckRow checked={useWorldSpaceGizmo} onChange={onWorldSpaceGizmoChange}>World-space gizmo</CheckRow>
 
       <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 8 }}>
         <button onClick={onAddAnchor}>Add Anchor</button>

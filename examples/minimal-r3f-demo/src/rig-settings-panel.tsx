@@ -4,7 +4,7 @@
 // lookahead, noise, dutch) that edits a VirtualCameraDefinition's ComposerSettings.
 // Lifted out of App.tsx so the per-kind inspector components can reuse them.
 import type { ComposerSettings } from "@huma/path-creator/core";
-import { Section as SettingsSection } from "./panel-theme";
+import { Section as SettingsSection, CheckRow } from "./panel-theme";
 import type { DemoNoisePreset } from "./vcam-model";
 
 export function NumberSlider({
@@ -138,22 +138,8 @@ export function RigSettingsPanel({
       <SettingsSection title="Lookahead">
         <NumberSlider label="Time" value={settings.lookaheadTime} min={0} max={1.5} step={0.01} unit="s" onChange={(v) => setValue("lookaheadTime", v)} />
         <NumberSlider label="Smoothing" value={settings.lookaheadSmoothing} min={0} max={20} step={0.1} onChange={(v) => setValue("lookaheadSmoothing", v)} />
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={settings.lookaheadIgnoreY}
-            onChange={(event) => setValue("lookaheadIgnoreY", event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Ignore Y</span>
-        </label>
-        <label style={{ display: "block", fontSize: 12 }}>
-          <input
-            type="checkbox"
-            checked={settings.centerOnActivate}
-            onChange={(event) => setValue("centerOnActivate", event.target.checked)}
-          />
-          <span style={{ marginLeft: 6 }}>Center on activate</span>
-        </label>
+        <CheckRow checked={settings.lookaheadIgnoreY} onChange={(v) => setValue("lookaheadIgnoreY", v)}>Ignore Y</CheckRow>
+        <CheckRow checked={settings.centerOnActivate} onChange={(v) => setValue("centerOnActivate", v)}>Center on activate</CheckRow>
       </SettingsSection>
     </div>
   );

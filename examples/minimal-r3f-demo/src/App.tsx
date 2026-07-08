@@ -9,10 +9,8 @@ import {
   VertexPath,
   createPathCart,
   sampleCartFrame,
-  type CameraOverrideAxisMode,
   type CartFrame,
   type ComposerSettings,
-  type RegisteredTarget,
   type RigCartDefinition,
   type RigPathDefinition,
   type SerializedBezierPath,
@@ -51,7 +49,7 @@ import {
   type TimelinePlayer,
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
-import { useEffect, useMemo, useRef, useState, type CSSProperties } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
@@ -93,7 +91,6 @@ import {
   ORBIT_INTERACTIVE_CONTROL,
   toVcamView,
   vcamDefFromView,
-  type DemoNoisePreset,
   type DemoShotPatch,
   type DemoVirtualCamera,
   type DollyRun,
@@ -2192,22 +2189,17 @@ export function App() {
   const selectedPathDef = paths.find((path) => path.id === selectedIdOf(selection, "path")) ?? null;
   const selectedObject = activatables.find((object) => object.id === selectedIdOf(selection, "object")) ?? null;
   const selectedAudioTrack = extraTracks.audioTracks.find((track) => track.id === selectedIdOf(selection, "audio")) ?? null;
-  const selectionName: string | null =
-    selection === null
-      ? null
-      : selection.kind === "scene"
-        ? "Scene"
-        : selection.kind === "path"
-          ? selectedPathDef?.name ?? null
-          : selection.kind === "dolly"
-            ? selectedDolly?.name ?? null
-            : selection.kind === "camera"
-              ? selectedVirtualCamera?.name ?? null
-              : selection.kind === "target"
-                ? selectedTargetEntity?.name ?? null
-                : selection.kind === "object"
-                  ? selectedObject?.name ?? null
-                  : selectedAudioTrack?.name ?? null;
+  const selectionName: string | null = !selection
+    ? null
+    : {
+        scene: "Scene",
+        path: selectedPathDef?.name,
+        dolly: selectedDolly?.name,
+        camera: selectedVirtualCamera?.name,
+        target: selectedTargetEntity?.name,
+        object: selectedObject?.name,
+        audio: selectedAudioTrack?.name
+      }[selection.kind] ?? null;
 
   return (
     <div style={{ width: "100vw", height: "100vh" }}>

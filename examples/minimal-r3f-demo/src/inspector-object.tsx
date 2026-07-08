@@ -3,11 +3,9 @@
 // scoped to just the tracks bound to this object (add suppressed), plus a local
 // "bind a new activation track to this object" affordance. onChange re-merges the
 // scoped subset back into the full ExtraTracks. Pure presentation via App handlers.
-import { ActivationTracksEditor } from "./extra-tracks-panel";
+import { ActivationTracksEditor, newActivationTrack } from "./extra-tracks-panel";
 import type { ActivatableInfo } from "./activatables";
 import type { ExtraTracks } from "./extra-tracks";
-
-const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 
 export interface ObjectInspectorProps {
   objectId: string;
@@ -38,7 +36,7 @@ export function ObjectInspector({ objectId, objectName, extraTracks, activatable
         style={{ justifySelf: "start" }}
         onClick={() =>
           onChange({
-            activationTracks: [...extraTracks.activationTracks, { id: uid("act"), objectId, clips: [], postPlaybackState: "revert" }],
+            activationTracks: [...extraTracks.activationTracks, newActivationTrack(objectId)],
             audioTracks: extraTracks.audioTracks
           })
         }

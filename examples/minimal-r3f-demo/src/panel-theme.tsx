@@ -131,6 +131,16 @@ export function Section({ title, defaultOpen = true, children }: { title: string
   );
 }
 
+/** A checkbox + inline label row (the demo's standard boolean control). */
+export function CheckRow({ checked, onChange, children }: { checked: boolean; onChange: (value: boolean) => void; children: ReactNode }) {
+  return (
+    <label style={{ display: "block", fontSize: 12 }}>
+      <input type="checkbox" checked={checked} onChange={(event) => onChange(event.target.checked)} />
+      <span style={{ marginLeft: 6 }}>{children}</span>
+    </label>
+  );
+}
+
 /** A lighter, chrome-less collapsible sub-group used inside a Section (chevron + 9px label). */
 export function CollapsibleGroup({ title, defaultOpen = false, children }: { title: string; defaultOpen?: boolean; children: ReactNode }) {
   const [open, setOpen] = useState(defaultOpen);
