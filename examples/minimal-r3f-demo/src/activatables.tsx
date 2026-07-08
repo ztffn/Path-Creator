@@ -3,8 +3,8 @@
 // a stable id -> live Object3D so the activation applier can toggle .visible by id.
 // An <Activatable id name> wrapper registers its group on mount; useActivatables
 // lists the bound objects for the authoring UI. Purely demo scaffolding.
-import { createContext, useContext, useEffect, useRef, useSyncExternalStore, type ReactNode } from "react";
-import type { Group, Object3D } from "three";
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
+import { Box3, BoxGeometry, EdgesGeometry, Vector3, type Group, type Object3D } from "three";
 import { evaluateActivation, type ActivationTrack } from "./extra-tracks";
 
 export interface ActivatableInfo {
@@ -169,18 +169,54 @@ export function useActivatables(registry: ActivatablesRegistry): ActivatableInfo
 export function Activatable({
   id,
   name,
+  selected = false,
+  onSelect,
   children
 }: {
   id: string;
   name?: string;
+  selected?: boolean;
+  onSelect?: () => void;
   children: ReactNode;
 }) {
   const registry = useActivatablesRegistry();
   const groupRef = useRef<Group>(null);
+  const [bounds, setBounds] = useState<{ center: [number, number, number]; size: [number, number, number] } | null>(null);
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
-    return registry.register(id, group, name ?? id);
+    const unregister = registry.register(id, group, name ?? id);
+    // Measure once (objects don't resize); the group sits at identity so the
+    // world box's center doubles as the local center for the selection outline.
+    const box = new Box3().setFromObject(group);
+    if (!box.isEmpty()) {
+      const c = box.getCenter(new Vector3());
+      const s = box.getSize(new Vector3());
+      setBounds({ center: [c.x, c.y, c.z], size: [s.x * 1.3 + 0.12, s.y * 1.3 + 0.12, s.z * 1.3 + 0.12] });
+    }
+    return unregister;
   }, [registry, id, name]);
-  return <group ref={groupRef}>{children}</group>;
+  return (
+    <group ref={groupRef} {...(onSelect && { onPointerDown: (event: { stopPropagation: () => void }) => { event.stopPropagation(); onSelect(); } })}>
+      {children}
+      {selected && bounds ? <SelectionBox center={bounds.center} size={bounds.size} /> : null}
+    </group>
+  );
+}
+
+/** A WebGPU-safe wireframe box (constant geometry) marking the selected object. */
+function SelectionBox({ center, size }: { center: [number, number, number]; size: [number, number, number] }) {
+  const edges = useMemo(() => {
+    const box = new BoxGeometry(size[0], size[1], size[2]);
+    const geometry = new EdgesGeometry(box);
+    box.dispose();
+    return geometry;
+  }, [size]);
+  useEffect(() => () => edges.dispose(), [edges]);
+  return (
+    <lineSegments position={center}>
+      <primitive object={edges} attach="geometry" />
+      <lineBasicMaterial color="#f97316" />
+    </lineSegments>
+  );
 }

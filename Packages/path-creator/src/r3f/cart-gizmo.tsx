@@ -43,6 +43,10 @@ export interface CartGizmoProps {
   size?: [number, number, number];
   color?: string;
   labelColor?: string;
+  /** Editor selection: recolors the box and enables click-to-select. */
+  selected?: boolean;
+  selectedColor?: string;
+  onSelect?: () => void;
 }
 
 export function CartGizmo({
@@ -51,7 +55,10 @@ export function CartGizmo({
   name,
   size = DEFAULT_CART_SIZE,
   color = "#94a3b8",
-  labelColor = "#cbd5e1"
+  labelColor = "#cbd5e1",
+  selected = false,
+  selectedColor = "#f97316",
+  onSelect
 }: CartGizmoProps) {
   const groupRef = useRef<Group>(null);
   useCartFrameFollow(groupRef, framesRef, cartId);
@@ -70,10 +77,13 @@ export function CartGizmo({
   const boxY = size[1] * 0.66;
 
   return (
-    <group ref={groupRef}>
+    <group
+      ref={groupRef}
+      {...(onSelect && { onPointerDown: (event) => { event.stopPropagation(); onSelect(); } })}
+    >
       <lineSegments position={[0, boxY, 0]}>
         <primitive object={edges} attach="geometry" />
-        <lineBasicMaterial color={color} />
+        <lineBasicMaterial color={selected ? selectedColor : color} />
       </lineSegments>
       {name ? (
         <RigLabel position={[0, boxY + 0.1, 0]} fontSize={0.08} color={labelColor}>

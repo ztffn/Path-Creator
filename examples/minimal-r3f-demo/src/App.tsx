@@ -80,6 +80,7 @@ import { AudioTrackPlayer } from "./audio-player";
 import { ActivationTracksEditor, AudioTracksEditor } from "./extra-tracks-panel";
 import { Section as SettingsSection, CollapsibleGroup, panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
 import { IconEye, IconEyeOff, IconVideo, IconDirector, IconTrack, IconVolume } from "./icons";
+import { isSelected, selectedIdOf, type EntityKind, type Selection } from "./selection";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   expandNoisePreset,
@@ -305,11 +306,17 @@ const DEMO_PROP_DEFS: { id: string; name: string; position: [number, number, num
   { id: "prop/pylon", name: "Pylon", position: [0.4, 1.9, -1.6], color: "#3b82f6" }
 ];
 
-function DemoProps() {
+function DemoProps({ selectedId, onSelect }: { selectedId?: string | null; onSelect?: (id: string) => void }) {
   return (
     <>
       {DEMO_PROP_DEFS.map((prop) => (
-        <Activatable key={prop.id} id={prop.id} name={prop.name}>
+        <Activatable
+          key={prop.id}
+          id={prop.id}
+          name={prop.name}
+          selected={selectedId === prop.id}
+          onSelect={() => onSelect?.(prop.id)}
+        >
           <mesh position={prop.position}>
             <boxGeometry args={[0.5, 0.5, 0.5]} />
             <meshStandardMaterial color={prop.color} emissive={prop.color} emissiveIntensity={0.25} />
@@ -420,7 +427,9 @@ function Scene({
   timelinePlayerRef,
   activationTracks,
   audioTracks,
-  audioPlayer
+  audioPlayer,
+  selection,
+  onSelectEntity
 }: {
   bezierPath: BezierPath | null;
   vertexPath: VertexPath | null;
@@ -475,6 +484,8 @@ function Scene({
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   audioPlayer: AudioTrackPlayer;
+  selection: Selection;
+  onSelectEntity: (kind: EntityKind, id: string) => void;
 }) {
   useEditorHelpersVisible();
   const activatablesRegistry = useActivatablesRegistry();
@@ -733,7 +744,12 @@ function Scene({
         />
       ) : null}
 
-      <Activatable id="turbine/Nacelle" name="Turbine (spinning)">
+      <Activatable
+        id="turbine/Nacelle"
+        name="Turbine (spinning)"
+        selected={isSelected(selection, "object", "turbine/Nacelle")}
+        onSelect={() => onSelectEntity("object", "turbine/Nacelle")}
+      >
         <SpinningTargetProbe
           targetRegistry={targetRegistry}
           id="turbine/Nacelle"
@@ -742,7 +758,10 @@ function Scene({
           degPerSec={18}
         />
       </Activatable>
-      <DemoProps />
+      <DemoProps
+        selectedId={selectedIdOf(selection, "object")}
+        onSelect={(propId) => onSelectEntity("object", propId)}
+      />
 
       <EditorHelpers>
       {dollies.map((dolly) => (
@@ -751,6 +770,8 @@ function Scene({
           framesRef={dollyFramesRef}
           cartId={dolly.id}
           name={dolly.name ?? dolly.id}
+          selected={isSelected(selection, "dolly", dolly.id)}
+          onSelect={() => onSelectEntity("dolly", dolly.id)}
         />
       ))}
       {virtualCameras.map((virtualCamera) => {
@@ -1811,15 +1832,28 @@ export function App() {
   const [pointTargets, setPointTargets] = useState<SceneTarget[]>(
     () => loadedScene?.targets ?? storedShow?.pointTargets?.map(toSceneTarget) ?? INITIAL_POINT_TARGETS
   );
-  const [selectedPointTargetId, setSelectedPointTargetId] = useState<string | null>(null);
+  // Unified single-selection atom (engine-style). Old per-type ids are derived
+  // from it so existing panels keep working during the phased refactor.
+  const [selection, setSelection] = useState<Selection>(null);
+  const selectedPointTargetId = selectedIdOf(selection, "target");
 
-  function selectPointTarget(id: string | null): void {
-    setSelectedPointTargetId(id);
-    if (id !== null) {
+  // The one selection funnel: sets the atom, clears path sub-selection for
+  // non-path kinds, and parks playback when a camera shot is selected.
+  function select(kind: EntityKind, id: string | null): void {
+    setSelection(id === null ? null : { kind, id });
+    if (id === null) return;
+    if (kind !== "path") {
       setSelectedHandleIndex(null);
       setSelectedMidpointIndex(null);
-      setSelectedVirtualCameraId(null);
     }
+    if (kind === "camera") {
+      setPipDriver("shots");
+      timelinePlayerRef.current.playing = false;
+    }
+  }
+
+  function selectPointTarget(id: string | null): void {
+    select("target", id);
   }
 
   function addPointTarget(): void {
@@ -1848,7 +1882,7 @@ export function App() {
 
   function deletePointTarget(id: string): void {
     setPointTargets((current) => current.filter((t) => t.id !== id));
-    if (selectedPointTargetId === id) setSelectedPointTargetId(null);
+    if (isSelected(selection, "target", id)) setSelection(null);
   }
 
   function movePointTarget(id: string, position: Vec3): void {
@@ -1910,6 +1944,7 @@ export function App() {
     const target = paths.find((path) => path.id === id);
     if (!target || id === activePathId) return;
     setActivePathId(id);
+    setSelection({ kind: "path", id });
     setBezierPath(BezierPath.fromJSON(target.bezier));
     setSelectedHandleIndex(null);
     setSelectedMidpointIndex(null);
@@ -2041,8 +2076,7 @@ export function App() {
     setShotTiming(scene.shotTiming);
     setDollyRuns(scene.dollyRuns);
     setPointTargets(scene.targets);
-    setSelectedVirtualCameraId(null);
-    setSelectedPointTargetId(null);
+    setSelection(null);
     setSelectedMidpointIndex(null);
     setSelectedHandleIndex(active ? 0 : null);
     setPathVersion((version) => version + 1);
@@ -2144,7 +2178,7 @@ export function App() {
       return next;
     });
   }
-  const [selectedVirtualCameraId, setSelectedVirtualCameraId] = useState<string | null>(null);
+  const selectedVirtualCameraId = selectedIdOf(selection, "camera");
   const [virtualCameraCaptureRequest, setVirtualCameraCaptureRequest] = useState(0);
   const [virtualCameraActivation, setVirtualCameraActivation] =
     useState<VirtualCameraActivation | null>(null);
@@ -2394,7 +2428,7 @@ export function App() {
               body: { type: "static", position: snapshot.position, quaternion: snapshot.quaternion },
               ...(snapshot.lens && { lens: snapshot.lens })
             } as VirtualCameraDefinition);
-    setSelectedVirtualCameraId(id);
+    select("camera", id);
     setVcamDefs((current) => [...current, def]);
     setEditorVcams((current) => ({ ...current, [id]: editor }));
     setShotTiming((current) => ({
@@ -2578,8 +2612,8 @@ export function App() {
       delete next[id];
       return next;
     });
-    if (selectedVirtualCameraId === id) {
-      setSelectedVirtualCameraId(null);
+    if (isSelected(selection, "camera", id)) {
+      setSelection(null);
     }
     if (virtualCameraActivation?.toId === id) {
       releaseVirtualCamera();
@@ -2592,14 +2626,7 @@ export function App() {
   }
 
   function selectVirtualCamera(id: string | null): void {
-    setSelectedVirtualCameraId(id);
-    if (id !== null) {
-      setSelectedHandleIndex(null);
-      setSelectedMidpointIndex(null);
-      setSelectedPointTargetId(null);
-      setPipDriver("shots");
-      timelinePlayerRef.current.playing = false;
-    }
+    select("camera", id);
   }
 
   function updateVirtualCameraSnapshot(id: string, snapshot: VirtualCameraSnapshot): void {
@@ -3197,6 +3224,8 @@ export function App() {
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           audioPlayer={audioPlayer}
+          selection={selection}
+          onSelectEntity={select}
           pathVersion={pathVersion}
           debugPreview={debugPreview}
           playMode={playMode}
@@ -3211,13 +3240,14 @@ export function App() {
             setSelectedHandleIndex(idx);
             if (idx !== null) {
               setSelectedMidpointIndex(null);
-              setSelectedPointTargetId(null);
+              if (activePathId) setSelection({ kind: "path", id: activePathId });
             }
           }}
           onSelectMidpoint={(idx) => {
             setSelectedMidpointIndex(idx);
             if (idx !== null) {
               setSelectedHandleIndex(null);
+              if (activePathId) setSelection({ kind: "path", id: activePathId });
             }
           }}
           onTransformingChange={setIsTransforming}
