@@ -66,19 +66,15 @@ export function NumberSlider({
 export function RigSettingsPanel({
   settings,
   noisePreset,
-  dutchDeg,
   onChange,
   onNoisePresetChange,
-  onDutchChange,
   onClose,
   onReset
 }: {
   settings: ComposerSettings;
   noisePreset: DemoNoisePreset;
-  dutchDeg: number;
   onChange: (next: ComposerSettings) => void;
   onNoisePresetChange: (preset: DemoNoisePreset) => void;
-  onDutchChange: (deg: number) => void;
   onClose: () => void;
   onReset: () => void;
 }) {
@@ -114,7 +110,6 @@ export function RigSettingsPanel({
             <option value="rough">Rough handheld</option>
           </select>
         </label>
-        <NumberSlider label="Dutch" value={dutchDeg} min={-45} max={45} step={1} unit="°" onChange={onDutchChange} />
       </SettingsSection>
 
       <SettingsSection title="Screen">

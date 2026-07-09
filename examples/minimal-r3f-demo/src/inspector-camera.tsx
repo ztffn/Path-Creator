@@ -6,9 +6,19 @@
 import { useState, type CSSProperties } from "react";
 import type { CameraOverrideAxisMode, ComposerSettings, RegisteredTarget, RigCartDefinition } from "@huma/path-creator/core";
 import type { VirtualCameraSnapshot } from "@huma/path-creator/three";
-import { CollapsibleGroup } from "./panel-theme";
-import { RigSettingsPanel } from "./rig-settings-panel";
+import { CollapsibleGroup, MUTED } from "./panel-theme";
+import { NumberSlider, RigSettingsPanel } from "./rig-settings-panel";
 import { DEFAULT_COMPOSER_SETTINGS, type DemoShotPatch, type DemoVirtualCamera } from "./vcam-model";
+
+// Authorable lens fields (dutch stays in the Composer). Each is optional on the
+// vcam's lens: unchecked = inherited (absent), checked = an explicit override
+// seeded from `seed`. Physical ranges, unlike the normalized curves elsewhere.
+const LENS_FIELDS = [
+  { key: "fov", label: "FOV", min: 10, max: 120, step: 1, unit: "°", seed: 45 },
+  { key: "zoom", label: "Zoom", min: 0.1, max: 5, step: 0.05, seed: 1 },
+  { key: "near", label: "Near", min: 0.01, max: 10, step: 0.01, seed: 0.1 },
+  { key: "far", label: "Far", min: 1, max: 1000, step: 1, seed: 100 }
+] as const;
 
 function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
   const lens = snapshot.lens?.fov ? `${snapshot.lens.fov.toFixed(0)}deg` : "lens";
@@ -55,6 +65,44 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
         </select>
       </label>
 
+      <CollapsibleGroup title="Lens">
+        {LENS_FIELDS.map((field) => {
+          const value = camera.snapshot.lens?.[field.key];
+          const enabled = value !== undefined;
+          return (
+            <div key={field.key} style={{ display: "grid", gap: 4 }}>
+              <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
+                <input
+                  type="checkbox"
+                  checked={enabled}
+                  onChange={(event) => onUpdateShot({ lens: { [field.key]: event.target.checked ? field.seed : null } })}
+                />
+                {enabled ? null : (
+                  <>
+                    <span>{field.label}</span>
+                    <span style={{ color: MUTED, fontSize: 11 }}>inherited</span>
+                  </>
+                )}
+              </label>
+              {enabled ? (
+                <NumberSlider
+                  label={field.label}
+                  value={value ?? field.seed}
+                  min={field.min}
+                  max={field.max}
+                  step={field.step}
+                  {...("unit" in field && field.unit ? { unit: field.unit } : {})}
+                  onChange={(next) => onUpdateShot({ lens: { [field.key]: next } })}
+                />
+              ) : null}
+            </div>
+          );
+        })}
+        {/* Dutch (roll) is a lens field too, but has a valid 0 (= level), so it's a
+            plain slider — no inherit toggle. */}
+        <NumberSlider label="Dutch" value={camera.dutchDeg} min={-45} max={45} step={1} unit="°" onChange={(deg) => onUpdateShot({ dutchDeg: deg })} />
+      </CollapsibleGroup>
+
       <div style={{ display: "grid", gap: 6, minWidth: 0 }}>
         <button style={{ fontSize: 11, textAlign: "left" }} onClick={() => setComposerOpen((o) => !o)}>
           {composerOpen ? "▾ Composer settings" : "▸ Composer settings"}
@@ -63,10 +111,8 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
           <RigSettingsPanel
             settings={camera.composerSettings}
             noisePreset={camera.noisePreset}
-            dutchDeg={camera.dutchDeg}
             onChange={(settings) => onUpdateComposer(settings)}
             onNoisePresetChange={(noisePreset) => onUpdateShot({ noisePreset })}
-            onDutchChange={(dutchDeg) => onUpdateShot({ dutchDeg })}
             onClose={() => setComposerOpen(false)}
             onReset={() => onUpdateComposer(DEFAULT_COMPOSER_SETTINGS)}
           />

@@ -129,6 +129,14 @@ export type DemoVirtualCamera = {
   composerSettings: ComposerSettings;
 };
 
+/**
+ * A patch of authorable lens fields. Each entry sets that field on the vcam's
+ * `def.lens`; `null` clears it back to inherited (a field left absent inherits the
+ * outgoing shot / live camera — never zeroed). `dutchDeg` stays a separate patch
+ * field (it has a valid 0 and lives top-level on the view), so it's not here.
+ */
+export type LensPatch = Partial<Record<"fov" | "zoom" | "near" | "far", number | null>>;
+
 /** A patch of the editable per-shot fields (the panels/inspector mutate these). */
 export type DemoShotPatch = Partial<
   Pick<
@@ -148,7 +156,7 @@ export type DemoShotPatch = Partial<
     | "orbitAutoDegPerSec"
     | "overrideControl"
   >
->;
+> & { lens?: LensPatch };
 
 /** All-locked override: input ignored, the shot plays exactly as authored. The
  *  body-agnostic default every view carries until an axis is set free/recenter. */

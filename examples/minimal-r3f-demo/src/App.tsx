@@ -2000,6 +2000,7 @@ export function App() {
       patch.noisePreset !== undefined ||
       patch.trackTargetId !== undefined ||
       patch.dutchDeg !== undefined ||
+      patch.lens !== undefined ||
       patch.cartId !== undefined ||
       patch.cartOffset !== undefined ||
       patch.overrideControl !== undefined ||
@@ -2029,6 +2030,18 @@ export function App() {
             const lens = { ...next.lens };
             if (patch.dutchDeg === 0) delete lens.dutchDeg;
             else lens.dutchDeg = patch.dutchDeg;
+            if (Object.keys(lens).length > 0) next.lens = lens;
+            else delete next.lens;
+          }
+          if (patch.lens !== undefined) {
+            // Merge each authored lens field; null clears it back to inherited
+            // (absent), never zeroed — mirroring blendVirtualCameraLens semantics.
+            const lens = { ...next.lens };
+            for (const [key, value] of Object.entries(patch.lens) as [keyof typeof patch.lens, number | null | undefined][]) {
+              if (value === undefined) continue;
+              if (value === null) delete lens[key];
+              else lens[key] = value;
+            }
             if (Object.keys(lens).length > 0) next.lens = lens;
             else delete next.lens;
           }
