@@ -6,11 +6,14 @@
 import { useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   EASING_PRESETS,
+  clamp,
   convertEasingCurveSpace,
   easingToCurve,
   evaluateEasing,
   isEasingCurve,
+  lerp,
   sampleEasingCurve,
+  sampleEasingDerivative,
   type Easing,
   type EasingCurveKey,
   type EasingPreset,
@@ -41,18 +44,18 @@ const DEFAULT_THEME: Required<EasingEditorTheme> = {
   text: "#cbd5e1"
 };
 
-const PRESET_NAMES = Object.keys(EASING_PRESETS) as EasingPreset[];
 const LEGACY = new Set<EasingPreset>(["cut", "linear", "easeIn", "easeOut", "easeInOut", "hardIn", "hardOut"]);
+const PRESET_NAMES = Object.keys(EASING_PRESETS) as EasingPreset[];
+const STANDARD_PRESETS = PRESET_NAMES.filter((n) => !LEGACY.has(n));
+const LEGACY_PRESETS = PRESET_NAMES.filter((n) => LEGACY.has(n));
 const SAMPLES = 40;
-const clamp = (n: number, lo: number, hi: number): number => Math.min(hi, Math.max(lo, n));
-const lerpN = (a: number, b: number, f: number): number => a + (b - a) * f;
 
 // Effective control points: the explicit handle, or the default 1/3-chord point the
 // evaluator uses when a handle is absent — so every anchor shows a grabbable handle.
 const effOut = (keys: EasingCurveKey[], i: number): EasingPoint =>
-  keys[i].out ?? { x: lerpN(keys[i].x, keys[i + 1].x, 1 / 3), y: lerpN(keys[i].y, keys[i + 1].y, 1 / 3) };
+  keys[i].out ?? { x: lerp(keys[i].x, keys[i + 1].x, 1 / 3), y: lerp(keys[i].y, keys[i + 1].y, 1 / 3) };
 const effIn = (keys: EasingCurveKey[], i: number): EasingPoint =>
-  keys[i].in ?? { x: lerpN(keys[i - 1].x, keys[i].x, 2 / 3), y: lerpN(keys[i - 1].y, keys[i].y, 2 / 3) };
+  keys[i].in ?? { x: lerp(keys[i - 1].x, keys[i].x, 2 / 3), y: lerp(keys[i - 1].y, keys[i].y, 2 / 3) };
 
 const cloneKeys = (keys: EasingCurveKey[]): EasingCurveKey[] =>
   keys.map((k) => ({ ...k, ...(k.out && { out: { ...k.out } }), ...(k.in && { in: { ...k.in } }) }));
@@ -69,8 +72,9 @@ function relink(keys: EasingCurveKey[], index: number, refSide: "out" | "in", mo
   const prev = keys[index - 1];
   const next = keys[index + 1];
   if (!prev || !next) return;
-  const ref = refSide === "out" ? (key.out ?? effOut(keys, index)) : (key.in ?? effIn(keys, index));
+  const eff = (side: "out" | "in"): EasingPoint => (side === "out" ? effOut(keys, index) : effIn(keys, index));
   const oppSide = refSide === "out" ? "in" : "out";
+  const ref = eff(refSide);
   const oppLoX = oppSide === "out" ? key.x : prev.x;
   const oppHiX = oppSide === "out" ? next.x : key.x;
   const vx = ref.x - key.x;
@@ -81,7 +85,7 @@ function relink(keys: EasingCurveKey[], index: number, refSide: "out" | "in", mo
     ox = -vx;
     oy = -vy;
   } else {
-    const curr = oppSide === "out" ? (key.out ?? effOut(keys, index)) : (key.in ?? effIn(keys, index));
+    const curr = eff(oppSide);
     const curLen = Math.hypot(curr.x - key.x, curr.y - key.y);
     const vlen = Math.hypot(vx, vy) || 1e-6;
     ox = (-vx / vlen) * curLen;
@@ -137,24 +141,22 @@ export function EasingEditor({
   // in position mode the speed (derivative); in speed mode the resulting position.
   const editablePath: string[] = [];
   const overlayPath: string[] = [];
-  const speedEps = 1e-3;
-  let overlayMax = 0;
-  const overlayRaw: number[] = [];
   for (let i = 0; i <= SAMPLES; i++) {
     const x = i / SAMPLES;
     const solidY = editing ? sampleEasingCurve(editing, x) : evaluateEasing(x, value);
     editablePath.push(`${i === 0 ? "M" : "L"}${px(x).toFixed(2)},${py(solidY).toFixed(2)}`);
-    if (speedMode) {
-      overlayRaw.push(evaluateEasing(x, value)); // resulting position, already 0..1
-    } else {
-      const d = Math.abs(evaluateEasing(Math.min(1, x + speedEps), value) - evaluateEasing(Math.max(0, x - speedEps), value));
-      overlayRaw.push(d);
-      if (d > overlayMax) overlayMax = d;
-    }
   }
-  for (let i = 0; i <= SAMPLES; i++) {
-    const y = speedMode ? overlayRaw[i] : overlayMax > 0 ? overlayRaw[i] / overlayMax : 0;
-    overlayPath.push(`${i === 0 ? "M" : "L"}${px(i / SAMPLES).toFixed(2)},${py(y).toFixed(2)}`);
+  // In position mode the dashed overlay is the speed (normalized derivative); in speed
+  // mode it's the resulting position (already 0..1).
+  if (speedMode) {
+    for (let i = 0; i <= SAMPLES; i++) {
+      const x = i / SAMPLES;
+      overlayPath.push(`${i === 0 ? "M" : "L"}${px(x).toFixed(2)},${py(evaluateEasing(x, value)).toFixed(2)}`);
+    }
+  } else {
+    const deriv = sampleEasingDerivative(value, SAMPLES).map(Math.abs);
+    const max = Math.max(1e-6, ...deriv);
+    deriv.forEach((d, i) => overlayPath.push(`${i === 0 ? "M" : "L"}${px(i / SAMPLES).toFixed(2)},${py(d / max).toFixed(2)}`));
   }
 
   function commit(keys: EasingCurveKey[]): void {
@@ -266,12 +268,12 @@ export function EasingEditor({
         style={{ fontSize: 11 }}
       >
         <optgroup label="Standard">
-          {PRESET_NAMES.filter((n) => !LEGACY.has(n)).map((n) => (
+          {STANDARD_PRESETS.map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
         </optgroup>
         <optgroup label="Legacy">
-          {PRESET_NAMES.filter((n) => LEGACY.has(n)).map((n) => (
+          {LEGACY_PRESETS.map((n) => (
             <option key={n} value={n}>{n}</option>
           ))}
         </optgroup>
@@ -332,22 +334,17 @@ export function EasingEditor({
               const isFirst = i === 0;
               const isLast = i === editing.keys.length - 1;
               const showHandles = i === selected;
-              const out = showHandles && !isLast ? effOut(editing.keys, i) : null;
-              const inH = showHandles && !isFirst ? effIn(editing.keys, i) : null;
+              const handles: [DragTarget["kind"], EasingPoint][] = [];
+              if (showHandles && !isLast) handles.push(["out", effOut(editing.keys, i)]);
+              if (showHandles && !isFirst) handles.push(["in", effIn(editing.keys, i)]);
               return (
                 <g key={i}>
-                  {out ? (
-                    <>
-                      <line x1={px(key.x)} y1={py(key.y)} x2={px(out.x)} y2={py(out.y)} stroke={t.handle} strokeWidth={1} vectorEffect="non-scaling-stroke" />
-                      <circle cx={px(out.x)} cy={py(out.y)} r={3.5} fill={t.handle} style={{ cursor: "grab" }} onPointerDown={(e) => startDrag({ kind: "out", index: i }, e)} />
-                    </>
-                  ) : null}
-                  {inH ? (
-                    <>
-                      <line x1={px(key.x)} y1={py(key.y)} x2={px(inH.x)} y2={py(inH.y)} stroke={t.handle} strokeWidth={1} vectorEffect="non-scaling-stroke" />
-                      <circle cx={px(inH.x)} cy={py(inH.y)} r={3.5} fill={t.handle} style={{ cursor: "grab" }} onPointerDown={(e) => startDrag({ kind: "in", index: i }, e)} />
-                    </>
-                  ) : null}
+                  {handles.map(([kind, h]) => (
+                    <g key={kind}>
+                      <line x1={px(key.x)} y1={py(key.y)} x2={px(h.x)} y2={py(h.y)} stroke={t.handle} strokeWidth={1} vectorEffect="non-scaling-stroke" />
+                      <circle cx={px(h.x)} cy={py(h.y)} r={3.5} fill={t.handle} style={{ cursor: "grab" }} onPointerDown={(e) => startDrag({ kind, index: i }, e)} />
+                    </g>
+                  ))}
                   <circle
                     cx={px(key.x)}
                     cy={py(key.y)}

@@ -3,6 +3,7 @@
 // plus the gre/1650294 polynomial set) or a custom multi-anchor curve of cubic-bezier
 // segments, authored in position or (integrated) speed space. Presets are analytic;
 // curve segments solve x->t per segment. Pure data + pure evaluator; no engine dep.
+import { lerp } from "./vec3";
 
 /** Named easing presets: legacy blend curves + the gre/1650294 polynomial set. */
 export type EasingPreset =
@@ -102,30 +103,30 @@ export function isEasingCurve(easing: Easing): easing is EasingCurve {
 }
 
 const clamp01 = (t: number): number => (Number.isFinite(t) ? Math.min(1, Math.max(0, t)) : 0);
-const lerp = (a: number, b: number, f: number): number => a + (b - a) * f;
 
 /**
  * General cubic-bezier with arbitrary control points; solves parameter t for the
  * given x (Newton then bisection), returns y. x is assumed monotonic across the
  * segment (control-point x within [p0.x, p3.x]), as the curve editor enforces.
  */
+const cubic = (t: number, a: number, b: number, c: number, d: number): number => {
+  const mt = 1 - t;
+  return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d;
+};
+
 function solveCubicBezierSegment(p0: EasingPoint, c1: EasingPoint, c2: EasingPoint, p3: EasingPoint, x: number): number {
-  const bezier = (t: number, a: number, b: number, c: number, d: number): number => {
-    const mt = 1 - t;
-    return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d;
-  };
   const epsilon = 1e-6;
   let t0 = 0;
   let t1 = 1;
   let t = p3.x > p0.x ? (x - p0.x) / (p3.x - p0.x) : 0;
   for (let i = 0; i < 24; i++) {
-    const xt = bezier(t, p0.x, c1.x, c2.x, p3.x);
+    const xt = cubic(t, p0.x, c1.x, c2.x, p3.x);
     if (Math.abs(xt - x) < epsilon) break;
     if (xt < x) t0 = t;
     else t1 = t;
     t = (t0 + t1) * 0.5;
   }
-  return bezier(t, p0.y, c1.y, c2.y, p3.y);
+  return cubic(t, p0.y, c1.y, c2.y, p3.y);
 }
 
 /** Raw geometric value of the curve at x (ignores `space` — the y as drawn/edited). */
@@ -177,20 +178,29 @@ export function evaluateEasingCurve(curve: EasingCurve, x: number): number {
 }
 
 /**
+ * Sample the speed (finite-difference derivative) of an easing at `samples`+1 evenly
+ * spaced times. Signed deltas — callers take Math.abs and/or normalize as they need.
+ * Shared by the space converter, the editor's overlay, and the block speed sparkline.
+ */
+export function sampleEasingDerivative(easing: Easing, samples: number, eps = 1e-3): number[] {
+  const out = new Array<number>(samples + 1);
+  for (let i = 0; i <= samples; i++) {
+    const x = i / samples;
+    out[i] = evaluateEasing(Math.min(1, x + eps), easing) - evaluateEasing(Math.max(0, x - eps), easing);
+  }
+  return out;
+}
+
+/**
  * Convert a curve to the other authoring space while preserving the motion it
  * produces: sample the resulting position (or its derivative, for speed) at evenly
  * spaced anchors. Used by an editor's position<->speed toggle. Lossy resample.
  */
 export function convertEasingCurveSpace(current: EasingCurve, target: "position" | "speed", samples = 4): EasingCurve {
-  if (target === "position") return { type: "curve", keys: easingToCurve(current, samples).keys };
+  if (target === "position") return easingToCurve(current, samples);
   // Speed = derivative of the resulting motion. Its magnitude is arbitrary (the evaluator
   // re-normalizes by total area), so rescale the sampled deltas to a friendly display range.
-  const eps = 1e-3;
-  const ys: number[] = [];
-  for (let i = 0; i <= samples; i++) {
-    const x = i / samples;
-    ys.push(evaluateEasingCurve(current, Math.min(1, x + eps)) - evaluateEasingCurve(current, Math.max(0, x - eps)));
-  }
+  const ys = sampleEasingDerivative(current, samples);
   const maxAbs = Math.max(1e-6, ...ys.map((y) => Math.abs(y)));
   const scale = 0.8 / maxAbs;
   const points = ys.map((y, i) => ({ x: i / samples, y: y * scale }));
