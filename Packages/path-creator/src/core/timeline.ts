@@ -133,13 +133,11 @@ export function normalizeTimelineEasing<T extends Timeline>(timeline: T): T {
     if (track.type === "camera") {
       return {
         ...track,
-        blocks: track.blocks.map((b) => {
-          const blendIn =
-            b.blendIn?.curve === undefined ? b.blendIn : { ...b.blendIn, curve: normalizeEasing(b.blendIn.curve) };
-          const lensAnimation = b.lensAnimation && normalizeLensAnimationEasing(b.lensAnimation);
-          if (blendIn === b.blendIn && lensAnimation === undefined) return b;
-          return { ...b, ...(blendIn && { blendIn }), ...(lensAnimation && { lensAnimation }) };
-        })
+        blocks: track.blocks.map((b) => ({
+          ...b,
+          ...(b.blendIn?.curve !== undefined && { blendIn: { ...b.blendIn, curve: normalizeEasing(b.blendIn.curve) } }),
+          ...(b.lensAnimation && { lensAnimation: normalizeLensAnimationEasing(b.lensAnimation) })
+        }))
       };
     }
     return track;

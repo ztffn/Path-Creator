@@ -11,6 +11,7 @@ import {
   type CameraOverrideSettings,
   type ComposerSettings,
   type Easing,
+  type LensFieldAnimation,
   type OrbitBinding,
   type RigCartDefinition,
   type TrackingTargetDefinition,
@@ -106,7 +107,9 @@ export const DEFAULT_DOLLY_EASING: Easing = "easeInOut";
  * demo sidecar keyed by vcam id — not the portable RigDocument; it promotes to a
  * CameraBlock lens track once the authoring proves out.
  */
-export type FovAnimation = { from: number; to: number; easing: Easing };
+// The package's per-field lens animation with a required easing (the authoring UI
+// always writes one). Structurally what a CameraBlock.lensAnimation.fov carries.
+export type FovAnimation = Required<LensFieldAnimation>;
 
 /** A push-in seeded from the current static fov (to = a tighter 0.6×), easeInOut. */
 export const defaultFovAnimation = (base: number): FovAnimation => ({

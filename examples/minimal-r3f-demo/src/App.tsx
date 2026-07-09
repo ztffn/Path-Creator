@@ -1735,9 +1735,7 @@ export function App() {
           .join(";")}`
     )
     .join("|");
-  const fovAnimKey = Object.entries(fovAnimations)
-    .map(([id, a]) => `${id}:${a.from},${a.to},${typeof a.easing === "string" ? a.easing : JSON.stringify(a.easing)}`)
-    .join("|");
+  const fovAnimKey = JSON.stringify(fovAnimations);
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
   // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.

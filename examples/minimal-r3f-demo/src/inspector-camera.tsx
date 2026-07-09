@@ -7,19 +7,22 @@ import { useState, type CSSProperties } from "react";
 import type { CameraOverrideAxisMode, ComposerSettings, RegisteredTarget, RigCartDefinition } from "@huma/path-creator/core";
 import type { VirtualCameraSnapshot } from "@huma/path-creator/three";
 import { EasingEditor } from "@huma/path-creator/timeline-ui";
-import { CollapsibleGroup, MUTED } from "./panel-theme";
+import { CheckRow, CollapsibleGroup, MUTED } from "./panel-theme";
 import { NumberSlider, RigSettingsPanel } from "./rig-settings-panel";
 import { DEFAULT_COMPOSER_SETTINGS, defaultFovAnimation, type DemoShotPatch, type DemoVirtualCamera, type FovAnimation } from "./vcam-model";
 
 // Authorable lens fields (dutch stays in the Composer). Each is optional on the
 // vcam's lens: unchecked = inherited (absent), checked = an explicit override
 // seeded from `seed`. Physical ranges, unlike the normalized curves elsewhere.
+// `animatable` marks the one field that gets a from/to + curve sub-panel.
 const LENS_FIELDS = [
-  { key: "fov", label: "FOV", min: 10, max: 120, step: 1, unit: "°", seed: 45 },
-  { key: "zoom", label: "Zoom", min: 0.1, max: 5, step: 0.05, seed: 1 },
-  { key: "near", label: "Near", min: 0.01, max: 10, step: 0.01, seed: 0.1 },
-  { key: "far", label: "Far", min: 1, max: 1000, step: 1, seed: 100 }
+  { key: "fov", label: "FOV", min: 10, max: 120, step: 1, unit: "°", seed: 45, animatable: true },
+  { key: "zoom", label: "Zoom", min: 0.1, max: 5, step: 0.05, seed: 1, animatable: false },
+  { key: "near", label: "Near", min: 0.01, max: 10, step: 0.01, seed: 0.1, animatable: false },
+  { key: "far", label: "Far", min: 1, max: 1000, step: 1, seed: 100, animatable: false }
 ] as const;
+
+const FOV_FIELD = LENS_FIELDS[0];
 
 function getSnapshotLabel(snapshot: VirtualCameraSnapshot): string {
   const lens = snapshot.lens?.fov ? `${snapshot.lens.fov.toFixed(0)}deg` : "lens";
@@ -73,8 +76,8 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
         {LENS_FIELDS.map((field) => {
           const value = camera.snapshot.lens?.[field.key];
           const enabled = value !== undefined;
-          const isFov = field.key === "fov";
-          const animating = isFov && fovAnimation !== null;
+          // The animatable field hides its static slider while a curve drives it.
+          const animating = field.animatable && fovAnimation !== null;
           return (
             <div key={field.key} style={{ display: "grid", gap: 4 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
@@ -83,8 +86,8 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
                   checked={enabled}
                   onChange={(event) => {
                     onUpdateShot({ lens: { [field.key]: event.target.checked ? field.seed : null } });
-                    // Turning FOV back to inherited drops any animation with it.
-                    if (isFov && !event.target.checked) onFovAnimationChange(null);
+                    // Turning an animatable field back to inherited drops its animation.
+                    if (field.animatable && !event.target.checked) onFovAnimationChange(null);
                   }}
                 />
                 {enabled ? null : (
@@ -105,34 +108,35 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
                   onChange={(next) => onUpdateShot({ lens: { [field.key]: next } })}
                 />
               ) : null}
-              {isFov && enabled ? (
-                <div style={{ display: "grid", gap: 4, paddingLeft: 4 }}>
-                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
-                    <input
-                      type="checkbox"
-                      checked={animating}
-                      onChange={(event) => onFovAnimationChange(event.target.checked ? defaultFovAnimation(value ?? field.seed) : null)}
-                    />
-                    <span>Animate FOV over the shot</span>
-                  </label>
-                  {animating && fovAnimation ? (
-                    <div style={{ display: "grid", gap: 4 }}>
-                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8" }}>
-                        <span style={{ width: 28 }}>from</span>
-                        <input type="number" value={fovAnimation.from} min={field.min} max={field.max} step={1} style={{ width: 54 }}
-                          onChange={(event) => onFovAnimationChange({ ...fovAnimation, from: Number(event.target.value) })} />
-                        <span>→ to</span>
-                        <input type="number" value={fovAnimation.to} min={field.min} max={field.max} step={1} style={{ width: 54 }}
-                          onChange={(event) => onFovAnimationChange({ ...fovAnimation, to: Number(event.target.value) })} />
-                      </div>
-                      <EasingEditor value={fovAnimation.easing} onChange={(easing) => onFovAnimationChange({ ...fovAnimation, easing })} height={130} />
-                    </div>
-                  ) : null}
-                </div>
-              ) : null}
             </div>
           );
         })}
+
+        {/* FOV animation (the one animatable field), authored below the field list. */}
+        {camera.snapshot.lens?.fov !== undefined ? (
+          <div style={{ display: "grid", gap: 4, paddingLeft: 4 }}>
+            <CheckRow
+              checked={fovAnimation !== null}
+              onChange={(on) => onFovAnimationChange(on ? defaultFovAnimation(camera.snapshot.lens?.fov ?? FOV_FIELD.seed) : null)}
+            >
+              Animate FOV over the shot
+            </CheckRow>
+            {fovAnimation ? (
+              <div style={{ display: "grid", gap: 4 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8" }}>
+                  <span style={{ width: 28 }}>from</span>
+                  <input type="number" value={fovAnimation.from} min={FOV_FIELD.min} max={FOV_FIELD.max} step={1} style={{ width: 54 }}
+                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, from: Number(event.target.value) })} />
+                  <span>→ to</span>
+                  <input type="number" value={fovAnimation.to} min={FOV_FIELD.min} max={FOV_FIELD.max} step={1} style={{ width: 54 }}
+                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, to: Number(event.target.value) })} />
+                </div>
+                <EasingEditor value={fovAnimation.easing} onChange={(easing) => onFovAnimationChange({ ...fovAnimation, easing })} height={130} />
+              </div>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Dutch (roll) is a lens field too, but has a valid 0 (= level), so it's a
             plain slider — no inherit toggle. */}
         <NumberSlider label="Dutch" value={camera.dutchDeg} min={-45} max={45} step={1} unit="°" onChange={(deg) => onUpdateShot({ dutchDeg: deg })} />

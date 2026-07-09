@@ -8,13 +8,13 @@ import {
   TIMELINE_SCHEMA_VERSION,
   evaluateEasing,
   evaluateVirtualCameraBlendCurve,
+  inverseLerp,
   lerp,
   sampleCartFrame,
   type CameraBlock,
   type CameraTrack,
   type CartFrame,
   type CartTrack,
-  type LensFieldAnimation,
   type PathCart,
   type QuaternionLike,
   type RigRuntime,
@@ -80,14 +80,15 @@ export interface TimelineSample {
  * every host gets the animation for free (no per-frame override on the host side).
  */
 function applyBlockLensAnimation(snapshot: VirtualCameraSnapshot, block: CameraBlock, t: number): void {
-  const span = block.end - block.start;
-  if (span <= 0 || !block.lensAnimation) return;
-  const local = Math.min(1, Math.max(0, (t - block.start) / span));
-  const lens: VirtualCameraLens = { ...snapshot.lens };
-  for (const [key, field] of Object.entries(block.lensAnimation) as [keyof VirtualCameraLens, LensFieldAnimation][]) {
-    lens[key] = field.from + (field.to - field.from) * evaluateEasing(local, field.easing ?? "easeInOut");
+  if (!block.lensAnimation || block.end <= block.start) return;
+  const local = inverseLerp(block.start, block.end, t);
+  // Mutate the snapshot's own fresh lens in place (resolveVirtualCameraDefinition
+  // already cloned it) — this runs per active block per frame.
+  const lens: VirtualCameraLens = (snapshot.lens ??= {});
+  for (const key in block.lensAnimation) {
+    const field = block.lensAnimation[key as keyof VirtualCameraLens];
+    if (field) lens[key as keyof VirtualCameraLens] = lerp(field.from, field.to, evaluateEasing(local, field.easing ?? "easeInOut"));
   }
-  snapshot.lens = lens;
 }
 
 export function evaluateTimeline(
