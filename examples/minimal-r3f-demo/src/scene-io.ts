@@ -26,6 +26,7 @@ import {
   NOISE_PRESETS,
   type DemoNoisePreset,
   type DollyRun,
+  type FovAnimation,
   type EditorVcam,
   type SceneTarget,
   type ShotTiming
@@ -56,7 +57,9 @@ export function buildShowTimeline(
   shotTiming: Record<string, ShotTiming>,
   dollyRuns: Record<string, DollyRun[]>,
   // Converts a normalized 0..1 move position to arc-distance for that cart's path.
-  cartLength: (cartId: string) => number
+  cartLength: (cartId: string) => number,
+  // Per-vcam FOV push/pull, emitted as the block's CameraBlock.lensAnimation.
+  fovAnimations: Record<string, FovAnimation> = {}
 ): RigTimelineDefinition {
   const shots = vcamDefs
     .map((def) => ({ def, timing: shotTiming[def.id] ?? { start: 0, end: 5 } }))
@@ -65,12 +68,14 @@ export function buildShowTimeline(
   const blocks: CameraBlock[] = shots.map((shot, index) => {
     const previous = index > 0 ? shots[index - 1] : undefined;
     const overlap = previous ? previous.timing.end - shot.timing.start : 0;
+    const fovAnim = fovAnimations[shot.def.id];
     return {
       id: `block-${shot.def.id}`,
       vcamId: shot.def.id,
       start: shot.timing.start,
       end: shot.timing.end,
-      ...(overlap > 0.01 && { blendIn: { durationSeconds: overlap, curve: "easeInOut" as const } })
+      ...(overlap > 0.01 && { blendIn: { durationSeconds: overlap, curve: "easeInOut" as const } }),
+      ...(fovAnim && { lensAnimation: { fov: fovAnim } })
     };
   });
 

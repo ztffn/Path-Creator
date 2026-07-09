@@ -13,6 +13,7 @@ import {
   createPathCart,
   createRigDocument,
   createTimeline,
+  normalizeTimelineEasing,
   serializeRigCart,
   serializeRigPath,
   type CartFrame,
@@ -477,5 +478,84 @@ describe("driveTimeline playback driver", () => {
     // The blend starts from the timeline's last pose (z=20), not from close's z=5.
     expect(state.brain.previous?.position.z).toBeCloseTo(20);
     expect(camera.position.z).toBeCloseTo(12.5);
+  });
+});
+
+describe("camera block lens animation", () => {
+  const context = buildContext();
+
+  it("eases a lens field across the block window (block-local t)", () => {
+    const anim = createTimeline({
+      duration: 10,
+      tracks: [
+        {
+          type: "camera",
+          id: "cam",
+          blocks: [
+            { id: "b", vcamId: "wide", start: 0, end: 4, lensAnimation: { fov: { from: 90, to: 30, easing: "linear" } } }
+          ]
+        }
+      ]
+    });
+    expect(evaluateTimeline(anim, context, 0).camera?.lens?.fov).toBeCloseTo(90);
+    expect(evaluateTimeline(anim, context, 2).camera?.lens?.fov).toBeCloseTo(60);
+    expect(evaluateTimeline(anim, context, 4).camera?.lens?.fov).toBeCloseTo(30);
+  });
+
+  it("is deterministic: scrub == play at the same t", () => {
+    const anim = createTimeline({
+      duration: 10,
+      tracks: [
+        { type: "camera", id: "cam", blocks: [{ id: "b", vcamId: "wide", start: 0, end: 8, lensAnimation: { fov: { from: 80, to: 20 } } }] }
+      ]
+    });
+    expect(evaluateTimeline(anim, context, 3).camera?.lens?.fov).toBeCloseTo(
+      evaluateTimeline(anim, buildContext(), 3).camera?.lens?.fov as number
+    );
+  });
+
+  it("blends the animated lens across overlapping blocks", () => {
+    // b1 holds fov 60 (static override); b2 animates fov 20 and blends in over 2s.
+    // At t=5 (halfway through the blend) fov = blend(60, 20, 0.5) = 40.
+    const blended = createTimeline({
+      duration: 12,
+      tracks: [
+        {
+          type: "camera",
+          id: "cam",
+          blocks: [
+            { id: "b1", vcamId: "wide", start: 0, end: 10, overrides: { lens: { fov: 60 } } },
+            {
+              id: "b2",
+              vcamId: "wide",
+              start: 4,
+              end: 10,
+              blendIn: { durationSeconds: 2, curve: "linear" },
+              lensAnimation: { fov: { from: 20, to: 20, easing: "linear" } }
+            }
+          ]
+        }
+      ]
+    });
+    const sample = evaluateTimeline(blended, context, 5);
+    expect(sample.blendProgress).toBeCloseTo(0.5);
+    expect(sample.camera?.lens?.fov).toBeCloseTo(40);
+  });
+
+  it("normalizes a malformed animated-easing at the deserialize boundary", () => {
+    const bad = createTimeline({
+      duration: 4,
+      tracks: [
+        {
+          type: "camera",
+          id: "cam",
+          blocks: [{ id: "b", vcamId: "wide", start: 0, end: 4, lensAnimation: { fov: { from: 90, to: 30, easing: "bogus" as never } } }]
+        }
+      ]
+    });
+    const normalized = normalizeTimelineEasing(bad);
+    const track = normalized.tracks[0];
+    const easing = track.type === "camera" ? track.blocks[0].lensAnimation?.fov?.easing : undefined;
+    expect(easing).toBe("linear");
   });
 });

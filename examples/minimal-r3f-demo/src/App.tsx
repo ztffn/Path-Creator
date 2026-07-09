@@ -9,7 +9,6 @@ import {
   VertexPath,
   createPathCart,
   sampleCartFrame,
-  evaluateEasing,
   type CartFrame,
   sampleEasingCurve,
   type ComposerSettings,
@@ -433,7 +432,6 @@ function Scene({
   activationTracks,
   audioTracks,
   audioPlayer,
-  fovAnimations,
   selection,
   onSelectEntity
 }: {
@@ -465,8 +463,6 @@ function Scene({
   virtualCameras: DemoVirtualCamera[];
   /** Real definitions the drive-loop resolves/blends; parallel to virtualCameras by id. */
   vcamDefs: VirtualCameraDefinition[];
-  /** Per-vcam FOV push/pull applied post-resolve during timeline playback (demo sidecar). */
-  fovAnimations: Record<string, FovAnimation>;
   selectedVirtualCameraId: string | null;
   onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
@@ -641,22 +637,6 @@ function Scene({
 
     const result = rigDrive.drive(brainCamera, intent, delta);
     frustumHelper.update();
-
-    // FOV animation (demo sidecar): after the brain applies the static lens, push/pull
-    // the active shot's fov across its window. Timeline playback only — it's the sole
-    // path with a shot-local clock. NOTE: mid-blend this uses the incoming shot's curve
-    // rather than blending it; that refinement lands when this promotes to a CameraBlock.
-    const animId = result.activeVcamId;
-    const fovAnim = animId ? fovAnimations[animId] : undefined;
-    if (fovAnim && activeTimeline) {
-      const shot = virtualCameras.find((item) => item.id === animId);
-      const span = shot ? shot.shotEnd - shot.shotStart : 0;
-      if (shot && span > 1e-6) {
-        const local = Math.min(1, Math.max(0, (timelinePlayerRef.current.time - shot.shotStart) / span));
-        brainCamera.fov = fovAnim.from + (fovAnim.to - fovAnim.from) * evaluateEasing(local, fovAnim.easing);
-        brainCamera.updateProjectionMatrix();
-      }
-    }
 
     // Surface the actually-driven vcam id (timeline picks it per-frame) so the host
     // can label the PiP and enable piloting for the active orbit shot.
@@ -1755,6 +1735,9 @@ export function App() {
           .join(";")}`
     )
     .join("|");
+  const fovAnimKey = Object.entries(fovAnimations)
+    .map(([id, a]) => `${id}:${a.from},${a.to},${typeof a.easing === "string" ? a.easing : JSON.stringify(a.easing)}`)
+    .join("|");
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
   // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.
@@ -1767,16 +1750,22 @@ export function App() {
     vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0;
   const demoTimeline = useMemo(() => {
     if (!hasTimelineContent) return null;
-    const base = buildShowTimeline(vcamDefs, shotTiming, dollyRuns, (cartId) => {
-      const dolly = dollies.find((d) => d.id === cartId);
-      return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
-    });
+    const base = buildShowTimeline(
+      vcamDefs,
+      shotTiming,
+      dollyRuns,
+      (cartId) => {
+        const dolly = dollies.find((d) => d.id === cartId);
+        return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
+      },
+      fovAnimations
+    );
     // Extend the clock to cover activation/audio clips that outlast the camera/cart
     // content. (The exported RigDocument timeline is intentionally NOT extended —
     // extra tracks persist in a separate sidecar, not the portable document.)
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyRunKey, extraDuration]);
+  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
@@ -2580,7 +2569,6 @@ export function App() {
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           audioPlayer={audioPlayer}
-          fovAnimations={fovAnimations}
           selection={selection}
           onSelectEntity={select}
           pathVersion={pathVersion}
