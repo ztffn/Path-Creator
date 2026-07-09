@@ -171,11 +171,22 @@ function speedCurveLUT(curve: EasingCurve): number[] {
 
 /** Evaluate a multi-anchor easing curve at x, integrating+normalizing when space="speed". */
 export function evaluateEasingCurve(curve: EasingCurve, x: number): number {
-  if (curve.space !== "speed") return sampleEasingCurve(curve, x);
-  const lut = speedCurveLUT(curve);
-  const t = clamp01(x) * LUT_SEGMENTS;
-  const i = Math.floor(t);
-  return i >= LUT_SEGMENTS ? lut[LUT_SEGMENTS] : lerp(lut[i], lut[i + 1], t - i);
+  if (curve.space === "speed") {
+    const lut = speedCurveLUT(curve);
+    const t = clamp01(x) * LUT_SEGMENTS;
+    const i = Math.floor(t);
+    return i >= LUT_SEGMENTS ? lut[LUT_SEGMENTS] : lerp(lut[i], lut[i + 1], t - i);
+  }
+  // Anchor the position contract in the model, not just the editor: progress must run
+  // 0..1 regardless of the authored endpoint y's, else evaluateCartKeys' lerp leaves the
+  // cart short of the next key and the following segment snaps. Affine-normalize by the
+  // endpoints — identity for well-formed curves (y0=0, y1=1), a fix for malformed ones.
+  const keys = curve.keys;
+  const y = sampleEasingCurve(curve, x);
+  if (keys.length < 2) return y;
+  const y0 = keys[0].y;
+  const span = keys[keys.length - 1].y - y0;
+  return Math.abs(span) < 1e-9 ? y : (y - y0) / span;
 }
 
 /**

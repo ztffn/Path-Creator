@@ -4,7 +4,17 @@
 // position<->speed conversion. Guards the contract that both camera blends and cart keys
 // depend on, and that existing serialized easing keeps rendering identically.
 import { describe, expect, it } from "vitest";
-import { convertEasingCurveSpace, easingToCurve, evaluateEasing, evaluateEasingCurve, normalizeEasing, type Easing, type EasingCurve } from "../src/core";
+import {
+  convertEasingCurveSpace,
+  easingToCurve,
+  evaluateEasing,
+  evaluateEasingCurve,
+  normalizeEasing,
+  normalizeTimelineEasing,
+  type Easing,
+  type EasingCurve,
+  type Timeline
+} from "../src/core";
 
 describe("evaluateEasing presets", () => {
   it("holds endpoints at 0 and 1 for every monotonic preset", () => {
@@ -89,6 +99,15 @@ describe("multi-anchor easing curve", () => {
     expect(evaluateEasing(0.5, curve)).toBeCloseTo(0.8, 3);
   });
 
+  it("normalizes a position curve to 0..1 by its endpoints (contract enforced in core)", () => {
+    // Malformed easing whose endpoints aren't 0/1 still runs progress 0->1, so a cart
+    // never stops short of the next key.
+    const curve = { type: "curve", keys: [{ x: 0, y: 0.2 }, { x: 0.5, y: 0.5 }, { x: 1, y: 0.8 }] } as const;
+    expect(evaluateEasing(0, curve)).toBeCloseTo(0, 6);
+    expect(evaluateEasing(1, curve)).toBeCloseTo(1, 6);
+    expect(evaluateEasing(0.5, curve)).toBeCloseTo(0.5, 6);
+  });
+
   it("supports non-monotonic progress (speed up then reverse)", () => {
     // Rises past the endpoint then comes back — a curve a single cubic-bezier can't do.
     const curve = { type: "curve", keys: [{ x: 0, y: 0 }, { x: 0.5, y: 1.2 }, { x: 1, y: 1 }] } as const;
@@ -131,6 +150,33 @@ describe("speed-space easing curve", () => {
       expect(Math.abs(evaluateEasing(x, speed) - evaluateEasing(x, pos))).toBeLessThan(0.05);
       expect(Math.abs(evaluateEasing(x, back) - evaluateEasing(x, pos))).toBeLessThan(0.05);
     }
+  });
+});
+
+describe("normalizeTimelineEasing", () => {
+  it("coerces malformed easing to a valid preset and preserves valid ones", () => {
+    const tl: Timeline = {
+      schemaVersion: 2,
+      duration: 5,
+      tracks: [
+        {
+          type: "cart",
+          id: "t",
+          cartId: "x",
+          keys: [
+            { time: 0, distance: 0, easing: "bogus" as unknown as Easing },
+            { time: 1, distance: 1, easing: "easeInOutQuad" },
+            { time: 2, distance: 2, easing: { type: "curve", keys: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } }
+          ]
+        }
+      ]
+    };
+    const out = normalizeTimelineEasing(tl);
+    const track = out.tracks[0];
+    if (track.type !== "cart") throw new Error("expected cart track");
+    expect(track.keys[0].easing).toBe("linear"); // unknown -> fallback
+    expect(track.keys[1].easing).toBe("easeInOutQuad"); // valid preset preserved
+    expect(track.keys[2].easing).toEqual({ type: "curve", keys: [{ x: 0, y: 0 }, { x: 1, y: 1 }] });
   });
 });
 

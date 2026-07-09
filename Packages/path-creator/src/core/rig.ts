@@ -6,7 +6,7 @@
 import { BezierPath, type SerializedBezierPath } from "./bezier-path";
 import { deserializePathCart, serializePathCart, type PathCart, type SerializedPathCart } from "./cart";
 import type { TrackingTargetDefinition } from "./targets";
-import { sortTimelineTracks, TIMELINE_SCHEMA_VERSION, type Timeline } from "./timeline";
+import { normalizeTimelineEasing, sortTimelineTracks, TIMELINE_SCHEMA_VERSION, type Timeline } from "./timeline";
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
 
@@ -87,7 +87,13 @@ export function parseRigDocument(json: string): RigDocument {
       `Unsupported rig schema version ${String(parsed.schemaVersion)}; expected 1..${RIG_SCHEMA_VERSION}`
     );
   }
-  return migrateRigDocument(parsed);
+  const migrated = migrateRigDocument(parsed);
+  // Coerce persisted easing values to valid Easings at the boundary, so a malformed or
+  // foreign document can't reach the evaluator with a bad easing (all versions, not just
+  // migrated ones).
+  return migrated.timelines
+    ? { ...migrated, timelines: migrated.timelines.map(normalizeTimelineEasing) }
+    : migrated;
 }
 
 /**
