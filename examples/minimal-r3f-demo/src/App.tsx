@@ -78,7 +78,7 @@ import {
   type ExtraTracks
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
-import { ensurePeaks } from "./audio-peaks";
+import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { Hierarchy } from "./hierarchy";
 import { Inspector } from "./inspector";
@@ -2155,7 +2155,7 @@ export function App() {
       color: "rgba(167, 139, 250, 0.6)",
       icon: <IconVolume size={14} />,
       clips: track.clips.map((c) => {
-        const peaks = c.peaks ?? ensurePeaks(c.src, () => setPeaksTick((t) => t + 1));
+        const peaks = clipPeaks(c.src, c.offset ?? 0, c.duration, () => setPeaksTick((t) => t + 1));
         // Waveform (envelope) with the volume envelope (line) drawn over it, DAW-style.
         const series = [
           ...(peaks ? [{ kind: "envelope" as const, points: peaks }] : []),
@@ -2406,7 +2406,7 @@ export function App() {
                   extraTracks,
                   onChange: setExtraTracks,
                   onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
-                  peaksFor: (src) => ensurePeaks(src, () => setPeaksTick((t) => t + 1))
+                  peaksFor: (clip) => clipPeaks(clip.src, clip.offset ?? 0, clip.duration, () => setPeaksTick((t) => t + 1))
                 }
               : null
           }

@@ -11,7 +11,7 @@ export interface AudioInspectorProps {
   extraTracks: ExtraTracks;
   onChange: (next: ExtraTracks) => void;
   onPreviewClip?: (clip: AudioClip, trackGain: number) => void;
-  peaksFor?: (src: string) => number[] | null;
+  peaksFor?: (clip: AudioClip) => number[] | null;
 }
 
 export function AudioInspector({ track, extraTracks, onChange, onPreviewClip, peaksFor }: AudioInspectorProps) {

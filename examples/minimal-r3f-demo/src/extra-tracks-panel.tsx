@@ -122,8 +122,8 @@ export interface AudioEditorProps {
   hideAdd?: boolean;
   /** Play one clip once (with its volume envelope) from the inspector. */
   onPreviewClip?: (clip: AudioClip, trackGain: number) => void;
-  /** Waveform peaks for a clip's src (flat [min,max,…], -1..1), for the backdrop; null while decoding. */
-  peaksFor?: (src: string) => number[] | null;
+  /** Waveform peaks for a clip's played window (flat [min,max,…], -1..1); null while decoding. */
+  peaksFor?: (clip: AudioClip) => number[] | null;
 }
 
 export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
@@ -172,7 +172,10 @@ export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hid
                 <EasingEditor
                   mode="value"
                   height={90}
-                  {...(peaksFor?.(clip.src) ? { backdrop: peaksFor(clip.src)! } : {})}
+                  {...(() => {
+                    const bd = peaksFor?.(clip);
+                    return bd ? { backdrop: bd } : {};
+                  })()}
                   value={clip.gainCurve ?? FLAT_VOLUME}
                   onChange={(gainCurve: Easing) =>
                     patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, gainCurve: gainCurve as EasingCurve } : c)) })
