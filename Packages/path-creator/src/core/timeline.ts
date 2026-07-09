@@ -5,7 +5,9 @@
 // and player live in the timeline entry point.
 import type { VirtualCameraBlendCurve, VirtualCameraDefinition } from "./virtual-camera";
 
-export const TIMELINE_SCHEMA_VERSION = 1;
+// v2: CartKey.easing / TimelineBlendIn.curve accept a custom cubic-bezier object
+// (in addition to the named presets); legacy string easing stays valid.
+export const TIMELINE_SCHEMA_VERSION = 2;
 
 export interface TimelineBlendIn {
   durationSeconds: number;

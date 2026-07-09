@@ -10,6 +10,7 @@ import {
   vcamTrackTargetId,
   type CameraOverrideSettings,
   type ComposerSettings,
+  type Easing,
   type OrbitBinding,
   type RigCartDefinition,
   type TrackingTargetDefinition,
@@ -88,6 +89,8 @@ export type DollyRun = {
   end: number;
   fromT: number;
   toT: number;
+  /** Speed profile over the move (distance-vs-time). Defaults to linear when unset. */
+  easing?: Easing;
 };
 
 /**

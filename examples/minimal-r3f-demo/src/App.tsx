@@ -11,6 +11,7 @@ import {
   sampleCartFrame,
   type CartFrame,
   type ComposerSettings,
+  type Easing,
   type RigCartDefinition,
   type RigPathDefinition,
   type SerializedBezierPath,
@@ -120,9 +121,18 @@ const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
 const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3"];
-// Dolly moves are authored with easeInOut (see scene-io.ts), so every move shares the
-// same accel-decel speed profile; compute the normalized curve once.
-const DOLLY_SPEED_SERIES = dollyMoveSpeedSeries("easeInOut");
+// Speed sparklines vary per move now (each run authors its own easing); memoize the
+// derived curve by easing so identical easings don't recompute every render.
+const speedSeriesCache = new Map<string, ReturnType<typeof dollyMoveSpeedSeries>>();
+function speedSeriesFor(easing: Easing): ReturnType<typeof dollyMoveSpeedSeries> {
+  const key = typeof easing === "string" ? easing : JSON.stringify(easing);
+  let series = speedSeriesCache.get(key);
+  if (!series) {
+    series = dollyMoveSpeedSeries(easing);
+    speedSeriesCache.set(key, series);
+  }
+  return series;
+}
 
 function loadExtraTracks(): ExtraTracks {
   try {
@@ -1582,7 +1592,8 @@ export function App() {
         start,
         end: start + 3,
         fromT: from,
-        toT: from < 0.5 ? 1 : 0
+        toT: from < 0.5 ? 1 : 0,
+        easing: "easeInOut"
       };
       return { ...current, [cartId]: [...runs, run].sort((a, b) => a.start - b.start) };
     });
@@ -2403,8 +2414,8 @@ export function App() {
               start: run.start,
               end: run.end,
               label: `${run.fromT.toFixed(1)} → ${run.toT.toFixed(1)}`,
-              // Speed profile only when the move actually travels.
-              ...(run.fromT !== run.toT && { series: DOLLY_SPEED_SERIES })
+              // Speed profile only when the move actually travels; reflects the run's easing.
+              ...(run.fromT !== run.toT && { series: speedSeriesFor(run.easing ?? "linear") })
             }))
           )}
           selectedShotId={selectedVirtualCameraId}

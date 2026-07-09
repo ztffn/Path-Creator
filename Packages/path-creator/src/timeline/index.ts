@@ -76,9 +76,11 @@ export function evaluateTimeline(
   context: TimelineRigContext,
   timeSeconds: number
 ): TimelineSample {
-  if (timeline.schemaVersion !== TIMELINE_SCHEMA_VERSION) {
+  // Accept any version up to current: older timelines (string-only easing) are
+  // structurally compatible with the v2 easing union.
+  if (timeline.schemaVersion < 1 || timeline.schemaVersion > TIMELINE_SCHEMA_VERSION) {
     throw new Error(
-      `Unsupported timeline schema version ${String(timeline.schemaVersion)}; expected ${TIMELINE_SCHEMA_VERSION}`
+      `Unsupported timeline schema version ${String(timeline.schemaVersion)}; expected 1..${TIMELINE_SCHEMA_VERSION}`
     );
   }
 

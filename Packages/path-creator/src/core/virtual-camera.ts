@@ -4,6 +4,8 @@
 // resolver/blend/brain FUNCTIONS that operate on these types live in the
 // three adapter. Re-exported from @huma/path-creator/three for convenience.
 import type { CartFrame } from "./cart";
+import type { Easing } from "./easing";
+import { evaluateEasing } from "./easing";
 import type { Vec3 } from "./types";
 
 export interface QuaternionLike {
@@ -13,40 +15,15 @@ export interface QuaternionLike {
   w: number;
 }
 
-export type VirtualCameraBlendCurve =
-  | "cut"
-  | "linear"
-  | "easeInOut"
-  | "easeIn"
-  | "easeOut"
-  | "hardIn"
-  | "hardOut";
+/**
+ * The blend/easing curve for camera blends and cart keyframes. Now an alias of the
+ * first-class {@link Easing} (named presets + custom cubic-bezier); the legacy 7 names
+ * remain valid and evaluate identically. Prefer `Easing` in new code.
+ */
+export type VirtualCameraBlendCurve = Easing;
 
-/** Shapes a 0..1 progress value; the shared easing vocabulary for camera blends and cart keyframes. */
-export function evaluateVirtualCameraBlendCurve(
-  t: number,
-  curve: VirtualCameraBlendCurve = "easeInOut"
-): number {
-  const alpha = Math.min(1, Math.max(0, Number.isFinite(t) ? t : 0));
-
-  switch (curve) {
-    case "cut":
-      return 1;
-    case "linear":
-      return alpha;
-    case "easeIn":
-      return alpha * alpha;
-    case "easeOut":
-      return 1 - (1 - alpha) * (1 - alpha);
-    case "hardIn":
-      return alpha * alpha * alpha;
-    case "hardOut":
-      return 1 - (1 - alpha) * (1 - alpha) * (1 - alpha);
-    case "easeInOut":
-    default:
-      return alpha * alpha * (3 - 2 * alpha);
-  }
-}
+/** Legacy alias of {@link evaluateEasing}; kept for existing callers. */
+export const evaluateVirtualCameraBlendCurve = evaluateEasing;
 
 export interface VirtualCameraLens {
   fov?: number;
