@@ -42,6 +42,7 @@ import {
   type OverrideInputAccumulator,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
+  type VirtualCameraLens,
   type VirtualCameraResolveContext,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
@@ -123,9 +124,6 @@ const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
 // Activation/audio tracks persist in a demo sidecar (not the portable RigDocument,
 // whose Timeline union is closed to camera/cart/event).
 const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
-// Per-vcam FOV animation (a push/pull over the shot) is likewise a demo sidecar,
-// keyed by vcam id; promotes into a CameraBlock lens track once it proves out.
-const FOV_ANIM_STORAGE_KEY = "path-creator:minimal-demo:fov-anim";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
 const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3", "/audio/fireship.mp3", "/audio/linus.mp3"];
@@ -163,14 +161,6 @@ function loadExtraTracks(): ExtraTracks {
   }
 }
 
-function loadFovAnimations(): Record<string, FovAnimation> {
-  try {
-    const raw = localStorage.getItem(FOV_ANIM_STORAGE_KEY);
-    return raw ? (JSON.parse(raw) as Record<string, FovAnimation>) : {};
-  } catch {
-    return {};
-  }
-}
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 // A production can run several dollies, all riding the demo's one rail;
@@ -1250,11 +1240,11 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(EXTRA_STORAGE_KEY, JSON.stringify(extraTracks));
   }, [extraTracks]);
-  // Per-vcam FOV animation sidecar (keyed by vcam id).
-  const [fovAnimations, setFovAnimations] = useState<Record<string, FovAnimation>>(loadFovAnimations);
-  useEffect(() => {
-    localStorage.setItem(FOV_ANIM_STORAGE_KEY, JSON.stringify(fovAnimations));
-  }, [fovAnimations]);
+  // Per-vcam FOV animation, keyed by vcam id. Part of the portable scene (persisted
+  // as CameraBlock.lensAnimation via the scene autosave), so no separate sidecar key.
+  const [fovAnimations, setFovAnimations] = useState<Record<string, FovAnimation>>(
+    () => loadedScene?.fovAnimations ?? {}
+  );
   const setFovAnimation = (vcamId: string, anim: FovAnimation | null): void => {
     setFovAnimations((prev) => {
       const next = { ...prev };
@@ -1556,13 +1546,14 @@ export function App() {
     editorVcams,
     shotTiming,
     dollyRuns,
+    fovAnimations,
     targets: pointTargets
   };
   useEffect(() => {
     localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
     // currentScene is rebuilt each render from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, paths, activePathId, pointTargets]);
+  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, paths, activePathId, pointTargets]);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -1575,6 +1566,7 @@ export function App() {
     setEditorVcams(scene.editorVcams);
     setShotTiming(scene.shotTiming);
     setDollyRuns(scene.dollyRuns);
+    setFovAnimations(scene.fovAnimations);
     setPointTargets(scene.targets);
     setSelection(null);
     setSelectedMidpointIndex(null);
@@ -1613,6 +1605,7 @@ export function App() {
       editorVcams: {},
       shotTiming: {},
       dollyRuns: {},
+      fovAnimations: {},
       targets: []
     });
   }
@@ -2060,18 +2053,15 @@ export function App() {
               delete next.aim;
             }
           }
-          if (patch.dutchDeg !== undefined) {
+          if (patch.lens !== undefined || patch.dutchDeg !== undefined) {
+            // Merge authored lens fields; null clears a field back to inherited
+            // (absent), never zeroed. Dutch folds in with its own 0-clears sentinel.
             const lens = { ...next.lens };
-            if (patch.dutchDeg === 0) delete lens.dutchDeg;
-            else lens.dutchDeg = patch.dutchDeg;
-            if (Object.keys(lens).length > 0) next.lens = lens;
-            else delete next.lens;
-          }
-          if (patch.lens !== undefined) {
-            // Merge each authored lens field; null clears it back to inherited
-            // (absent), never zeroed — mirroring blendVirtualCameraLens semantics.
-            const lens = { ...next.lens };
-            for (const [key, value] of Object.entries(patch.lens) as [keyof typeof patch.lens, number | null | undefined][]) {
+            const updates: Partial<Record<keyof VirtualCameraLens, number | null | undefined>> = {
+              ...patch.lens,
+              ...(patch.dutchDeg !== undefined && { dutchDeg: patch.dutchDeg === 0 ? null : patch.dutchDeg })
+            };
+            for (const [key, value] of Object.entries(updates) as [keyof VirtualCameraLens, number | null | undefined][]) {
               if (value === undefined) continue;
               if (value === null) delete lens[key];
               else lens[key] = value;
@@ -2140,6 +2130,7 @@ export function App() {
       delete next[id];
       return next;
     });
+    setFovAnimation(id, null);
     if (isSelected(selection, "camera", id)) {
       setSelection(null);
     }

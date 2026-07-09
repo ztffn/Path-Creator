@@ -49,6 +49,11 @@ export interface CameraInspectorProps {
 
 export function CameraInspector({ camera, isActive, trackTargets, dollies, onActivate, onDelete, onUpdateShot, onUpdateComposer, fovAnimation, onFovAnimationChange }: CameraInspectorProps) {
   const [composerOpen, setComposerOpen] = useState(false);
+  const fovValue = camera.snapshot.lens?.fov;
+  // Guard the animation endpoints: an emptied number box yields Number("") === 0,
+  // which would drive the shot to a degenerate 0deg projection. Clamp to the range.
+  const clampFov = (raw: number): number =>
+    Number.isFinite(raw) ? Math.min(FOV_FIELD.max, Math.max(FOV_FIELD.min, raw)) : FOV_FIELD.min;
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ fontSize: 11, color: "#94a3b8", whiteSpace: "nowrap", overflow: "hidden", textOverflow: "ellipsis" }}>
@@ -113,11 +118,11 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
         })}
 
         {/* FOV animation (the one animatable field), authored below the field list. */}
-        {camera.snapshot.lens?.fov !== undefined ? (
+        {fovValue !== undefined ? (
           <div style={{ display: "grid", gap: 4, paddingLeft: 4 }}>
             <CheckRow
               checked={fovAnimation !== null}
-              onChange={(on) => onFovAnimationChange(on ? defaultFovAnimation(camera.snapshot.lens?.fov ?? FOV_FIELD.seed) : null)}
+              onChange={(on) => onFovAnimationChange(on ? defaultFovAnimation(fovValue) : null)}
             >
               Animate FOV over the shot
             </CheckRow>
@@ -126,10 +131,10 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
                 <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8" }}>
                   <span style={{ width: 28 }}>from</span>
                   <input type="number" value={fovAnimation.from} min={FOV_FIELD.min} max={FOV_FIELD.max} step={1} style={{ width: 54 }}
-                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, from: Number(event.target.value) })} />
+                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, from: clampFov(Number(event.target.value)) })} />
                   <span>→ to</span>
                   <input type="number" value={fovAnimation.to} min={FOV_FIELD.min} max={FOV_FIELD.max} step={1} style={{ width: 54 }}
-                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, to: Number(event.target.value) })} />
+                    onChange={(event) => onFovAnimationChange({ ...fovAnimation, to: clampFov(Number(event.target.value)) })} />
                 </div>
                 <EasingEditor value={fovAnimation.easing} onChange={(easing) => onFovAnimationChange({ ...fovAnimation, easing })} height={130} />
               </div>

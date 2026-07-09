@@ -111,11 +111,6 @@ export function createTimeline(init: Partial<Omit<Timeline, "schemaVersion">> = 
   };
 }
 
-/**
- * Coerce every easing value in a timeline (cart-key easing, camera blend curves) through
- * normalizeEasing, so a malformed/foreign persisted easing degrades to a valid preset
- * rather than reaching the evaluator as NaN. Applied at the deserialization boundary.
- */
 /** Coerce each animated lens field's easing through normalizeEasing (deserialize boundary). */
 function normalizeLensAnimationEasing(anim: CameraBlockLensAnimation): CameraBlockLensAnimation {
   const out: CameraBlockLensAnimation = {};
@@ -125,6 +120,12 @@ function normalizeLensAnimationEasing(anim: CameraBlockLensAnimation): CameraBlo
   return out;
 }
 
+/**
+ * Coerce every easing value in a timeline (cart-key easing, camera blend curves,
+ * lens-animation curves) through normalizeEasing, so a malformed/foreign persisted
+ * easing degrades to a valid preset rather than reaching the evaluator as NaN.
+ * Applied at the deserialization boundary.
+ */
 export function normalizeTimelineEasing<T extends Timeline>(timeline: T): T {
   const tracks = timeline.tracks.map((track): TimelineTrack => {
     if (track.type === "cart") {

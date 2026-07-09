@@ -44,6 +44,8 @@ export interface DemoScene {
   shotTiming: Record<string, ShotTiming>;
   /** Per-dolly (cartId) run-blocks; a dolly absent here free-runs at rig speed. */
   dollyRuns: Record<string, DollyRun[]>;
+  /** Per-vcam FOV push/pull over the shot; persisted portably as CameraBlock.lensAnimation. */
+  fovAnimations: Record<string, FovAnimation>;
   targets: SceneTarget[];
 }
 
@@ -68,7 +70,9 @@ export function buildShowTimeline(
   const blocks: CameraBlock[] = shots.map((shot, index) => {
     const previous = index > 0 ? shots[index - 1] : undefined;
     const overlap = previous ? previous.timing.end - shot.timing.start : 0;
-    const fovAnim = fovAnimations[shot.def.id];
+    // Only animate a shot whose fov is actually authored (an override is set); a
+    // stale sidecar entry for an inherited-fov shot must not force a phantom push.
+    const fovAnim = shot.def.lens?.fov !== undefined ? fovAnimations[shot.def.id] : undefined;
     return {
       id: `block-${shot.def.id}`,
       vcamId: shot.def.id,
@@ -120,6 +124,21 @@ function timingFromTimeline(
     timing[def.id] = { start, end: block?.end ?? start + 5 };
   }
   return timing;
+}
+
+/** Reverses camera-track blocks' lensAnimation.fov back into the per-vcam sidecar. */
+function fovAnimationsFromTimeline(
+  timeline: Timeline | undefined,
+  vcamDefs: VirtualCameraDefinition[]
+): Record<string, FovAnimation> {
+  const cameraTrack = timeline?.tracks.find((track) => track.type === "camera");
+  const animations: Record<string, FovAnimation> = {};
+  for (const def of vcamDefs) {
+    const fov = cameraTrack?.blocks.find((b) => b.vcamId === def.id)?.lensAnimation?.fov;
+    // Our buildShowTimeline always writes an easing; default a foreign/older doc's.
+    if (fov) animations[def.id] = { from: fov.from, to: fov.to, easing: fov.easing ?? "easeInOut" };
+  }
+  return animations;
 }
 
 /** Reverses each cart track's keys into run-blocks (keys come in start/end pairs). */
@@ -186,7 +205,8 @@ export function assembleDocument(scene: DemoScene): RigDocument {
         scene.vcamDefs,
         scene.shotTiming,
         scene.dollyRuns,
-        cartPathLengths(scene.paths, scene.dollies)
+        cartPathLengths(scene.paths, scene.dollies),
+        scene.fovAnimations
       )
     ]
   });
@@ -213,6 +233,7 @@ export function hydrateScene(document: RigDocument): DemoScene {
       document.timelines?.[0],
       cartPathLengths(document.paths, document.carts)
     ),
+    fovAnimations: fovAnimationsFromTimeline(document.timelines?.[0], vcamDefs),
     targets: (document.targets ?? []).filter(
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
     )
