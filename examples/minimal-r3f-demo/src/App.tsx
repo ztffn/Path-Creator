@@ -72,6 +72,7 @@ import {
   EMPTY_DESIRED,
   EMPTY_EXTRA_TRACKS,
   evaluateAudio,
+  resizeAudioClip,
   maxClipEnd,
   type ActivationTrack,
   type AudioTrack,
@@ -2204,21 +2205,7 @@ export function App() {
       setExtraTracks((prev) => ({
         ...prev,
         audioTracks: prev.audioTracks.map((t) =>
-          t.id === trackId
-            ? {
-                ...t,
-                clips: t.clips.map((c) => {
-                  if (c.id !== clipId) return c;
-                  const duration = Math.max(0.25, end - start);
-                  // A left-trim (right edge fixed, duration changes) reveals a later part of
-                  // the source, so advance the offset by how far the start moved. A move
-                  // (duration unchanged) or right-trim (start unchanged) leaves it alone.
-                  const isResize = Math.abs(duration - c.duration) > 1e-6;
-                  const offset = isResize ? Math.max(0, (c.offset ?? 0) + (start - c.start)) : c.offset;
-                  return { ...c, start, duration, ...(offset !== undefined && { offset }) };
-                })
-              }
-            : t
+          t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? resizeAudioClip(c, start, end) : c)) } : t
         )
       }));
     }

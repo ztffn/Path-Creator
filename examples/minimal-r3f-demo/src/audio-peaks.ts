@@ -83,11 +83,18 @@ export function ensurePeaks(src: string, onReady?: () => void): number[] | null 
 export function clipPeaks(src: string, offset: number, duration: number, onReady?: () => void): number[] | null {
   const peaks = ensurePeaks(src, onReady);
   if (!peaks) return null;
-  const fileDur = durations.get(src);
-  if (!fileDur || fileDur <= 0) return peaks;
+  return slicePeaksToWindow(peaks, durations.get(src) ?? 0, offset, duration);
+}
+
+/**
+ * Slice full-file peaks to the `[offset, offset+duration]` window (fractions of the source
+ * duration). Returns the input unchanged when the file duration is unknown (<=0). Pure.
+ */
+export function slicePeaksToWindow(peaks: number[], fileDuration: number, offset: number, duration: number): number[] {
+  if (!fileDuration || fileDuration <= 0) return peaks;
   const n = peaks.length / 2;
-  const from = Math.max(0, Math.min(1, offset / fileDur));
-  const to = Math.max(from, Math.min(1, (offset + duration) / fileDur));
+  const from = Math.max(0, Math.min(1, offset / fileDuration));
+  const to = Math.max(from, Math.min(1, (offset + duration) / fileDuration));
   const i0 = Math.floor(from * n);
   const i1 = Math.max(i0 + 1, Math.ceil(to * n));
   return peaks.slice(i0 * 2, i1 * 2);

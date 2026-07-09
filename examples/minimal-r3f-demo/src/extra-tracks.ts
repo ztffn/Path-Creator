@@ -49,6 +49,18 @@ export interface AudioTrack {
   mute?: boolean;
 }
 
+/**
+ * Apply a timeline resize/move to an audio clip. A left-trim (right edge fixed, so the
+ * duration changes) advances the source offset by how far the start moved, cutting the
+ * head; a move (duration unchanged) or right-trim leaves the offset alone. Pure.
+ */
+export function resizeAudioClip(clip: AudioClip, start: number, end: number): AudioClip {
+  const duration = Math.max(0.25, end - start);
+  const isResize = Math.abs(duration - clip.duration) > 1e-6;
+  const offset = isResize ? Math.max(0, (clip.offset ?? 0) + (start - clip.start)) : clip.offset;
+  return { ...clip, start, duration, ...(offset !== undefined && { offset }) };
+}
+
 /** What the audio player should be doing with a clip at time t. */
 export interface DesiredAudio {
   src: string;
