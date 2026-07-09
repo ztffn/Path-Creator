@@ -94,6 +94,7 @@ export class AudioTrackPlayer {
       this.stopAll();
       return;
     }
+    this.stopPreview(); // live timeline audio takes over; don't overlap an inspector preview
     const ctx = this.ensureContext();
     if (ctx.state !== "running") {
       void ctx.resume();
