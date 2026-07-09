@@ -6,7 +6,9 @@
 // with both shots resolved live, mirroring the brain's behavior.
 import {
   TIMELINE_SCHEMA_VERSION,
+  evaluateEasing,
   evaluateVirtualCameraBlendCurve,
+  inverseLerp,
   lerp,
   sampleCartFrame,
   type CameraBlock,
@@ -20,6 +22,7 @@ import {
   type TimelineEvent,
   type Vec3,
   type VirtualCameraDefinition,
+  type VirtualCameraLens,
   type VirtualCameraSnapshot
 } from "../core";
 import type { Camera, Matrix4 } from "three";
@@ -71,6 +74,23 @@ export interface TimelineSample {
  * t) always yields the same sample — carts are positioned from t, never
  * stepped, and noise reads t through the resolve context.
  */
+/**
+ * Fold a block's lens animation into its freshly-resolved snapshot at block-local t.
+ * Runs before blend/apply, so overlapping blocks blend their time-varying lenses and
+ * every host gets the animation for free (no per-frame override on the host side).
+ */
+function applyBlockLensAnimation(snapshot: VirtualCameraSnapshot, block: CameraBlock, t: number): void {
+  if (!block.lensAnimation || block.end <= block.start) return;
+  const local = inverseLerp(block.start, block.end, t);
+  // Mutate the snapshot's own fresh lens in place (resolveVirtualCameraDefinition
+  // already cloned it) — this runs per active block per frame.
+  const lens: VirtualCameraLens = (snapshot.lens ??= {});
+  for (const key in block.lensAnimation) {
+    const field = block.lensAnimation[key as keyof VirtualCameraLens];
+    if (field) lens[key as keyof VirtualCameraLens] = lerp(field.from, field.to, evaluateEasing(local, field.easing ?? "easeInOut"));
+  }
+}
+
 export function evaluateTimeline(
   timeline: Timeline,
   context: TimelineRigContext,
@@ -98,7 +118,9 @@ export function evaluateTimeline(
     const definition = context.vcams.get(block.vcamId);
     if (!definition) return null;
     const patched = block.overrides ? { ...definition, ...block.overrides } : definition;
-    return resolveVirtualCameraDefinition(patched, resolveContext);
+    const snapshot = resolveVirtualCameraDefinition(patched, resolveContext);
+    if (snapshot && block.lensAnimation) applyBlockLensAnimation(snapshot, block, t);
+    return snapshot;
   };
 
   let camera: VirtualCameraSnapshot | null = null;

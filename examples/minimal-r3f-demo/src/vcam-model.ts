@@ -11,6 +11,7 @@ import {
   type CameraOverrideSettings,
   type ComposerSettings,
   type Easing,
+  type LensFieldAnimation,
   type OrbitBinding,
   type RigCartDefinition,
   type TrackingTargetDefinition,
@@ -101,6 +102,23 @@ export type DollyRun = {
 export const DEFAULT_DOLLY_EASING: Easing = "easeInOut";
 
 /**
+ * A FOV push/pull over a shot: fov eases from `from`→`to` across the shot's window
+ * (shot-local t normalized 0..1), reusing the same Easing model as a dolly move. A
+ * demo sidecar keyed by vcam id — not the portable RigDocument; it promotes to a
+ * CameraBlock lens track once the authoring proves out.
+ */
+// The package's per-field lens animation with a required easing (the authoring UI
+// always writes one). Structurally what a CameraBlock.lensAnimation.fov carries.
+export type FovAnimation = Required<LensFieldAnimation>;
+
+/** A push-in seeded from the current static fov (to = a tighter 0.6×), easeInOut. */
+export const defaultFovAnimation = (base: number): FovAnimation => ({
+  from: base,
+  to: Math.max(10, Math.round(base * 0.6)),
+  easing: "easeInOut"
+});
+
+/**
  * The flat, UI-facing projection the authoring panels/glyphs/lane editor read.
  * Derived from a definition + its sidecars; never the source of truth.
  */
@@ -129,6 +147,14 @@ export type DemoVirtualCamera = {
   composerSettings: ComposerSettings;
 };
 
+/**
+ * A patch of authorable lens fields. Each entry sets that field on the vcam's
+ * `def.lens`; `null` clears it back to inherited (a field left absent inherits the
+ * outgoing shot / live camera — never zeroed). `dutchDeg` stays a separate patch
+ * field (it has a valid 0 and lives top-level on the view), so it's not here.
+ */
+export type LensPatch = Partial<Record<"fov" | "zoom" | "near" | "far", number | null>>;
+
 /** A patch of the editable per-shot fields (the panels/inspector mutate these). */
 export type DemoShotPatch = Partial<
   Pick<
@@ -148,7 +174,7 @@ export type DemoShotPatch = Partial<
     | "orbitAutoDegPerSec"
     | "overrideControl"
   >
->;
+> & { lens?: LensPatch };
 
 /** All-locked override: input ignored, the shot plays exactly as authored. The
  *  body-agnostic default every view carries until an axis is set free/recenter. */

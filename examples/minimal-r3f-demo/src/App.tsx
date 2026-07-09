@@ -42,6 +42,7 @@ import {
   type OverrideInputAccumulator,
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
+  type VirtualCameraLens,
   type VirtualCameraResolveContext,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
@@ -96,6 +97,7 @@ import {
   ORBIT_INTERACTIVE_CONTROL,
   toVcamView,
   vcamDefFromView,
+  type FovAnimation,
   type DemoShotPatch,
   type DemoVirtualCamera,
   type DollyRun,
@@ -158,6 +160,7 @@ function loadExtraTracks(): ExtraTracks {
     return EMPTY_EXTRA_TRACKS;
   }
 }
+
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
 // touch nothing else.
 // A production can run several dollies, all riding the demo's one rail;
@@ -1237,6 +1240,19 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(EXTRA_STORAGE_KEY, JSON.stringify(extraTracks));
   }, [extraTracks]);
+  // Per-vcam FOV animation, keyed by vcam id. Part of the portable scene (persisted
+  // as CameraBlock.lensAnimation via the scene autosave), so no separate sidecar key.
+  const [fovAnimations, setFovAnimations] = useState<Record<string, FovAnimation>>(
+    () => loadedScene?.fovAnimations ?? {}
+  );
+  const setFovAnimation = (vcamId: string, anim: FovAnimation | null): void => {
+    setFovAnimations((prev) => {
+      const next = { ...prev };
+      if (anim) next[vcamId] = anim;
+      else delete next[vcamId];
+      return next;
+    });
+  };
   useEffect(() => {
     const unlock = () => audioPlayer.resume();
     window.addEventListener("pointerdown", unlock);
@@ -1252,6 +1268,7 @@ export function App() {
       isVisible: (id: string) => activatablesRegistry.resolve(id)?.visible ?? null,
       player: timelinePlayerRef.current,
       setExtraTracks,
+      setFovAnimation,
       enterTimeline: () => setPipDriver("timeline")
     };
   }, [activatablesRegistry]);
@@ -1529,13 +1546,14 @@ export function App() {
     editorVcams,
     shotTiming,
     dollyRuns,
+    fovAnimations,
     targets: pointTargets
   };
   useEffect(() => {
     localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
     // currentScene is rebuilt each render from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, paths, activePathId, pointTargets]);
+  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, paths, activePathId, pointTargets]);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -1548,6 +1566,7 @@ export function App() {
     setEditorVcams(scene.editorVcams);
     setShotTiming(scene.shotTiming);
     setDollyRuns(scene.dollyRuns);
+    setFovAnimations(scene.fovAnimations);
     setPointTargets(scene.targets);
     setSelection(null);
     setSelectedMidpointIndex(null);
@@ -1586,6 +1605,7 @@ export function App() {
       editorVcams: {},
       shotTiming: {},
       dollyRuns: {},
+      fovAnimations: {},
       targets: []
     });
   }
@@ -1708,6 +1728,7 @@ export function App() {
           .join(";")}`
     )
     .join("|");
+  const fovAnimKey = JSON.stringify(fovAnimations);
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
   // Keyed on timing/runs so gizmo drags (which change vcamDefs) don't rebuild it.
@@ -1720,16 +1741,22 @@ export function App() {
     vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0;
   const demoTimeline = useMemo(() => {
     if (!hasTimelineContent) return null;
-    const base = buildShowTimeline(vcamDefs, shotTiming, dollyRuns, (cartId) => {
-      const dolly = dollies.find((d) => d.id === cartId);
-      return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
-    });
+    const base = buildShowTimeline(
+      vcamDefs,
+      shotTiming,
+      dollyRuns,
+      (cartId) => {
+        const dolly = dollies.find((d) => d.id === cartId);
+        return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
+      },
+      fovAnimations
+    );
     // Extend the clock to cover activation/audio clips that outlast the camera/cart
     // content. (The exported RigDocument timeline is intentionally NOT extended —
     // extra tracks persist in a separate sidecar, not the portable document.)
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyRunKey, extraDuration]);
+  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration]);
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
@@ -2000,6 +2027,7 @@ export function App() {
       patch.noisePreset !== undefined ||
       patch.trackTargetId !== undefined ||
       patch.dutchDeg !== undefined ||
+      patch.lens !== undefined ||
       patch.cartId !== undefined ||
       patch.cartOffset !== undefined ||
       patch.overrideControl !== undefined ||
@@ -2025,10 +2053,19 @@ export function App() {
               delete next.aim;
             }
           }
-          if (patch.dutchDeg !== undefined) {
+          if (patch.lens !== undefined || patch.dutchDeg !== undefined) {
+            // Merge authored lens fields; null clears a field back to inherited
+            // (absent), never zeroed. Dutch folds in with its own 0-clears sentinel.
             const lens = { ...next.lens };
-            if (patch.dutchDeg === 0) delete lens.dutchDeg;
-            else lens.dutchDeg = patch.dutchDeg;
+            const updates: Partial<Record<keyof VirtualCameraLens, number | null | undefined>> = {
+              ...patch.lens,
+              ...(patch.dutchDeg !== undefined && { dutchDeg: patch.dutchDeg === 0 ? null : patch.dutchDeg })
+            };
+            for (const [key, value] of Object.entries(updates) as [keyof VirtualCameraLens, number | null | undefined][]) {
+              if (value === undefined) continue;
+              if (value === null) delete lens[key];
+              else lens[key] = value;
+            }
             if (Object.keys(lens).length > 0) next.lens = lens;
             else delete next.lens;
           }
@@ -2093,6 +2130,7 @@ export function App() {
       delete next[id];
       return next;
     });
+    setFovAnimation(id, null);
     if (isSelected(selection, "camera", id)) {
       setSelection(null);
     }
@@ -2379,7 +2417,9 @@ export function App() {
                   onActivate: () => activateVirtualCamera(selectedVirtualCamera.id),
                   onDelete: () => deleteVirtualCamera(selectedVirtualCamera.id),
                   onUpdateShot: (patch) => updateVirtualCameraShot(selectedVirtualCamera.id, patch),
-                  onUpdateComposer: (settings) => updateVirtualCameraComposer(selectedVirtualCamera.id, settings)
+                  onUpdateComposer: (settings) => updateVirtualCameraComposer(selectedVirtualCamera.id, settings),
+                  fovAnimation: fovAnimations[selectedVirtualCamera.id] ?? null,
+                  onFovAnimationChange: (anim) => setFovAnimation(selectedVirtualCamera.id, anim)
                 }
               : null
           }

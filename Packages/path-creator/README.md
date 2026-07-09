@@ -216,6 +216,19 @@ import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 Deletion is intentionally left off-lane (a host side-panel/inspector), mirroring
 how dolly moves are removed — the lane editor only creates, moves, and resizes.
 
+### Animating lens over a shot
+
+A timeline `CameraBlock` may carry `lensAnimation` —
+`Partial<Record<keyof VirtualCameraLens, { from, to, easing? }>>` — easing a lens
+field (e.g. a FOV push) across the block window. It is sampled per frame inside
+`evaluateTimeline` and blends with `blendIn` crossfades automatically, so no host
+per-frame override is needed:
+
+```ts
+{ id: "shot-1", vcamId: "hero", start: 0, end: 4,
+  lensAnimation: { fov: { from: 60, to: 24, easing: "easeInOut" } } }
+```
+
 ## Tested Coverage
 
 - Core endpoint behavior (`loop`, `reverse`, `stop`)
