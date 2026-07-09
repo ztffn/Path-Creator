@@ -10,8 +10,10 @@ import {
   createPathCart,
   sampleCartFrame,
   type CartFrame,
+  sampleEasingCurve,
   type ComposerSettings,
   type Easing,
+  type EasingCurve,
   type RigCartDefinition,
   type RigPathDefinition,
   type SerializedBezierPath,
@@ -121,10 +123,16 @@ const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
 const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
-const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3"];
+const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3", "/audio/fireship.mp3", "/audio/linus.mp3"];
 // Speed sparklines vary per move (each run authors its own easing). Cache only preset
 // strings (a small fixed set); custom curves change on every edit, so caching them would
 // grow unbounded for no benefit — compute those fresh (cheap: ~49 samples).
+// Sample a clip's volume envelope (raw 0..1 value) into the block's gain overlay line.
+function gainLinePoints(curve: EasingCurve, samples = 24): number[] {
+  const pts: number[] = [];
+  for (let i = 0; i <= samples; i++) pts.push(Math.min(1, Math.max(0, sampleEasingCurve(curve, i / samples))));
+  return pts;
+}
 const speedSeriesCache = new Map<string, ReturnType<typeof dollyMoveSpeedSeries>>();
 function speedSeriesFor(easing: Easing): ReturnType<typeof dollyMoveSpeedSeries> {
   if (typeof easing !== "string") return dollyMoveSpeedSeries(easing);
@@ -2148,12 +2156,17 @@ export function App() {
       icon: <IconVolume size={14} />,
       clips: track.clips.map((c) => {
         const peaks = c.peaks ?? ensurePeaks(c.src, () => setPeaksTick((t) => t + 1));
+        // Waveform (envelope) with the volume envelope (line) drawn over it, DAW-style.
+        const series = [
+          ...(peaks ? [{ kind: "envelope" as const, points: peaks }] : []),
+          ...(c.gainCurve ? [{ kind: "line" as const, points: gainLinePoints(c.gainCurve), color: "rgba(56,189,248,0.95)" }] : [])
+        ];
         return {
           id: c.id,
           start: c.start,
           end: c.start + c.duration,
           label: c.src,
-          ...(peaks && { series: { kind: "envelope", points: peaks } as const })
+          ...(series.length > 0 && { series })
         };
       })
     }))
@@ -2386,7 +2399,17 @@ export function App() {
               ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: setExtraTracks }
               : null
           }
-          audio={selectedAudioTrack ? { track: selectedAudioTrack, extraTracks, onChange: setExtraTracks } : null}
+          audio={
+            selectedAudioTrack
+              ? {
+                  track: selectedAudioTrack,
+                  extraTracks,
+                  onChange: setExtraTracks,
+                  onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
+                  peaksFor: (src) => ensurePeaks(src, () => setPeaksTick((t) => t + 1))
+                }
+              : null
+          }
         />
       </div>
       <div

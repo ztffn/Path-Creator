@@ -4,15 +4,31 @@
 // number-input rows (start/end) like the dolly-runs editor. Controlled — each calls
 // onChange with the full next ExtraTracks. The bottom TimelineLanes plays/scrubs it.
 import type { CSSProperties } from "react";
+import type { Easing, EasingCurve } from "@huma/path-creator/core";
+import { EasingEditor } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
 import type { ActivatableInfo } from "./activatables";
 import {
   snapSeconds,
   type ActivationTrack,
+  type AudioClip,
   type AudioTrack,
   type ExtraTracks,
   type PostPlaybackState
 } from "./extra-tracks";
+
+/** Full-volume envelope shown when a clip has no gainCurve yet. */
+const FLAT_VOLUME: EasingCurve = { type: "curve", keys: [{ x: 0, y: 1 }, { x: 1, y: 1 }] };
+
+/** Bundled sample voices under public/audio; new clips cycle through these (any URL also works). */
+export const SAMPLE_AUDIO = [
+  "/audio/jarvis.mp3",
+  "/audio/morganfreeman.mp3",
+  "/audio/samjackson.mp3",
+  "/audio/samaltman.mp3",
+  "/audio/fireship.mp3",
+  "/audio/linus.mp3"
+];
 
 export const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 
@@ -104,9 +120,13 @@ export interface AudioEditorProps {
   onChange: (next: ExtraTracks) => void;
   /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
   hideAdd?: boolean;
+  /** Play one clip once (with its volume envelope) from the inspector. */
+  onPreviewClip?: (clip: AudioClip, trackGain: number) => void;
+  /** Waveform peaks for a clip's src (flat [min,max,…], -1..1), for the backdrop; null while decoding. */
+  peaksFor?: (src: string) => number[] | null;
 }
 
-export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hideAdd = false }: AudioEditorProps) {
+export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
   const emit = (next: AudioTrack[]): void => onChange({ activationTracks, audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
@@ -125,19 +145,43 @@ export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hid
             </button>
           </div>
           {track.clips.map((clip) => (
-            <div key={clip.id} style={clipRow}>
-              <input type="text" title="clip source (URL or tone:<freq>)" value={clip.src} style={{ flex: 1 }}
-                onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, src: e.target.value } : c)) })} />
-              <input type="number" title="start (s)" value={clip.start} step={0.25} style={numInput}
-                onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, start: snapSeconds(Number(e.target.value)) } : c)) })} />
-              <input type="number" title="duration (s)" value={clip.duration} min={0.25} step={0.25} style={numInput}
-                onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, duration: Math.max(0.25, Number(e.target.value)) } : c)) })} />
-              <button className="pc-danger" style={iconBtn} title="Delete clip" onClick={() => patch(track.id, { clips: track.clips.filter((c) => c.id !== clip.id) })}>
-                ×
-              </button>
+            <div key={clip.id} style={{ display: "grid", gap: 4, paddingTop: 4, borderTop: "1px solid rgba(148,163,184,0.12)" }}>
+              <div style={clipRow}>
+                <input type="text" title="clip source (URL or tone:<freq>)" value={clip.src} style={{ flex: 1 }}
+                  onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, src: e.target.value } : c)) })} />
+                <input type="number" title="start (s)" value={clip.start} step={0.25} style={numInput}
+                  onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, start: snapSeconds(Number(e.target.value)) } : c)) })} />
+                <input type="number" title="duration (s)" value={clip.duration} min={0.25} step={0.25} style={numInput}
+                  onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, duration: Math.max(0.25, Number(e.target.value)) } : c)) })} />
+                {onPreviewClip ? (
+                  <button style={iconBtn} title="Preview clip" onClick={() => onPreviewClip(clip, track.gain ?? 1)}>
+                    ▶
+                  </button>
+                ) : null}
+                <button className="pc-danger" style={iconBtn} title="Delete clip" onClick={() => patch(track.id, { clips: track.clips.filter((c) => c.id !== clip.id) })}>
+                  ×
+                </button>
+              </div>
+              <div style={{ paddingLeft: 10 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+                  <span>volume</span>
+                  <input type="range" min={0} max={1} step={0.05} value={clip.gain ?? 1} title="Clip level (the curve shapes this over time)" style={{ flex: 1 }}
+                    onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, gain: Number(e.target.value) } : c)) })} />
+                  <span>{(clip.gain ?? 1).toFixed(2)}</span>
+                </div>
+                <EasingEditor
+                  mode="value"
+                  height={90}
+                  {...(peaksFor?.(clip.src) ? { backdrop: peaksFor(clip.src)! } : {})}
+                  value={clip.gainCurve ?? FLAT_VOLUME}
+                  onChange={(gainCurve: Easing) =>
+                    patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, gainCurve: gainCurve as EasingCurve } : c)) })
+                  }
+                />
+              </div>
             </div>
           ))}
-          <button style={addClipBtn} onClick={() => patch(track.id, { clips: [...track.clips, { id: uid("clip"), src: "tone:440", start: 0, duration: 4, gain: 1 }] })}>
+          <button style={addClipBtn} onClick={() => patch(track.id, { clips: [...track.clips, { id: uid("clip"), src: SAMPLE_AUDIO[track.clips.length % SAMPLE_AUDIO.length]!, start: 0, duration: 4, gain: 1 }] })}>
             + clip
           </button>
         </div>

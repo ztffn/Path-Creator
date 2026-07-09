@@ -12,6 +12,8 @@ export interface BlockSeriesData {
   kind: BlockSeriesKind;
   /** envelope: flat [min,max,min,max,…] in -1..1. line: values in 0..1. */
   points: number[];
+  /** Overrides the `color` prop — lets stacked series (e.g. waveform + gain) differ. */
+  color?: string;
 }
 
 const FILL_STYLE: CSSProperties = {
@@ -54,12 +56,13 @@ export function BlockSeries({ data, color }: { data: BlockSeriesData; color: str
     [data]
   );
   if (!d) return null;
+  const paint = data.color ?? color;
   return (
     <svg viewBox={`0 0 ${width} 100`} preserveAspectRatio="none" style={FILL_STYLE}>
       {data.kind === "envelope" ? (
-        <path d={d} fill={color} />
+        <path d={d} fill={paint} />
       ) : (
-        <path d={d} fill="none" stroke={color} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
+        <path d={d} fill="none" stroke={paint} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
       )}
     </svg>
   );
