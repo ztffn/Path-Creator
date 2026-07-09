@@ -6,9 +6,10 @@
 import { useState, type CSSProperties } from "react";
 import type { CameraOverrideAxisMode, ComposerSettings, RegisteredTarget, RigCartDefinition } from "@huma/path-creator/core";
 import type { VirtualCameraSnapshot } from "@huma/path-creator/three";
+import { EasingEditor } from "@huma/path-creator/timeline-ui";
 import { CollapsibleGroup, MUTED } from "./panel-theme";
 import { NumberSlider, RigSettingsPanel } from "./rig-settings-panel";
-import { DEFAULT_COMPOSER_SETTINGS, type DemoShotPatch, type DemoVirtualCamera } from "./vcam-model";
+import { DEFAULT_COMPOSER_SETTINGS, defaultFovAnimation, type DemoShotPatch, type DemoVirtualCamera, type FovAnimation } from "./vcam-model";
 
 // Authorable lens fields (dutch stays in the Composer). Each is optional on the
 // vcam's lens: unchecked = inherited (absent), checked = an explicit override
@@ -38,9 +39,12 @@ export interface CameraInspectorProps {
   onDelete: () => void;
   onUpdateShot: (patch: DemoShotPatch) => void;
   onUpdateComposer: (settings: ComposerSettings) => void;
+  /** This shot's FOV push/pull over its window (null = static). Demo sidecar. */
+  fovAnimation: FovAnimation | null;
+  onFovAnimationChange: (anim: FovAnimation | null) => void;
 }
 
-export function CameraInspector({ camera, isActive, trackTargets, dollies, onActivate, onDelete, onUpdateShot, onUpdateComposer }: CameraInspectorProps) {
+export function CameraInspector({ camera, isActive, trackTargets, dollies, onActivate, onDelete, onUpdateShot, onUpdateComposer, fovAnimation, onFovAnimationChange }: CameraInspectorProps) {
   const [composerOpen, setComposerOpen] = useState(false);
   return (
     <div style={{ display: "grid", gap: 8 }}>
@@ -69,13 +73,19 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
         {LENS_FIELDS.map((field) => {
           const value = camera.snapshot.lens?.[field.key];
           const enabled = value !== undefined;
+          const isFov = field.key === "fov";
+          const animating = isFov && fovAnimation !== null;
           return (
             <div key={field.key} style={{ display: "grid", gap: 4 }}>
               <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 12 }}>
                 <input
                   type="checkbox"
                   checked={enabled}
-                  onChange={(event) => onUpdateShot({ lens: { [field.key]: event.target.checked ? field.seed : null } })}
+                  onChange={(event) => {
+                    onUpdateShot({ lens: { [field.key]: event.target.checked ? field.seed : null } });
+                    // Turning FOV back to inherited drops any animation with it.
+                    if (isFov && !event.target.checked) onFovAnimationChange(null);
+                  }}
                 />
                 {enabled ? null : (
                   <>
@@ -84,7 +94,7 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
                   </>
                 )}
               </label>
-              {enabled ? (
+              {enabled && !animating ? (
                 <NumberSlider
                   label={field.label}
                   value={value ?? field.seed}
@@ -94,6 +104,31 @@ export function CameraInspector({ camera, isActive, trackTargets, dollies, onAct
                   {...("unit" in field && field.unit ? { unit: field.unit } : {})}
                   onChange={(next) => onUpdateShot({ lens: { [field.key]: next } })}
                 />
+              ) : null}
+              {isFov && enabled ? (
+                <div style={{ display: "grid", gap: 4, paddingLeft: 4 }}>
+                  <label style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11 }}>
+                    <input
+                      type="checkbox"
+                      checked={animating}
+                      onChange={(event) => onFovAnimationChange(event.target.checked ? defaultFovAnimation(value ?? field.seed) : null)}
+                    />
+                    <span>Animate FOV over the shot</span>
+                  </label>
+                  {animating && fovAnimation ? (
+                    <div style={{ display: "grid", gap: 4 }}>
+                      <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 11, color: "#94a3b8" }}>
+                        <span style={{ width: 28 }}>from</span>
+                        <input type="number" value={fovAnimation.from} min={field.min} max={field.max} step={1} style={{ width: 54 }}
+                          onChange={(event) => onFovAnimationChange({ ...fovAnimation, from: Number(event.target.value) })} />
+                        <span>→ to</span>
+                        <input type="number" value={fovAnimation.to} min={field.min} max={field.max} step={1} style={{ width: 54 }}
+                          onChange={(event) => onFovAnimationChange({ ...fovAnimation, to: Number(event.target.value) })} />
+                      </div>
+                      <EasingEditor value={fovAnimation.easing} onChange={(easing) => onFovAnimationChange({ ...fovAnimation, easing })} height={130} />
+                    </div>
+                  ) : null}
+                </div>
               ) : null}
             </div>
           );

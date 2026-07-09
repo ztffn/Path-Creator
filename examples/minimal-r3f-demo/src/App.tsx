@@ -9,6 +9,7 @@ import {
   VertexPath,
   createPathCart,
   sampleCartFrame,
+  evaluateEasing,
   type CartFrame,
   sampleEasingCurve,
   type ComposerSettings,
@@ -96,6 +97,7 @@ import {
   ORBIT_INTERACTIVE_CONTROL,
   toVcamView,
   vcamDefFromView,
+  type FovAnimation,
   type DemoShotPatch,
   type DemoVirtualCamera,
   type DollyRun,
@@ -122,6 +124,9 @@ const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
 // Activation/audio tracks persist in a demo sidecar (not the portable RigDocument,
 // whose Timeline union is closed to camera/cart/event).
 const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
+// Per-vcam FOV animation (a push/pull over the shot) is likewise a demo sidecar,
+// keyed by vcam id; promotes into a CameraBlock lens track once it proves out.
+const FOV_ANIM_STORAGE_KEY = "path-creator:minimal-demo:fov-anim";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
 const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3", "/audio/fireship.mp3", "/audio/linus.mp3"];
@@ -156,6 +161,15 @@ function loadExtraTracks(): ExtraTracks {
     };
   } catch {
     return EMPTY_EXTRA_TRACKS;
+  }
+}
+
+function loadFovAnimations(): Record<string, FovAnimation> {
+  try {
+    const raw = localStorage.getItem(FOV_ANIM_STORAGE_KEY);
+    return raw ? (JSON.parse(raw) as Record<string, FovAnimation>) : {};
+  } catch {
+    return {};
   }
 }
 // Correlation keys tying cart-bodied vcams to the demo rail; a rename must
@@ -419,6 +433,7 @@ function Scene({
   activationTracks,
   audioTracks,
   audioPlayer,
+  fovAnimations,
   selection,
   onSelectEntity
 }: {
@@ -450,6 +465,8 @@ function Scene({
   virtualCameras: DemoVirtualCamera[];
   /** Real definitions the drive-loop resolves/blends; parallel to virtualCameras by id. */
   vcamDefs: VirtualCameraDefinition[];
+  /** Per-vcam FOV push/pull applied post-resolve during timeline playback (demo sidecar). */
+  fovAnimations: Record<string, FovAnimation>;
   selectedVirtualCameraId: string | null;
   onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
   onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
@@ -624,6 +641,22 @@ function Scene({
 
     const result = rigDrive.drive(brainCamera, intent, delta);
     frustumHelper.update();
+
+    // FOV animation (demo sidecar): after the brain applies the static lens, push/pull
+    // the active shot's fov across its window. Timeline playback only — it's the sole
+    // path with a shot-local clock. NOTE: mid-blend this uses the incoming shot's curve
+    // rather than blending it; that refinement lands when this promotes to a CameraBlock.
+    const animId = result.activeVcamId;
+    const fovAnim = animId ? fovAnimations[animId] : undefined;
+    if (fovAnim && activeTimeline) {
+      const shot = virtualCameras.find((item) => item.id === animId);
+      const span = shot ? shot.shotEnd - shot.shotStart : 0;
+      if (shot && span > 1e-6) {
+        const local = Math.min(1, Math.max(0, (timelinePlayerRef.current.time - shot.shotStart) / span));
+        brainCamera.fov = fovAnim.from + (fovAnim.to - fovAnim.from) * evaluateEasing(local, fovAnim.easing);
+        brainCamera.updateProjectionMatrix();
+      }
+    }
 
     // Surface the actually-driven vcam id (timeline picks it per-frame) so the host
     // can label the PiP and enable piloting for the active orbit shot.
@@ -1237,6 +1270,19 @@ export function App() {
   useEffect(() => {
     localStorage.setItem(EXTRA_STORAGE_KEY, JSON.stringify(extraTracks));
   }, [extraTracks]);
+  // Per-vcam FOV animation sidecar (keyed by vcam id).
+  const [fovAnimations, setFovAnimations] = useState<Record<string, FovAnimation>>(loadFovAnimations);
+  useEffect(() => {
+    localStorage.setItem(FOV_ANIM_STORAGE_KEY, JSON.stringify(fovAnimations));
+  }, [fovAnimations]);
+  const setFovAnimation = (vcamId: string, anim: FovAnimation | null): void => {
+    setFovAnimations((prev) => {
+      const next = { ...prev };
+      if (anim) next[vcamId] = anim;
+      else delete next[vcamId];
+      return next;
+    });
+  };
   useEffect(() => {
     const unlock = () => audioPlayer.resume();
     window.addEventListener("pointerdown", unlock);
@@ -1252,6 +1298,7 @@ export function App() {
       isVisible: (id: string) => activatablesRegistry.resolve(id)?.visible ?? null,
       player: timelinePlayerRef.current,
       setExtraTracks,
+      setFovAnimation,
       enterTimeline: () => setPipDriver("timeline")
     };
   }, [activatablesRegistry]);
@@ -2392,7 +2439,9 @@ export function App() {
                   onActivate: () => activateVirtualCamera(selectedVirtualCamera.id),
                   onDelete: () => deleteVirtualCamera(selectedVirtualCamera.id),
                   onUpdateShot: (patch) => updateVirtualCameraShot(selectedVirtualCamera.id, patch),
-                  onUpdateComposer: (settings) => updateVirtualCameraComposer(selectedVirtualCamera.id, settings)
+                  onUpdateComposer: (settings) => updateVirtualCameraComposer(selectedVirtualCamera.id, settings),
+                  fovAnimation: fovAnimations[selectedVirtualCamera.id] ?? null,
+                  onFovAnimationChange: (anim) => setFovAnimation(selectedVirtualCamera.id, anim)
                 }
               : null
           }
@@ -2531,6 +2580,7 @@ export function App() {
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           audioPlayer={audioPlayer}
+          fovAnimations={fovAnimations}
           selection={selection}
           onSelectEntity={select}
           pathVersion={pathVersion}

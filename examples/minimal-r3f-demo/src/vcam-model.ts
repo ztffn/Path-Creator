@@ -101,6 +101,21 @@ export type DollyRun = {
 export const DEFAULT_DOLLY_EASING: Easing = "easeInOut";
 
 /**
+ * A FOV push/pull over a shot: fov eases from `from`→`to` across the shot's window
+ * (shot-local t normalized 0..1), reusing the same Easing model as a dolly move. A
+ * demo sidecar keyed by vcam id — not the portable RigDocument; it promotes to a
+ * CameraBlock lens track once the authoring proves out.
+ */
+export type FovAnimation = { from: number; to: number; easing: Easing };
+
+/** A push-in seeded from the current static fov (to = a tighter 0.6×), easeInOut. */
+export const defaultFovAnimation = (base: number): FovAnimation => ({
+  from: base,
+  to: Math.max(10, Math.round(base * 0.6)),
+  easing: "easeInOut"
+});
+
+/**
  * The flat, UI-facing projection the authoring panels/glyphs/lane editor read.
  * Derived from a definition + its sidecars; never the source of truth.
  */
