@@ -44,6 +44,19 @@ describe("evaluateEasing presets", () => {
     expect(evaluateEasing(0.5, "easeIn")).toBeCloseTo(0.25, 6);
   });
 
+  it("is prototype-safe and falls back to easeInOut for unknown names", () => {
+    // Names colliding with Object.prototype must not resolve to inherited methods.
+    for (const name of ["valueOf", "toString", "constructor", "hasOwnProperty"] as unknown as Easing[]) {
+      const y = evaluateEasing(0.5, name);
+      expect(Number.isFinite(y)).toBe(true);
+      expect(y).toBeCloseTo(evaluateEasing(0.5, "easeInOut"), 6);
+    }
+    expect(evaluateEasing(0.5, "bogus" as unknown as Easing)).toBeCloseTo(evaluateEasing(0.5, "easeInOut"), 6);
+    // normalizeEasing must reject prototype names, not treat them as valid presets.
+    expect(normalizeEasing("valueOf")).toBe("linear");
+    expect(normalizeEasing("toString")).toBe("linear");
+  });
+
   it("cut snaps to the end and clamps/NaN-guards input", () => {
     expect(evaluateEasing(0, "cut")).toBe(1);
     expect(evaluateEasing(0.001, "cut")).toBe(1);

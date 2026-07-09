@@ -14,6 +14,7 @@ import {
   lerp,
   sampleEasingCurve,
   sampleEasingDerivative,
+  tangentHandles,
   type Easing,
   type EasingCurveKey,
   type EasingPreset,
@@ -217,8 +218,8 @@ export function EasingEditor({
     const p = pointerToNorm(event);
     const nx = clamp(p.x, 1e-3, 1 - 1e-3);
     const ny = clamp(p.y, -0.5, 1.5);
-    // Seed smooth tangent handles from the local slope through the neighbors, so a
-    // fresh point has grabbable control points and isn't a hard corner.
+    // Seed smooth tangent handles from the local slope through the bracketing anchors,
+    // so a fresh point has grabbable control points and isn't a hard corner.
     const sorted = [...editing.keys].sort((a, b) => a.x - b.x);
     let lo = sorted[0];
     let hi = sorted[sorted.length - 1];
@@ -229,15 +230,7 @@ export function EasingEditor({
         break;
       }
     }
-    const slope = hi.x > lo.x ? (hi.y - lo.y) / (hi.x - lo.x) : 0;
-    const leftGap = (nx - lo.x) / 3;
-    const rightGap = (hi.x - nx) / 3;
-    const key: EasingCurveKey = {
-      x: nx,
-      y: ny,
-      in: { x: nx - leftGap, y: ny - slope * leftGap },
-      out: { x: nx + rightGap, y: ny + slope * rightGap }
-    };
+    const key: EasingCurveKey = { x: nx, y: ny, ...tangentHandles({ x: nx, y: ny }, lo, hi) };
     setSelected(editing.keys.filter((k) => k.x < nx).length);
     commit([...editing.keys, key].sort((a, b) => a.x - b.x));
   }

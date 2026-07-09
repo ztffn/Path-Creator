@@ -146,8 +146,9 @@ export function sampleEasingCurve(curve: EasingCurve, x: number): number {
 }
 
 const LUT_SEGMENTS = 64;
-// Normalized cumulative-integral LUT for speed-space curves, memoized per curve object
-// so the per-frame evaluator stays cheap (curve identity is stable across renders).
+// Normalized cumulative-integral LUT for speed-space curves, memoized per curve object.
+// During playback the curve identity is stable, so the per-frame evaluator stays O(1);
+// editing produces new objects (rebuilt then, which is fine — editing isn't the hot path).
 const speedLutCache = new WeakMap<EasingCurve, number[]>();
 function speedCurveLUT(curve: EasingCurve): number[] {
   const cached = speedLutCache.get(curve);
@@ -214,34 +215,42 @@ export function convertEasingCurveSpace(current: EasingCurve, target: "position"
 export function evaluateEasing(t: number, easing: Easing = "easeInOut"): number {
   const a = clamp01(t);
   if (isEasingCurve(easing)) return evaluateEasingCurve(easing, a);
-  return (EASING_PRESETS[easing] ?? EASING_PRESETS.linear)(a);
+  // Own-property check so a name colliding with Object.prototype ("valueOf",
+  // "toString", "constructor") can't resolve to an inherited method. Unknown names
+  // fall through to easeInOut, matching the pre-refactor blend switch's default.
+  const fn = Object.prototype.hasOwnProperty.call(EASING_PRESETS, easing) ? EASING_PRESETS[easing] : EASING_PRESETS.easeInOut;
+  return fn(a);
 }
 
 /**
- * Fit cubic-bezier tangent handles to sampled points (Catmull-Rom style: each anchor's
- * tangent is the slope through its neighbors, handles at 1/3 the chord). Turns a few
- * anchors into a smooth C1 curve, so we don't need many points to look curved.
+ * Cubic-bezier tangent handles for one anchor (Catmull-Rom style): the tangent is the
+ * slope through its neighbors, handles placed at 1/3 the chord to each. A missing
+ * neighbor omits that handle. Shared by curve fitting and the editor's add-anchor.
+ */
+export function tangentHandles(p: EasingPoint, prev: EasingPoint | undefined, next: EasingPoint | undefined): Pick<EasingCurveKey, "in" | "out"> {
+  const slope = !prev
+    ? (next!.y - p.y) / (next!.x - p.x)
+    : !next
+      ? (p.y - prev.y) / (p.x - prev.x)
+      : (next.y - prev.y) / (next.x - prev.x);
+  const handles: Pick<EasingCurveKey, "in" | "out"> = {};
+  if (next) {
+    const g = (next.x - p.x) / 3;
+    handles.out = { x: p.x + g, y: p.y + slope * g };
+  }
+  if (prev) {
+    const g = (p.x - prev.x) / 3;
+    handles.in = { x: p.x - g, y: p.y - slope * g };
+  }
+  return handles;
+}
+
+/**
+ * Fit tangent handles to sampled points — turns a few anchors into a smooth C1 curve,
+ * so we don't need many points to look curved.
  */
 function fitTangentHandles(points: EasingPoint[]): EasingCurveKey[] {
-  return points.map((p, i) => {
-    const prev = points[i - 1];
-    const next = points[i + 1];
-    const slope = !prev
-      ? (next.y - p.y) / (next.x - p.x)
-      : !next
-        ? (p.y - prev.y) / (p.x - prev.x)
-        : (next.y - prev.y) / (next.x - prev.x);
-    const key: EasingCurveKey = { x: p.x, y: p.y };
-    if (next) {
-      const g = (next.x - p.x) / 3;
-      key.out = { x: p.x + g, y: p.y + slope * g };
-    }
-    if (prev) {
-      const g = (p.x - prev.x) / 3;
-      key.in = { x: p.x - g, y: p.y - slope * g };
-    }
-    return key;
-  });
+  return points.map((p, i) => ({ x: p.x, y: p.y, ...tangentHandles(p, points[i - 1], points[i + 1]) }));
 }
 
 /**
@@ -261,7 +270,7 @@ export function easingToCurve(easing: Easing, samples = 3): EasingCurve {
 
 /** Coerce an unknown/legacy easing value to a valid Easing, falling back to `fallback`. */
 export function normalizeEasing(value: unknown, fallback: Easing = "linear"): Easing {
-  if (typeof value === "string" && value in EASING_PRESETS) return value as EasingPreset;
+  if (typeof value === "string" && Object.prototype.hasOwnProperty.call(EASING_PRESETS, value)) return value as EasingPreset;
   if (typeof value === "object" && value !== null && (value as { type?: unknown }).type === "curve") {
     const keys = (value as { keys?: unknown }).keys;
     if (Array.isArray(keys) && keys.length >= 2 && keys.every((k) => typeof k?.x === "number" && typeof k?.y === "number")) {

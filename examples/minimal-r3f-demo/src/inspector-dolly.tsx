@@ -6,7 +6,7 @@
 import { EndOfPathInstruction, type RigCartDefinition, type RigPathDefinition } from "@huma/path-creator/core";
 import { EasingEditor } from "@huma/path-creator/timeline-ui";
 import { MUTED } from "./panel-theme";
-import type { DollyRun } from "./vcam-model";
+import { DEFAULT_DOLLY_EASING, type DollyRun } from "./vcam-model";
 
 export interface DollyInspectorProps {
   dolly: RigCartDefinition;
@@ -89,7 +89,7 @@ export function DollyInspector({ dolly, paths, runs, onUpdate, onDelete, onUpdat
             <button className="pc-danger" title="Delete move" onClick={() => onDeleteRun(run.id)}>×</button>
           </div>
           <div style={{ paddingLeft: 30 }}>
-            <EasingEditor value={run.easing ?? "linear"} onChange={(easing) => onUpdateRun(run.id, { easing })} height={150} />
+            <EasingEditor value={run.easing ?? DEFAULT_DOLLY_EASING} onChange={(easing) => onUpdateRun(run.id, { easing })} height={150} />
           </div>
         </div>
       ))}

@@ -89,9 +89,16 @@ export type DollyRun = {
   end: number;
   fromT: number;
   toT: number;
-  /** Speed profile over the move (distance-vs-time). Defaults to linear when unset. */
+  /** Speed profile over the move (distance-vs-time). Defaults to DEFAULT_DOLLY_EASING when unset. */
   easing?: Easing;
 };
+
+/**
+ * Easing a dolly move uses when its `easing` is unset (e.g. hydrated from a pre-easing
+ * save). One source of truth so the timeline build, the speed sparkline, and the editor
+ * all agree — otherwise the sparkline can contradict the actual motion.
+ */
+export const DEFAULT_DOLLY_EASING: Easing = "easeInOut";
 
 /**
  * The flat, UI-facing projection the authoring panels/glyphs/lane editor read.

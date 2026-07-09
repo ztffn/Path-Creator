@@ -22,6 +22,7 @@ import {
 } from "@huma/path-creator/core";
 import {
   DEFAULT_COMPOSER_SETTINGS,
+  DEFAULT_DOLLY_EASING,
   NOISE_PRESETS,
   type DemoNoisePreset,
   type DollyRun,
@@ -83,7 +84,7 @@ export function buildShowTimeline(
         keys: [...runs]
           .sort((a, b) => a.start - b.start)
           .flatMap((run) => [
-            { time: run.start, distance: run.fromT * length, easing: run.easing ?? "easeInOut" },
+            { time: run.start, distance: run.fromT * length, easing: run.easing ?? DEFAULT_DOLLY_EASING },
             { time: run.end, distance: run.toT * length }
           ])
       };

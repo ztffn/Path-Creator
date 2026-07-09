@@ -89,6 +89,7 @@ import {
   hasActiveOverrideAxis,
   makeDolly,
   ORBIT_DEFAULTS,
+  DEFAULT_DOLLY_EASING,
   ORBIT_INTERACTIVE_CONTROL,
   toVcamView,
   vcamDefFromView,
@@ -121,15 +122,16 @@ const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
 const SAMPLE_AUDIO = ["/audio/jarvis.mp3", "/audio/morganfreeman.mp3", "/audio/samjackson.mp3", "/audio/samaltman.mp3"];
-// Speed sparklines vary per move now (each run authors its own easing); memoize the
-// derived curve by easing so identical easings don't recompute every render.
+// Speed sparklines vary per move (each run authors its own easing). Cache only preset
+// strings (a small fixed set); custom curves change on every edit, so caching them would
+// grow unbounded for no benefit — compute those fresh (cheap: ~49 samples).
 const speedSeriesCache = new Map<string, ReturnType<typeof dollyMoveSpeedSeries>>();
 function speedSeriesFor(easing: Easing): ReturnType<typeof dollyMoveSpeedSeries> {
-  const key = typeof easing === "string" ? easing : JSON.stringify(easing);
-  let series = speedSeriesCache.get(key);
+  if (typeof easing !== "string") return dollyMoveSpeedSeries(easing);
+  let series = speedSeriesCache.get(easing);
   if (!series) {
     series = dollyMoveSpeedSeries(easing);
-    speedSeriesCache.set(key, series);
+    speedSeriesCache.set(easing, series);
   }
   return series;
 }
@@ -1593,7 +1595,7 @@ export function App() {
         end: start + 3,
         fromT: from,
         toT: from < 0.5 ? 1 : 0,
-        easing: "easeInOut"
+        easing: DEFAULT_DOLLY_EASING
       };
       return { ...current, [cartId]: [...runs, run].sort((a, b) => a.start - b.start) };
     });
@@ -1690,7 +1692,12 @@ export function App() {
     .map((vcam) => `${vcam.id}:${vcam.shotStart}:${vcam.shotEnd}:${vcam.cartId}`)
     .join("|");
   const dollyRunKey = Object.entries(dollyRuns)
-    .map(([cartId, runs]) => `${cartId}:${runs.map((r) => `${r.start},${r.end},${r.fromT},${r.toT}`).join(";")}`)
+    .map(
+      ([cartId, runs]) =>
+        `${cartId}:${runs
+          .map((r) => `${r.start},${r.end},${r.fromT},${r.toT},${typeof r.easing === "string" ? r.easing : JSON.stringify(r.easing ?? "")}`)
+          .join(";")}`
+    )
     .join("|");
   // The show timeline is authored data (blocks + cart-track keys), built by the
   // shared scene-io helper — the same build used to assemble the saved document.
@@ -2415,7 +2422,7 @@ export function App() {
               end: run.end,
               label: `${run.fromT.toFixed(1)} → ${run.toT.toFixed(1)}`,
               // Speed profile only when the move actually travels; reflects the run's easing.
-              ...(run.fromT !== run.toT && { series: speedSeriesFor(run.easing ?? "linear") })
+              ...(run.fromT !== run.toT && { series: speedSeriesFor(run.easing ?? DEFAULT_DOLLY_EASING) })
             }))
           )}
           selectedShotId={selectedVirtualCameraId}
