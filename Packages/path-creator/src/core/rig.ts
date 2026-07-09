@@ -6,11 +6,13 @@
 import { BezierPath, type SerializedBezierPath } from "./bezier-path";
 import { deserializePathCart, serializePathCart, type PathCart, type SerializedPathCart } from "./cart";
 import type { TrackingTargetDefinition } from "./targets";
-import { sortTimelineTracks, type Timeline } from "./timeline";
+import { normalizeTimelineEasing, sortTimelineTracks, TIMELINE_SCHEMA_VERSION, type Timeline } from "./timeline";
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
 
-export const RIG_SCHEMA_VERSION = 2;
+// v3: embedded timelines carry v2 easing (cubic-bezier custom curves). Older
+// documents load unchanged — their string easing is a valid subset.
+export const RIG_SCHEMA_VERSION = 3;
 
 export interface RigPathDefinition {
   id: string;
@@ -85,7 +87,33 @@ export function parseRigDocument(json: string): RigDocument {
       `Unsupported rig schema version ${String(parsed.schemaVersion)}; expected 1..${RIG_SCHEMA_VERSION}`
     );
   }
-  return parsed;
+  const migrated = migrateRigDocument(parsed);
+  // Coerce persisted easing values to valid Easings at the boundary, so a malformed or
+  // foreign document can't reach the evaluator with a bad easing (all versions, not just
+  // migrated ones).
+  return migrated.timelines
+    ? { ...migrated, timelines: migrated.timelines.map(normalizeTimelineEasing) }
+    : migrated;
+}
+
+/**
+ * Upgrades an older document to the current schema. Future structural migrations
+ * branch on `document.schemaVersion` here. The v1/v2 -> v3 step needs no per-field
+ * transform: string easing is a valid subset of the v2 easing union, so we only
+ * re-stamp the version numbers.
+ */
+function migrateRigDocument(document: RigDocument): RigDocument {
+  if (document.schemaVersion >= RIG_SCHEMA_VERSION) return document;
+  return {
+    ...document,
+    schemaVersion: RIG_SCHEMA_VERSION,
+    ...(document.timelines && {
+      timelines: document.timelines.map((timeline) => ({
+        ...timeline,
+        schemaVersion: TIMELINE_SCHEMA_VERSION
+      }))
+    })
+  };
 }
 
 export function serializeRigPath(

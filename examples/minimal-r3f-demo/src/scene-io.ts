@@ -22,6 +22,7 @@ import {
 } from "@huma/path-creator/core";
 import {
   DEFAULT_COMPOSER_SETTINGS,
+  DEFAULT_DOLLY_EASING,
   NOISE_PRESETS,
   type DemoNoisePreset,
   type DollyRun,
@@ -83,7 +84,7 @@ export function buildShowTimeline(
         keys: [...runs]
           .sort((a, b) => a.start - b.start)
           .flatMap((run) => [
-            { time: run.start, distance: run.fromT * length, easing: "easeInOut" as const },
+            { time: run.start, distance: run.fromT * length, easing: run.easing ?? DEFAULT_DOLLY_EASING },
             { time: run.end, distance: run.toT * length }
           ])
       };
@@ -135,7 +136,8 @@ function runsFromTimeline(
         start: from.time,
         end: to.time,
         fromT: from.distance / length,
-        toT: to.distance / length
+        toT: to.distance / length,
+        ...(from.easing !== undefined && { easing: from.easing })
       });
     }
     if (list.length > 0) runs[track.cartId] = list;

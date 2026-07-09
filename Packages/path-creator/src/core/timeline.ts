@@ -3,9 +3,12 @@
 // definition overrides such as retargets), cart distance keyframes, and
 // opaque host events. Pure data with no engine dependency; the evaluator
 // and player live in the timeline entry point.
+import { normalizeEasing } from "./easing";
 import type { VirtualCameraBlendCurve, VirtualCameraDefinition } from "./virtual-camera";
 
-export const TIMELINE_SCHEMA_VERSION = 1;
+// v2: CartKey.easing / TimelineBlendIn.curve accept a custom cubic-bezier object
+// (in addition to the named presets); legacy string easing stays valid.
+export const TIMELINE_SCHEMA_VERSION = 2;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -84,6 +87,29 @@ export function createTimeline(init: Partial<Omit<Timeline, "schemaVersion">> = 
     ...(init.gapMode && { gapMode: init.gapMode }),
     tracks: sortTimelineTracks(init.tracks ?? [])
   };
+}
+
+/**
+ * Coerce every easing value in a timeline (cart-key easing, camera blend curves) through
+ * normalizeEasing, so a malformed/foreign persisted easing degrades to a valid preset
+ * rather than reaching the evaluator as NaN. Applied at the deserialization boundary.
+ */
+export function normalizeTimelineEasing<T extends Timeline>(timeline: T): T {
+  const tracks = timeline.tracks.map((track): TimelineTrack => {
+    if (track.type === "cart") {
+      return { ...track, keys: track.keys.map((k) => (k.easing === undefined ? k : { ...k, easing: normalizeEasing(k.easing) })) };
+    }
+    if (track.type === "camera") {
+      return {
+        ...track,
+        blocks: track.blocks.map((b) =>
+          b.blendIn?.curve === undefined ? b : { ...b, blendIn: { ...b.blendIn, curve: normalizeEasing(b.blendIn.curve) } }
+        )
+      };
+    }
+    return track;
+  });
+  return { ...timeline, tracks };
 }
 
 /**

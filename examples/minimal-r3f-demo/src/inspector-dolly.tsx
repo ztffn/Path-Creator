@@ -4,8 +4,9 @@
 // [start,end]) with add/delete. Scoped to a single dolly; the hierarchy owns the
 // list + add-dolly affordance. Pure presentation, driven by App handlers.
 import { EndOfPathInstruction, type RigCartDefinition, type RigPathDefinition } from "@huma/path-creator/core";
+import { EasingEditor } from "@huma/path-creator/timeline-ui";
 import { MUTED } from "./panel-theme";
-import type { DollyRun } from "./vcam-model";
+import { DEFAULT_DOLLY_EASING, type DollyRun } from "./vcam-model";
 
 export interface DollyInspectorProps {
   dolly: RigCartDefinition;
@@ -71,20 +72,25 @@ export function DollyInspector({ dolly, paths, runs, onUpdate, onDelete, onUpdat
         <span style={{ textAlign: "right", color: MUTED }}>{dolly.speed.toFixed(1)}</span>
       </label>
 
-      {/* Dolly moves: over [start,end] the dolly eases from→to (distance). */}
+      {/* Dolly moves: over [start,end] the dolly eases from→to (distance) with a speed curve. */}
       {runs.map((run) => (
-        <div key={run.id} style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, color: "#94a3b8" }}>
-          <span style={{ width: 30 }}>move</span>
-          <input type="number" title="start (s)" value={run.start} step={0.25} style={{ width: 46 }}
-            onChange={(event) => onUpdateRun(run.id, { start: Number(event.target.value) })} />
-          <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
-            onChange={(event) => onUpdateRun(run.id, { end: Number(event.target.value) })} />
-          <input type="number" title="from (0–1 along path)" value={run.fromT} min={0} max={1} step={0.05} style={{ width: 46 }}
-            onChange={(event) => onUpdateRun(run.id, { fromT: Number(event.target.value) })} />
-          <span>→</span>
-          <input type="number" title="to (0–1 along path)" value={run.toT} min={0} max={1} step={0.05} style={{ width: 46 }}
-            onChange={(event) => onUpdateRun(run.id, { toT: Number(event.target.value) })} />
-          <button className="pc-danger" title="Delete move" onClick={() => onDeleteRun(run.id)}>×</button>
+        <div key={run.id} style={{ display: "grid", gap: 4, padding: "4px 0", borderTop: "1px solid rgba(148,163,184,0.15)" }}>
+          <div style={{ display: "flex", alignItems: "center", gap: 3, fontSize: 11, color: "#94a3b8" }}>
+            <span style={{ width: 30 }}>move</span>
+            <input type="number" title="start (s)" value={run.start} step={0.25} style={{ width: 46 }}
+              onChange={(event) => onUpdateRun(run.id, { start: Number(event.target.value) })} />
+            <input type="number" title="end (s)" value={run.end} step={0.25} style={{ width: 46 }}
+              onChange={(event) => onUpdateRun(run.id, { end: Number(event.target.value) })} />
+            <input type="number" title="from (0–1 along path)" value={run.fromT} min={0} max={1} step={0.05} style={{ width: 46 }}
+              onChange={(event) => onUpdateRun(run.id, { fromT: Number(event.target.value) })} />
+            <span>→</span>
+            <input type="number" title="to (0–1 along path)" value={run.toT} min={0} max={1} step={0.05} style={{ width: 46 }}
+              onChange={(event) => onUpdateRun(run.id, { toT: Number(event.target.value) })} />
+            <button className="pc-danger" title="Delete move" onClick={() => onDeleteRun(run.id)}>×</button>
+          </div>
+          <div style={{ paddingLeft: 30 }}>
+            <EasingEditor value={run.easing ?? DEFAULT_DOLLY_EASING} onChange={(easing) => onUpdateRun(run.id, { easing })} height={150} />
+          </div>
         </div>
       ))}
       <button style={{ fontSize: 11, justifySelf: "start" }} onClick={onAddRun}>+ move</button>

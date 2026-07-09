@@ -22,6 +22,7 @@ import {
 import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 import { BlockSeries, type BlockSeriesData } from "./block-series";
 export { BlockSeries, type BlockSeriesData, type BlockSeriesKind } from "./block-series";
+export { EasingEditor, type EasingEditorTheme } from "./easing-editor";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },

@@ -58,7 +58,7 @@ export function SceneInspector({
       <SettingsSection title="Blend">
         <label style={{ display: "grid", gridTemplateColumns: "96px 1fr", alignItems: "center", gap: 8, fontSize: 12 }}>
           <span>Curve</span>
-          <select value={blendCurve} onChange={(event) => onBlendCurveChange(event.target.value as VirtualCameraBlendCurve)}>
+          <select value={typeof blendCurve === "string" ? blendCurve : "easeInOut"} onChange={(event) => onBlendCurveChange(event.target.value as VirtualCameraBlendCurve)}>
             <option value="cut">Cut</option>
             <option value="easeInOut">Ease In Out</option>
             <option value="easeIn">Ease In</option>
