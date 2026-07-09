@@ -284,15 +284,24 @@ groups). The registry exposes `subscribe`/`version` so UI lists stay current.
 
 ### Timeline
 
-Schema (`schemaVersion: 1`, plain JSON):
+Schema (`schemaVersion: 3`, plain JSON):
 
-- `CameraTrack` — blocks `{ vcamId, start, end, blendIn?, overrides? }`.
+- `CameraTrack` — blocks `{ vcamId, start, end, blendIn?, overrides?, lensAnimation? }`.
   `blendIn` blends from the previous block over its duration; `overrides`
-  shallow-patch the vcam definition per block (a retarget is an aim override).
+  shallow-patch the vcam definition per block (a retarget is an aim override);
+  `lensAnimation` eases lens fields across the block (see below).
 - `CartTrack` — `{ cartId, keys: { time, distance, easing? }[] }`; keyframed
   dolly motion with eased interpolation, clamped at the ends. Carts without a
   track derive distance as `cart.distance + cart.speed * t`.
 - `EventTrack` — `{ id, time, kind, payload }`; opaque to the library.
+
+`CameraBlock.lensAnimation` is `Partial<Record<keyof VirtualCameraLens, { from, to, easing? }>>` —
+each named lens field eases `from`→`to` across the block window (block-local `t`,
+normalized 0..1). It is sampled inside `resolveBlock` and folded into the resolved
+snapshot *before* blend/apply, so an animated lens **composes with `blendIn`
+crossfades**: the outgoing and incoming blocks each animate through the overlap,
+then their snapshots (lens included) blend. The demo authors a per-vcam FOV push in
+the camera inspector, emitted as `lensAnimation.fov`.
 
 Evaluation is the load-bearing contract:
 
@@ -309,7 +318,7 @@ Semantics:
 | --- | --- |
 | Before the first block | `camera: null` — the host camera is free |
 | Inside a block | That vcam, resolved at `t` |
-| Inside a `blendIn` window | Both shots resolved live at `t`, blended |
+| Inside a `blendIn` window | Both shots resolved live at `t` (each with its own lens animation), blended |
 | Blocks touching | Hard cut |
 | Gap between blocks, `gapMode: "hold"` (default) | The last shot stays live |
 | Gap between blocks, `gapMode: "release"` | `camera: null` — the host camera takes over |
@@ -335,7 +344,7 @@ seekTimelinePlayer(player, t); // scrub; never fires events
 
 ### Rig document (persistence)
 
-`RigDocument` (`schemaVersion: 2`) serializes an entire production: `paths[]`,
+`RigDocument` (`schemaVersion: 3`) serializes an entire production: `paths[]`,
 `carts[]`, `vcams[]`, `targets[]`, `timelines[]`, all referenced by id.
 `buildRigRuntime(document)` instantiates runtime maps and validates every
 cross-reference; unknown references throw at load, not during playback.
