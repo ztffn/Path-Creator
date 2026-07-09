@@ -3,6 +3,7 @@
 // bound scene object's visibility over clip windows) and an Audio track (2D
 // clips). Evaluation is a pure function of time t (scrub-safe, matching
 // evaluateTimeline's determinism contract); statefulness lives in the appliers.
+import { sampleEasingCurve, type EasingCurve } from "@huma/path-creator/core";
 
 /** Unity Activation Track "Post-playback state": what to do when the director stops. */
 export type PostPlaybackState = "revert" | "active" | "inactive" | "leaveAsIs";
@@ -30,8 +31,10 @@ export interface AudioClip {
   duration: number;
   /** Clip-local playback start offset in seconds (default 0). */
   offset?: number;
-  /** 0..1 (default 1). */
+  /** 0..1 (default 1) — master level; multiplied by the gainCurve envelope. */
   gain?: number;
+  /** Optional volume envelope over clip-local normalized time (0..1 value). Flat 1 when unset. */
+  gainCurve?: EasingCurve;
   loop?: boolean;
   /** Precomputed waveform envelope (flat [min,max,…], -1..1). Set at import; else derived lazily. */
   peaks?: number[];
@@ -107,10 +110,14 @@ export function evaluateAudio(tracks: readonly AudioTrack[], t: number): Map<str
     const trackGain = track.gain ?? 1;
     for (const clip of track.clips) {
       if (covers(clip.start, clip.start + clip.duration, t)) {
+        const localT = clip.duration > 0 ? (t - clip.start) / clip.duration : 0;
+        // Volume envelope over clip-local time; raw curve value (not renormalized), clamped
+        // so overshooting handles can't produce negative/>1 gain.
+        const env = clip.gainCurve ? Math.min(1, Math.max(0, sampleEasingCurve(clip.gainCurve, localT))) : 1;
         desired.set(clip.id, {
           src: clip.src,
           offset: (clip.offset ?? 0) + (t - clip.start),
-          gain: (clip.gain ?? 1) * trackGain,
+          gain: (clip.gain ?? 1) * trackGain * env,
           loop: clip.loop ?? false
         });
       }

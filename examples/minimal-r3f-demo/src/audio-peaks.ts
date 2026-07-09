@@ -28,6 +28,7 @@ export function extractPeaks(buffer: AudioBuffer, buckets = 512): number[] {
 }
 
 const cache = new Map<string, number[]>();
+const durations = new Map<string, number>();
 const inflight = new Set<string>();
 let decodeCtx: OfflineAudioContext | null = null;
 
@@ -65,12 +66,31 @@ export function ensurePeaks(src: string, onReady?: () => void): number[] | null 
       .then((buf) => ctx().decodeAudioData(buf))
       .then((audio) => {
         cache.set(src, extractPeaks(audio));
+        durations.set(src, audio.duration);
         onReady?.();
       })
       .catch((err) => console.warn(`[peaks] failed for ${src}`, err))
       .finally(() => inflight.delete(src));
   }
   return null;
+}
+
+/**
+ * Peaks for just the slice of the source a clip plays — `[offset, offset+duration]` —
+ * so the waveform matches the timeline block / editor window rather than the whole file.
+ * Falls back to the full peaks when the source duration isn't known yet (e.g. `tone:`).
+ */
+export function clipPeaks(src: string, offset: number, duration: number, onReady?: () => void): number[] | null {
+  const peaks = ensurePeaks(src, onReady);
+  if (!peaks) return null;
+  const fileDur = durations.get(src);
+  if (!fileDur || fileDur <= 0) return peaks;
+  const n = peaks.length / 2;
+  const from = Math.max(0, Math.min(1, offset / fileDur));
+  const to = Math.max(from, Math.min(1, (offset + duration) / fileDur));
+  const i0 = Math.floor(from * n);
+  const i1 = Math.max(i0 + 1, Math.ceil(to * n));
+  return peaks.slice(i0 * 2, i1 * 2);
 }
 
 /**
@@ -83,5 +103,6 @@ export async function importAudioFile(file: File): Promise<{ src: string; peaks:
   const src = URL.createObjectURL(file);
   const peaks = extractPeaks(audio);
   cache.set(src, peaks); // so the lazy path never re-decodes this blob
+  durations.set(src, audio.duration);
   return { src, peaks, duration: audio.duration };
 }

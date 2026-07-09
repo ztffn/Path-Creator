@@ -3,7 +3,8 @@
 // playback matches the timeline, and resyncs when the source drifts from the clock
 // (a scrub-then-play). Buffers are decoded once per src and cached; `tone:<freq>`
 // synthesizes a sine buffer so the demo needs no bundled asset. Demo scaffolding.
-import type { DesiredAudio } from "./extra-tracks";
+import { sampleEasingCurve } from "@huma/path-creator/core";
+import type { AudioClip, DesiredAudio } from "./extra-tracks";
 
 const RESYNC_TOLERANCE_SECONDS = 0.3;
 const TONE_BUFFER_SECONDS = 60;
@@ -23,11 +24,65 @@ export class AudioTrackPlayer {
   private buffers = new Map<string, AudioBuffer>();
   private loading = new Set<string>();
   private active = new Map<string, ActiveClip>();
+  private preview: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
 
   /** Resume the AudioContext from a user gesture (autoplay policy). Call on Play. */
   resume(): void {
     const ctx = this.ensureContext();
     if (ctx.state === "suspended") void ctx.resume();
+  }
+
+  /**
+   * Play one clip once from the inspector, applying its volume envelope (level × gainCurve)
+   * as scheduled gain automation, so you can hear the fade you drew. Stops any prior preview.
+   */
+  async previewClip(clip: AudioClip, trackGain: number): Promise<void> {
+    const ctx = this.ensureContext();
+    if (ctx.state !== "running") await ctx.resume();
+    let buffer = this.buffers.get(clip.src);
+    if (!buffer) {
+      buffer = await this.loadBuffer(clip.src);
+      this.buffers.set(clip.src, buffer);
+    }
+    this.stopPreview();
+    const offset = Math.max(0, clip.offset ?? 0);
+    const dur = Math.max(0.05, Math.min(clip.duration, buffer.duration - offset));
+    const base = (clip.gain ?? 1) * trackGain;
+    const source = ctx.createBufferSource();
+    source.buffer = buffer;
+    const gain = ctx.createGain();
+    source.connect(gain).connect(ctx.destination);
+    if (clip.gainCurve) {
+      const n = 64;
+      const curve = new Float32Array(n + 1);
+      for (let i = 0; i <= n; i++) curve[i] = base * Math.min(1, Math.max(0, sampleEasingCurve(clip.gainCurve, i / n)));
+      gain.gain.setValueCurveAtTime(curve, ctx.currentTime, dur);
+    } else {
+      gain.gain.value = base;
+    }
+    const node = { source, gain };
+    source.onended = () => {
+      if (this.preview === node) {
+        gain.disconnect();
+        this.preview = null;
+      }
+    };
+    source.start(0, offset);
+    source.stop(ctx.currentTime + dur);
+    this.preview = node;
+  }
+
+  private stopPreview(): void {
+    if (!this.preview) return;
+    this.preview.source.onended = null;
+    try {
+      this.preview.source.stop();
+    } catch {
+      /* already stopped */
+    }
+    this.preview.source.disconnect();
+    this.preview.gain.disconnect();
+    this.preview = null;
   }
 
   /**
@@ -39,6 +94,7 @@ export class AudioTrackPlayer {
       this.stopAll();
       return;
     }
+    this.stopPreview(); // live timeline audio takes over; don't overlap an inspector preview
     const ctx = this.ensureContext();
     if (ctx.state !== "running") {
       void ctx.resume();
@@ -76,6 +132,7 @@ export class AudioTrackPlayer {
   }
 
   dispose(): void {
+    this.stopPreview();
     this.stopAll();
     void this.context?.close();
     this.context = null;

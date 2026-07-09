@@ -42,8 +42,8 @@ export interface ExtraLaneClip {
   start: number;
   end: number;
   label?: string;
-  /** Optional sparkline drawn behind the label (waveform, transform curve, …). */
-  series?: BlockSeriesData;
+  /** Optional sparkline(s) drawn behind the label — e.g. a waveform plus a gain line. */
+  series?: BlockSeriesData | BlockSeriesData[];
 }
 
 /**
@@ -315,7 +315,7 @@ export function TimelineLanes({
   const moveSeries = new Map<string, BlockSeriesData>(
     dollyMoves.flatMap((move) => (move.series ? [[`move-${move.shotId}`, move.series] as [string, BlockSeriesData]] : []))
   );
-  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData }>();
+  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[] }>();
   for (const lane of extraLanes) {
     for (const clip of lane.clips)
       extraActionStyle.set(EXTRA_ID(lane.id, clip.id), {
@@ -609,7 +609,11 @@ export function TimelineLanes({
                     background: style?.color ?? "rgba(148,163,184,0.4)"
                   }}
                 >
-                  {style?.series ? <BlockSeries data={style.series} color="rgba(255,255,255,0.32)" /> : null}
+                  {style?.series
+                    ? (Array.isArray(style.series) ? style.series : [style.series]).map((s, i) => (
+                        <BlockSeries key={i} data={s} color="rgba(255,255,255,0.32)" />
+                      ))
+                    : null}
                   <span style={{ position: "relative", overflow: "hidden", textOverflow: "ellipsis" }}>
                     {style?.label ?? ""}
                   </span>

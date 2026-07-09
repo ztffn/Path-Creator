@@ -16,6 +16,7 @@ import {
   sampleEasingDerivative,
   tangentHandles,
   type Easing,
+  type EasingCurve,
   type EasingCurveKey,
   type EasingPreset,
   type EasingPoint,
@@ -103,18 +104,32 @@ function relink(keys: EasingCurveKey[], index: number, refSide: "out" | "in", mo
 
 type DragTarget = { kind: "anchor" | "out" | "in"; index: number };
 
+/** Flat full-value curve — the reset/seed for a "value" (automation) editor. */
+const FLAT_ONE: EasingCurve = { type: "curve", keys: [{ x: 0, y: 1 }, { x: 1, y: 1 }] };
+
 export function EasingEditor({
   value,
   onChange,
   theme,
-  height = 150
+  height = 150,
+  mode = "easing",
+  backdrop
 }: {
   value: Easing;
   onChange: (next: Easing) => void;
   theme?: EasingEditorTheme;
   /** Canvas height in px; width fills the container. */
   height?: number;
+  /**
+   * "easing" (default): interpolation curve — position endpoints pinned to 0/1, a
+   * position/speed toggle, and a derivative overlay. "value": a raw automation curve
+   * (e.g. a volume envelope) — free endpoints, no toggle/overlay, value read directly.
+   */
+  mode?: "easing" | "value";
+  /** Optional faint waveform drawn behind the curve (flat [min,max,…] peaks in -1..1). */
+  backdrop?: number[];
 }) {
+  const valueMode = mode === "value";
   const t = { ...DEFAULT_THEME, ...theme };
   const wrapRef = useRef<HTMLDivElement>(null);
   const svgRef = useRef<SVGSVGElement>(null);
@@ -133,6 +148,9 @@ export function EasingEditor({
   }, []);
   const px = (x: number): number => x * width;
   const py = (y: number): number => height - y * height;
+  // Volume/automation stays within [0,1]; easing curves allow mild over/undershoot.
+  const yLo = valueMode ? 0 : -0.5;
+  const yHi = valueMode ? 1 : 1.5;
 
   // The editable working curve (only when the value is a custom curve; presets preview).
   const editing = isEasingCurve(value) ? value : null;
@@ -147,9 +165,11 @@ export function EasingEditor({
     const solidY = editing ? sampleEasingCurve(editing, x) : evaluateEasing(x, value);
     editablePath.push(`${i === 0 ? "M" : "L"}${px(x).toFixed(2)},${py(solidY).toFixed(2)}`);
   }
-  // In position mode the dashed overlay is the speed (normalized derivative); in speed
-  // mode it's the resulting position (already 0..1).
-  if (speedMode) {
+  // Value mode has no derived overlay. Otherwise: position mode shows the speed
+  // (normalized derivative); speed mode shows the resulting position (already 0..1).
+  if (valueMode) {
+    // no overlay
+  } else if (speedMode) {
     for (let i = 0; i <= SAMPLES; i++) {
       const x = i / SAMPLES;
       overlayPath.push(`${i === 0 ? "M" : "L"}${px(x).toFixed(2)},${py(evaluateEasing(x, value)).toFixed(2)}`);
@@ -158,6 +178,22 @@ export function EasingEditor({
     const deriv = sampleEasingDerivative(value, SAMPLES).map(Math.abs);
     const max = Math.max(1e-6, ...deriv);
     deriv.forEach((d, i) => overlayPath.push(`${i === 0 ? "M" : "L"}${px(i / SAMPLES).toFixed(2)},${py(d / max).toFixed(2)}`));
+  }
+
+  // Optional waveform backdrop: a faint centered envelope (peaks in -1..1), so a volume
+  // curve can be drawn against the audio it shapes.
+  let backdropD = "";
+  if (backdrop && backdrop.length >= 4) {
+    const n = Math.floor(backdrop.length / 2);
+    const top: string[] = [];
+    const bottom: string[] = [];
+    for (let i = 0; i < n; i++) {
+      const x = n > 1 ? i / (n - 1) : 0;
+      top.push(`${i === 0 ? "M" : "L"}${px(x).toFixed(2)},${py(0.5 + backdrop[i * 2 + 1] * 0.45).toFixed(2)}`);
+      const j = n - 1 - i;
+      bottom.push(`L${px((n > 1 ? j / (n - 1) : 0)).toFixed(2)},${py(0.5 + backdrop[j * 2] * 0.45).toFixed(2)}`);
+    }
+    backdropD = `${top.join("")}${bottom.join("")}Z`;
   }
 
   function commit(keys: EasingCurveKey[]): void {
@@ -185,10 +221,10 @@ export function EasingEditor({
       const isLast = drag.index === keys.length - 1;
       const isEnd = isFirst || isLast;
       const nx = isFirst ? 0 : isLast ? 1 : clamp(p.x, keys[drag.index - 1].x + 1e-3, keys[drag.index + 1].x - 1e-3);
-      // Position endpoints are pinned to (0,0)/(1,1): easing must map 0->0 and 1->1 or
-      // the cart stops short of the next key and the following segment snaps. In speed
-      // space the integral is normalized, so endpoint speed is free.
-      const ny = isEnd && !speedMode ? (isFirst ? 0 : 1) : clamp(p.y, -0.5, 1.5);
+      // Easing position endpoints are pinned to (0,0)/(1,1): easing must map 0->0 and 1->1
+      // or the cart stops short of the next key and the segment snaps. Speed space (integral
+      // normalized) and value mode (raw automation, e.g. volume fades) leave endpoints free.
+      const ny = isEnd && !speedMode && !valueMode ? (isFirst ? 0 : 1) : clamp(p.y, yLo, yHi);
       const dx = nx - key.x;
       const dy = ny - key.y;
       key.x = nx;
@@ -199,7 +235,7 @@ export function EasingEditor({
       const side = drag.kind;
       const loX = side === "out" ? key.x : keys[drag.index - 1]!.x;
       const hiX = side === "out" ? keys[drag.index + 1]!.x : key.x;
-      const h = { x: clamp(p.x, loX, hiX), y: clamp(p.y, -0.5, 1.5) };
+      const h = { x: clamp(p.x, loX, hiX), y: clamp(p.y, yLo, yHi) };
       if (side === "out") key.out = h;
       else key.in = h;
       if (drag.index > 0 && drag.index < keys.length - 1) relink(keys, drag.index, side, key.tangent ?? "aligned");
@@ -255,25 +291,27 @@ export function EasingEditor({
 
   return (
     <div style={{ display: "flex", flexDirection: "column", gap: 6, color: t.text, fontSize: 11 }}>
-      <select
-        value={selectValue}
-        onChange={(e) => onChange(e.target.value === "__custom__" ? easingToCurve(value) : (e.target.value as EasingPreset))}
-        style={{ fontSize: 11 }}
-      >
-        <optgroup label="Standard">
-          {STANDARD_PRESETS.map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </optgroup>
-        <optgroup label="Legacy">
-          {LEGACY_PRESETS.map((n) => (
-            <option key={n} value={n}>{n}</option>
-          ))}
-        </optgroup>
-        <option value="__custom__">custom (curve)</option>
-      </select>
+      {valueMode ? null : (
+        <select
+          value={selectValue}
+          onChange={(e) => onChange(e.target.value === "__custom__" ? easingToCurve(value) : (e.target.value as EasingPreset))}
+          style={{ fontSize: 11 }}
+        >
+          <optgroup label="Standard">
+            {STANDARD_PRESETS.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </optgroup>
+          <optgroup label="Legacy">
+            {LEGACY_PRESETS.map((n) => (
+              <option key={n} value={n}>{n}</option>
+            ))}
+          </optgroup>
+          <option value="__custom__">custom (curve)</option>
+        </select>
+      )}
 
-      {editing ? (
+      {editing && !valueMode ? (
         <div style={{ display: "flex", gap: 4 }}>
           {(["position", "speed"] as const).map((s) => {
             const active = (editing.space ?? "position") === s;
@@ -312,6 +350,7 @@ export function EasingEditor({
         onPointerLeave={() => setDrag(null)}
         onDoubleClick={(e) => addAnchorAt(e)}
       >
+        {backdropD ? <path d={backdropD} fill="rgba(255,255,255,0.1)" /> : null}
         {[0.25, 0.5, 0.75].map((g) => (
           <g key={g} stroke={t.grid} strokeWidth={1} vectorEffect="non-scaling-stroke">
             <line x1={px(g)} y1={0} x2={px(g)} y2={height} />
@@ -392,12 +431,12 @@ export function EasingEditor({
             <button onClick={() => interiorSelected && removeAnchor(selected!)} disabled={!interiorSelected} style={{ flex: 1, fontSize: 10, padding: "2px 0", opacity: interiorSelected ? 1 : 0.5 }}>
               remove point
             </button>
-            <button onClick={() => onChange("linear")} style={{ flex: 1, fontSize: 10, padding: "2px 0" }}>
+            <button onClick={() => onChange(valueMode ? FLAT_ONE : "linear")} style={{ flex: 1, fontSize: 10, padding: "2px 0" }}>
               reset
             </button>
           </div>
           <span style={{ color: "rgba(148,163,184,0.7)", fontSize: 10 }}>
-            double-click to add a point · dashed = {speedMode ? "position" : "speed"}
+            double-click to add a point{valueMode ? "" : ` · dashed = ${speedMode ? "position" : "speed"}`}
           </span>
         </>
       ) : null}
