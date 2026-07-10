@@ -16,15 +16,29 @@ const CLAMP_EPSILON = 1e-4;
 
 export class MixerDirector {
   /** The clip currently playing on each mixer, so we only reset/play on a clip switch. */
-  private current = new WeakMap<AnimationMixer, string>();
+  private current = new Map<AnimationMixer, string>();
+  private wasDriving = false;
 
   /**
-   * Reconcile every bound model to the timeline at `time`. When not driving
-   * (Shots mode, no active timeline) the models hold their last pose — parking is
-   * a no-op, matching how audio just goes silent rather than snapping to a state.
+   * Reconcile every bound model to the timeline at `time`. On leave, stop the actions
+   * and restore each model's bind pose — matching the TransformDirector, so parking
+   * the timeline returns objects to their editor state rather than freezing mid-clip.
    */
   sync(registry: ActivatablesRegistry, tracks: readonly AnimationTrack[], driving: boolean, time: number): void {
-    if (!driving) return;
+    if (!driving) {
+      if (this.wasDriving) {
+        for (const track of tracks) {
+          const facet = registry.resolveAnimation(track.objectId);
+          if (!facet) continue;
+          for (const action of facet.actions.values()) action.stop();
+          facet.resetToRest();
+        }
+        this.current.clear();
+        this.wasDriving = false;
+      }
+      return;
+    }
+    this.wasDriving = true;
     const desired = evaluateAnimation(tracks, time);
     for (const [objectId, want] of desired) {
       const facet = registry.resolveAnimation(objectId);

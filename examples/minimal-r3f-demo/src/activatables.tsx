@@ -16,6 +16,8 @@ export interface AnimationFacet {
   mixer: AnimationMixer;
   actions: Map<string, AnimationAction>;
   clips: string[];
+  /** Restore the model's captured bind pose (used when the timeline is left). */
+  resetToRest: () => void;
 }
 
 export interface ActivatableInfo {

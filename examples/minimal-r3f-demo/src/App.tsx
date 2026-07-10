@@ -76,13 +76,18 @@ import {
   evaluateAudio,
   resizeAudioClip,
   maxClipEnd,
+  transformKeyTimes,
+  insertTransformKey,
   type ActivationTrack,
   type AnimationTrack,
   type AudioTrack,
-  type ExtraTracks
+  type ExtraTracks,
+  type TransformKey,
+  type TransformTrack
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
 import { MixerDirector } from "./mixer-director";
+import { TransformDirector } from "./transform-director";
 import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { Hierarchy } from "./hierarchy";
@@ -158,7 +163,8 @@ function loadExtraTracks(): ExtraTracks {
     return {
       activationTracks: parsed.activationTracks ?? [],
       audioTracks: parsed.audioTracks ?? [],
-      animationTracks: parsed.animationTracks ?? []
+      animationTracks: parsed.animationTracks ?? [],
+      transformTracks: parsed.transformTracks ?? []
     };
   } catch {
     return EMPTY_EXTRA_TRACKS;
@@ -426,6 +432,7 @@ function Scene({
   activationTracks,
   audioTracks,
   animationTracks,
+  transformTracks,
   audioPlayer,
   selection,
   onSelectEntity
@@ -483,6 +490,7 @@ function Scene({
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   animationTracks: AnimationTrack[];
+  transformTracks: TransformTrack[];
   audioPlayer: AudioTrackPlayer;
   selection: Selection;
   onSelectEntity: (kind: EntityKind, id: string) => void;
@@ -493,6 +501,8 @@ function Scene({
   const activationDirector = useMemo(() => new ActivationDirector(), []);
   // Drives bound GLB models' baked clips by time (scrub-safe), like the audio player.
   const mixerDirector = useMemo(() => new MixerDirector(), []);
+  // Writes keyframed pos/rot/scale to bound objects; restores base transform on leave.
+  const transformDirector = useMemo(() => new TransformDirector(), []);
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
@@ -674,6 +684,9 @@ function Scene({
     // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
     // gated on player.playing like audio, which must stay silent outside forward play.
     mixerDirector.sync(activatablesRegistry, animationTracks, timelineDriving, player.time);
+    // Keyframed transforms are pure in t too; they follow scrubbing and restore the
+    // object's base pose when the timeline is left.
+    transformDirector.sync(activatablesRegistry, transformTracks, timelineDriving, player.time);
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
@@ -1294,6 +1307,7 @@ export function App() {
       setExtraTracks,
       setFovAnimation,
       enterTimeline: () => setPipDriver("timeline"),
+      leaveTimeline: () => setPipDriver("shots"),
       clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
       // Pose signature over every node's world position + orientation, so a different
       // applied clip time yields a different number — proves the mixer wrote a pose.
@@ -2258,7 +2272,20 @@ export function App() {
       color: "rgba(52, 211, 153, 0.6)",
       icon: <IconVideo size={14} />,
       clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.clipName }))
-    }))
+    })),
+    ...extraTracks.transformTracks.map((track) => {
+      const label = [track.position && "P", track.rotation && "R", track.scale && "S"].filter(Boolean).join("/");
+      const times = [...new Set(transformKeyTimes(track).map((k) => k.time))].sort((a, b) => a - b);
+      return {
+        id: `xf:${track.id}`,
+        name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Transform",
+        color: "rgba(251, 191, 36, 0.6)",
+        icon: <IconTrack size={14} />,
+        // Each keyframe time is a small draggable marker (drag retimes all keys at that
+        // time); the first carries the channel label. Click empty lane to insert a key.
+        clips: times.map((tm, i) => ({ id: `${tm}`, start: tm, end: tm + 0.12, ...(i === 0 && label ? { label } : {}) }))
+      };
+    })
   ];
   // Timeline lane ↔ selection sync. Clicking an activation lane selects its bound
   // object; an audio lane selects its track. The reverse drives the lane highlight.
@@ -2271,6 +2298,9 @@ export function App() {
     } else if (laneId.startsWith("anim:")) {
       const track = extraTracks.animationTracks.find((t) => t.id === laneId.slice(5));
       if (track?.objectId) select("object", track.objectId);
+    } else if (laneId.startsWith("xf:")) {
+      const track = extraTracks.transformTracks.find((t) => t.id === laneId.slice(3));
+      if (track?.objectId) select("object", track.objectId);
     }
   };
   const selectedLaneId =
@@ -2281,7 +2311,9 @@ export function App() {
             const act = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
             if (act) return `act:${act.id}`;
             const anim = extraTracks.animationTracks.find((t) => t.objectId === selection.id);
-            return anim ? `anim:${anim.id}` : null;
+            if (anim) return `anim:${anim.id}`;
+            const xf = extraTracks.transformTracks.find((t) => t.objectId === selection.id);
+            return xf ? `xf:${xf.id}` : null;
           })()
         : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
@@ -2307,6 +2339,23 @@ export function App() {
         ...prev,
         animationTracks: prev.animationTracks.map((t) =>
           t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, start, end } : c)) } : t
+        )
+      }));
+    } else if (laneId.startsWith("xf:")) {
+      // Each transform-lane marker is a keyframe time; dragging it retimes every key at
+      // that time (across channels). clipId is the marker's original time.
+      const trackId = laneId.slice(3);
+      const oldTime = Number(clipId);
+      const newTime = Math.max(0, Math.round(start * 4) / 4);
+      if (newTime === oldTime) return;
+      const retime = (keys: TransformKey[]): TransformKey[] =>
+        keys.map((k) => (Math.abs(k.time - oldTime) < 1e-6 ? { ...k, time: newTime } : k)).sort((a, b) => a.time - b.time);
+      setExtraTracks((prev) => ({
+        ...prev,
+        transformTracks: prev.transformTracks.map((t) =>
+          t.id === trackId
+            ? { ...t, ...(t.position && { position: retime(t.position) }), ...(t.rotation && { rotation: retime(t.rotation) }), ...(t.scale && { scale: retime(t.scale) }) }
+            : t
         )
       }));
     }
@@ -2339,6 +2388,23 @@ export function App() {
           if (t.id !== trackId) return t;
           const names = activatables.find((a) => a.id === t.objectId)?.clips ?? [];
           return { ...t, clips: [...t.clips, { id: newClipId(), clipName: names[0] ?? "", start, end: start + 2 }] };
+        })
+      }));
+    } else if (laneId.startsWith("xf:")) {
+      // Click inserts a keyframe (holding the current value) into each existing channel;
+      // a channel-less track seeds a position key so the lane has something to show.
+      const trackId = laneId.slice(3);
+      setExtraTracks((prev) => ({
+        ...prev,
+        transformTracks: prev.transformTracks.map((t) => {
+          if (t.id !== trackId) return t;
+          if (!t.position && !t.rotation && !t.scale) return { ...t, position: [{ time: start, value: [0, 0, 0] }] };
+          return {
+            ...t,
+            ...(t.position && { position: insertTransformKey(t.position, start, [0, 0, 0]) }),
+            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, [0, 0, 0]) }),
+            ...(t.scale && { scale: insertTransformKey(t.scale, start, [1, 1, 1]) })
+          };
         })
       }));
     }
@@ -2510,7 +2576,7 @@ export function App() {
           }
           object={
             selectedObject
-              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
+              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, getPlayhead: () => timelinePlayerRef.current.time, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
               : null
           }
           audio={
@@ -2631,6 +2697,7 @@ export function App() {
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           animationTracks={extraTracks.animationTracks}
+          transformTracks={extraTracks.transformTracks}
           audioPlayer={audioPlayer}
           selection={selection}
           onSelectEntity={select}

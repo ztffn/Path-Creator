@@ -5,7 +5,7 @@
 // play clock. Purely demo scaffolding — the GLB analogue of <Activatable>.
 import { useEffect, useMemo } from "react";
 import { useGLTF } from "@react-three/drei";
-import { AnimationMixer, type AnimationAction } from "three";
+import { AnimationMixer, Quaternion, Vector3, type AnimationAction, type Object3D } from "three";
 import { Activatable, type AnimationFacet } from "./activatables";
 
 export function GltfActivatable({
@@ -33,7 +33,21 @@ export function GltfActivatable({
     const mixer = new AnimationMixer(scene);
     const actions = new Map<string, AnimationAction>();
     for (const clip of animations) actions.set(clip.name, mixer.clipAction(clip));
-    return { mixer, actions, clips: animations.map((clip) => clip.name) };
+    // Snapshot the bind pose of every animated node (skip the scene root, whose
+    // transform is r3f-managed via the primitive props below) so leaving the
+    // timeline can restore it instead of freezing mid-clip.
+    const rest: { node: Object3D; position: Vector3; quaternion: Quaternion; scale: Vector3 }[] = [];
+    scene.traverse((node) => {
+      if (node !== scene) rest.push({ node, position: node.position.clone(), quaternion: node.quaternion.clone(), scale: node.scale.clone() });
+    });
+    const resetToRest = (): void => {
+      for (const r of rest) {
+        r.node.position.copy(r.position);
+        r.node.quaternion.copy(r.quaternion);
+        r.node.scale.copy(r.scale);
+      }
+    };
+    return { mixer, actions, clips: animations.map((clip) => clip.name), resetToRest };
   }, [scene, animations]);
   useEffect(() => () => void facet.mixer.stopAllAction(), [facet]);
   return (

@@ -5,11 +5,12 @@
 // calls onChange with only the ExtraTracks slice it owns (merged at the App level,
 // so track kinds it doesn't touch survive). The bottom TimelineLanes plays/scrubs it.
 import type { CSSProperties } from "react";
-import type { Easing, EasingCurve } from "@huma/path-creator/core";
+import { EASING_PRESETS, type Easing, type EasingCurve } from "@huma/path-creator/core";
 import { EasingEditor } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
 import type { ActivatableInfo } from "./activatables";
 import {
+  insertTransformKey,
   snapSeconds,
   type ActivationTrack,
   type AnimationClip,
@@ -17,8 +18,20 @@ import {
   type AudioClip,
   type AudioTrack,
   type ExtraTracks,
-  type PostPlaybackState
+  type PostPlaybackState,
+  type TransformKey,
+  type TransformTrack
 } from "./extra-tracks";
+
+/** Rotation channel authored in degrees; scale defaults to identity; position to origin. */
+const CHANNEL_DEFAULT: Record<"position" | "rotation" | "scale", [number, number, number]> = {
+  position: [0, 0, 0],
+  rotation: [0, 0, 0],
+  scale: [1, 1, 1]
+};
+const CHANNEL_STEP: Record<"position" | "rotation" | "scale", number> = { position: 0.5, rotation: 15, scale: 0.1 };
+// All analytic easing presets (parity with the audio/lens editors); "cut" is a step, meaningless between keyframes.
+const EASING_OPTIONS = (Object.keys(EASING_PRESETS) as Easing[]).filter((p) => p !== "cut");
 
 /** Full-volume envelope shown when a clip has no gainCurve yet. */
 const FLAT_VOLUME: EasingCurve = { type: "curve", keys: [{ x: 0, y: 1 }, { x: 1, y: 1 }] };
@@ -40,6 +53,9 @@ export const newActivationTrack = (objectId: string): ActivationTrack => ({ id: 
 
 /** A blank animation track bound to `objectId` (shared by the panel + object inspector). */
 export const newAnimationTrack = (objectId: string): AnimationTrack => ({ id: uid("anim"), objectId, clips: [] });
+
+/** A blank transform track bound to `objectId` (shared by the panel + object inspector). */
+export const newTransformTrack = (objectId: string): TransformTrack => ({ id: uid("xf"), objectId });
 
 const POST_PLAYBACK_LABELS: Record<PostPlaybackState, string> = {
   revert: "Revert",
@@ -286,6 +302,104 @@ export function AnimationTracksEditor({ animationTracks, activatables, onChange,
       {hideAdd ? null : (
         <button disabled={models.length === 0} onClick={() => emit([...animationTracks, newAnimationTrack(models[0]?.id ?? "")])}>
           Add Animation Track
+        </button>
+      )}
+    </div>
+  );
+}
+
+const CHANNELS: { key: "position" | "rotation" | "scale"; label: string }[] = [
+  { key: "position", label: "position" },
+  { key: "rotation", label: "rotation °" },
+  { key: "scale", label: "scale" }
+];
+
+export interface TransformEditorProps {
+  transformTracks: TransformTrack[];
+  activatables: ActivatableInfo[];
+  onChange: (next: Partial<ExtraTracks>) => void;
+  /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
+  hideAdd?: boolean;
+  /** Live playhead time (s); enables a "key @ playhead" button that snapshots the held value there. */
+  getPlayhead?: () => number;
+}
+
+export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead }: TransformEditorProps) {
+  const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
+  const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const setChannel = (track: TransformTrack, channel: "position" | "rotation" | "scale", keys: TransformKey[]): void =>
+    patch(track.id, { [channel]: [...keys].sort((a, b) => a.time - b.time) });
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {transformTracks.map((track) => (
+        <div key={track.id} style={{ display: "grid", gap: 4 }}>
+          <div style={headerRow}>
+            <select style={{ flex: 1 }} value={track.objectId} title="Bound object" onChange={(e) => patch(track.id, { objectId: e.target.value })}>
+              {activatables.length === 0 ? <option value="">(no objects)</option> : null}
+              {activatables.map((a) => (
+                <option key={a.id} value={a.id}>
+                  {a.name}
+                </option>
+              ))}
+            </select>
+            <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(transformTracks.filter((t) => t.id !== track.id))}>
+              ×
+            </button>
+          </div>
+          {CHANNELS.map(({ key, label }) => {
+            const keys = track[key] ?? [];
+            const addKey = (): void => {
+              const at = keys.length ? snapSeconds(Math.max(...keys.map((k) => k.time)) + 1) : 0;
+              setChannel(track, key, [...keys, { time: at, value: [...CHANNEL_DEFAULT[key]] }]);
+            };
+            return (
+              <div key={key} style={{ display: "grid", gap: 2 }}>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.42)", paddingLeft: 10 }}>
+                  <span style={{ width: 58 }}>{label}</span>
+                  <button style={iconBtn} onClick={addKey}>
+                    + key
+                  </button>
+                  {getPlayhead ? (
+                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), CHANNEL_DEFAULT[key]))}>
+                      ◆ now
+                    </button>
+                  ) : null}
+                </div>
+                {keys.map((keyframe, i) => (
+                  <div key={i} style={clipRow}>
+                    <input type="number" title="time (s)" value={keyframe.time} step={0.25} style={numInput}
+                      onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, time: snapSeconds(Number(e.target.value)) } : k)))} />
+                    {[0, 1, 2].map((axis) => (
+                      <input key={axis} type="number" title={["x", "y", "z"][axis]} value={keyframe.value[axis]} step={CHANNEL_STEP[key]} style={numInput}
+                        onChange={(e) => setChannel(track, key, keys.map((k, j) => {
+                          if (j !== i) return k;
+                          const value: [number, number, number] = [...k.value];
+                          value[axis] = Number(e.target.value);
+                          return { ...k, value };
+                        }))} />
+                    ))}
+                    <select value={typeof keyframe.easing === "string" ? keyframe.easing : "linear"} title="easing into this key" style={{ width: 92 }}
+                      onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, easing: e.target.value as Easing } : k)))}>
+                      {EASING_OPTIONS.map((p) => (
+                        <option key={p as string} value={p as string}>
+                          {p as string}
+                        </option>
+                      ))}
+                    </select>
+                    <button className="pc-danger" style={iconBtn} title="Delete key" onClick={() => setChannel(track, key, keys.filter((_, j) => j !== i))}>
+                      ×
+                    </button>
+                  </div>
+                ))}
+              </div>
+            );
+          })}
+        </div>
+      ))}
+      {hideAdd ? null : (
+        <button disabled={activatables.length === 0} onClick={() => emit([...transformTracks, newTransformTrack(activatables[0]?.id ?? "")])}>
+          Add Transform Track
         </button>
       )}
     </div>
