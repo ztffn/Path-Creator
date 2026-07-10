@@ -11,6 +11,7 @@ import { IconVolume } from "./icons";
 import type { ActivatableInfo } from "./activatables";
 import {
   insertTransformKey,
+  upsertTransformKey,
   snapSeconds,
   type ActivationTrack,
   type AnimationClip,
@@ -23,13 +24,6 @@ import {
   type TransformTrack
 } from "./extra-tracks";
 
-/** Rotation channel authored in degrees; scale defaults to identity; position to origin. */
-const CHANNEL_DEFAULT: Record<"position" | "rotation" | "scale", [number, number, number]> = {
-  position: [0, 0, 0],
-  rotation: [0, 0, 0],
-  scale: [1, 1, 1]
-};
-const CHANNEL_STEP: Record<"position" | "rotation" | "scale", number> = { position: 0.5, rotation: 15, scale: 0.1 };
 // All analytic easing presets (parity with the audio/lens editors); "cut" is a step, meaningless between keyframes.
 const EASING_OPTIONS = (Object.keys(EASING_PRESETS) as Easing[]).filter((p) => p !== "cut");
 
@@ -308,11 +302,20 @@ export function AnimationTracksEditor({ animationTracks, activatables, onChange,
   );
 }
 
-const CHANNELS: { key: "position" | "rotation" | "scale"; label: string }[] = [
-  { key: "position", label: "position" },
-  { key: "rotation", label: "rotation °" },
-  { key: "scale", label: "scale" }
+// One source of truth per transform channel: label, default key value (rotation in
+// degrees, scale identity, position origin), and the number-input step.
+const CHANNELS: { key: "position" | "rotation" | "scale"; label: string; defaultValue: [number, number, number]; step: number }[] = [
+  { key: "position", label: "position", defaultValue: [0, 0, 0], step: 0.5 },
+  { key: "rotation", label: "rotation °", defaultValue: [0, 0, 0], step: 15 },
+  { key: "scale", label: "scale", defaultValue: [1, 1, 1], step: 0.1 }
 ];
+
+/** A bound object's live local transform (rotation in Euler degrees), for "key pose". */
+export interface ObjectPose {
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+}
 
 export interface TransformEditorProps {
   transformTracks: TransformTrack[];
@@ -322,11 +325,25 @@ export interface TransformEditorProps {
   hideAdd?: boolean;
   /** Live playhead time (s); enables a "key @ playhead" button that snapshots the held value there. */
   getPlayhead?: () => number;
+  /** Reads the object's live transform (posed via the viewport gizmo), for "key pose @ playhead". */
+  readObjectPose?: (objectId: string) => ObjectPose | null;
 }
 
-export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead }: TransformEditorProps) {
+export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead, readObjectPose }: TransformEditorProps) {
   const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
   const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  // Snapshot the gizmo-posed transform into all three channels at the playhead.
+  const keyPose = (track: TransformTrack): void => {
+    if (!readObjectPose || !getPlayhead) return;
+    const pose = readObjectPose(track.objectId);
+    if (!pose) return;
+    const t = snapSeconds(getPlayhead());
+    patch(track.id, {
+      position: upsertTransformKey(track.position, t, pose.position),
+      rotation: upsertTransformKey(track.rotation, t, pose.rotation),
+      scale: upsertTransformKey(track.scale, t, pose.scale)
+    });
+  };
   const setChannel = (track: TransformTrack, channel: "position" | "rotation" | "scale", keys: TransformKey[]): void =>
     patch(track.id, { [channel]: [...keys].sort((a, b) => a.time - b.time) });
 
@@ -343,15 +360,20 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 </option>
               ))}
             </select>
+            {readObjectPose && getPlayhead ? (
+              <button style={iconBtn} title="Snapshot the gizmo-posed transform as keys at the playhead" onClick={() => keyPose(track)}>
+                ◆ key pose
+              </button>
+            ) : null}
             <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(transformTracks.filter((t) => t.id !== track.id))}>
               ×
             </button>
           </div>
-          {CHANNELS.map(({ key, label }) => {
+          {CHANNELS.map(({ key, label, defaultValue, step }) => {
             const keys = track[key] ?? [];
             const addKey = (): void => {
               const at = keys.length ? snapSeconds(Math.max(...keys.map((k) => k.time)) + 1) : 0;
-              setChannel(track, key, [...keys, { time: at, value: [...CHANNEL_DEFAULT[key]] }]);
+              setChannel(track, key, [...keys, { time: at, value: [...defaultValue] }]);
             };
             return (
               <div key={key} style={{ display: "grid", gap: 2 }}>
@@ -361,7 +383,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     + key
                   </button>
                   {getPlayhead ? (
-                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), CHANNEL_DEFAULT[key]))}>
+                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), defaultValue))}>
                       ◆ now
                     </button>
                   ) : null}
@@ -371,7 +393,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     <input type="number" title="time (s)" value={keyframe.time} step={0.25} style={numInput}
                       onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, time: snapSeconds(Number(e.target.value)) } : k)))} />
                     {[0, 1, 2].map((axis) => (
-                      <input key={axis} type="number" title={["x", "y", "z"][axis]} value={keyframe.value[axis]} step={CHANNEL_STEP[key]} style={numInput}
+                      <input key={axis} type="number" title={["x", "y", "z"][axis]} value={keyframe.value[axis]} step={step} style={numInput}
                         onChange={(e) => setChannel(track, key, keys.map((k, j) => {
                           if (j !== i) return k;
                           const value: [number, number, number] = [...k.value];

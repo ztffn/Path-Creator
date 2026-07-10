@@ -166,7 +166,7 @@ export function maxClipEnd(tracks: ExtraTracks): number {
     ...tracks.activationTracks.flatMap((track) => track.clips.map((clip) => clip.end)),
     ...tracks.audioTracks.flatMap((track) => track.clips.map((clip) => clip.start + clip.duration)),
     ...tracks.animationTracks.flatMap((track) => track.clips.map((clip) => clip.end)),
-    ...tracks.transformTracks.flatMap((track) => transformKeyTimes(track).map((key) => key.time))
+    ...tracks.transformTracks.flatMap((track) => transformKeyTimes(track))
   );
 }
 
@@ -274,49 +274,51 @@ function slerpQuat(a: Quat, b: Quat, t: number): Quat {
   return [a[0] * s0 + bx * s1, a[1] * s0 + by * s1, a[2] * s0 + bz * s1, a[3] * s0 + bw * s1];
 }
 
-/** Sample a keyframed rotation channel at t as a quaternion: hold at the ends, shortest-arc slerp between. */
-function sampleRotationChannel(keys: readonly TransformKey[], t: number): Quat {
+/**
+ * Locate where t falls on a keyframe channel: `hold` at an end (before the first /
+ * after the last key), else the bracketing pair `a`,`b` with the eased blend factor
+ * `e`. Assumes keys are non-empty and time-sorted. Shared by the vec3 + rotation samplers.
+ */
+type KeySegment = { hold: TransformKey } | { a: TransformKey; b: TransformKey; e: number };
+function findKeySegment(keys: readonly TransformKey[], t: number): KeySegment {
   const first = keys[0]!;
-  if (t <= first.time) return eulerDegToQuat(first.value);
+  if (t <= first.time) return { hold: first };
   const last = keys[keys.length - 1]!;
-  if (t >= last.time) return eulerDegToQuat(last.value);
+  if (t >= last.time) return { hold: last };
   for (let i = 0; i < keys.length - 1; i += 1) {
     const a = keys[i]!;
     const b = keys[i + 1]!;
     if (t > b.time) continue;
     const span = b.time - a.time;
-    const e = span > 0 ? evaluateEasing((t - a.time) / span, b.easing ?? "linear") : 1;
-    return slerpQuat(eulerDegToQuat(a.value), eulerDegToQuat(b.value), e);
+    return { a, b, e: span > 0 ? evaluateEasing((t - a.time) / span, b.easing ?? "linear") : 1 };
   }
-  return eulerDegToQuat(last.value);
+  return { hold: last };
 }
 
-/** Sample a keyframed vec3 channel at t: hold before the first / after the last key, eased lerp between. Assumes keys are non-empty and time-sorted. */
+/** Sample a keyframed rotation channel at t as a quaternion (shortest-arc slerp between keys). */
+function sampleRotationChannel(keys: readonly TransformKey[], t: number): Quat {
+  const seg = findKeySegment(keys, t);
+  return "hold" in seg ? eulerDegToQuat(seg.hold.value) : slerpQuat(eulerDegToQuat(seg.a.value), eulerDegToQuat(seg.b.value), seg.e);
+}
+
+/** Sample a keyframed vec3 channel at t (eased per-axis lerp between keys). */
 function sampleTransformChannel(keys: readonly TransformKey[], t: number): [number, number, number] {
-  const first = keys[0]!;
-  if (t <= first.time) return first.value;
-  const last = keys[keys.length - 1]!;
-  if (t >= last.time) return last.value;
-  for (let i = 0; i < keys.length - 1; i += 1) {
-    const a = keys[i]!;
-    const b = keys[i + 1]!;
-    if (t > b.time) continue;
-    const span = b.time - a.time;
-    const e = span > 0 ? evaluateEasing((t - a.time) / span, b.easing ?? "linear") : 1;
-    return [lerp(a.value[0], b.value[0], e), lerp(a.value[1], b.value[1], e), lerp(a.value[2], b.value[2], e)];
-  }
-  return last.value;
+  const seg = findKeySegment(keys, t);
+  if ("hold" in seg) return seg.hold.value;
+  const { a, b, e } = seg;
+  return [lerp(a.value[0], b.value[0], e), lerp(a.value[1], b.value[1], e), lerp(a.value[2], b.value[2], e)];
 }
 
 /**
  * Desired local transform per bound object id at t. Each present, non-empty channel
- * is sampled independently (rotation in Euler degrees). Later tracks binding the
- * same object merge channel-wise (a later track overrides only the channels it keys).
+ * is sampled independently (rotation as a shortest-arc-slerped quaternion). Later
+ * tracks binding the same object merge channel-wise (a later track overrides only the
+ * channels it keys) — the entry is reused/mutated in place, no per-frame copy.
  */
 export function evaluateTransform(tracks: readonly TransformTrack[], t: number): Map<string, DesiredTransform> {
   const desired = new Map<string, DesiredTransform>();
   for (const track of tracks) {
-    const entry: DesiredTransform = { ...desired.get(track.objectId) };
+    const entry: DesiredTransform = desired.get(track.objectId) ?? {};
     if (track.position?.length) entry.position = sampleTransformChannel(track.position, t);
     if (track.rotation?.length) entry.rotation = sampleRotationChannel(track.rotation, t);
     if (track.scale?.length) entry.scale = sampleTransformChannel(track.scale, t);
@@ -325,9 +327,9 @@ export function evaluateTransform(tracks: readonly TransformTrack[], t: number):
   return desired;
 }
 
-/** Every keyframe across a transform track's channels (unsorted) — for spans/bounds. */
-export function transformKeyTimes(track: TransformTrack): TransformKey[] {
-  return [...(track.position ?? []), ...(track.rotation ?? []), ...(track.scale ?? [])];
+/** Every keyframe time across a transform track's channels (unsorted) — for spans/bounds. */
+export function transformKeyTimes(track: TransformTrack): number[] {
+  return [...(track.position ?? []), ...(track.rotation ?? []), ...(track.scale ?? [])].map((k) => k.time);
 }
 
 /**
@@ -344,9 +346,18 @@ export function insertTransformKey(keys: TransformKey[] | undefined, time: numbe
   return [...list, { time, value: copy }].sort((a, b) => a.time - b.time);
 }
 
+/** Set the keyframe at `time` to `value` (replacing an existing one there, keeping its easing), else insert it. Time-sorted. */
+export function upsertTransformKey(keys: TransformKey[] | undefined, time: number, value: [number, number, number]): TransformKey[] {
+  const list = keys ?? [];
+  const existing = list.find((k) => Math.abs(k.time - time) < 1e-6);
+  const rest = list.filter((k) => Math.abs(k.time - time) >= 1e-6);
+  const key: TransformKey = { time, value: [value[0], value[1], value[2]], ...(existing?.easing && { easing: existing.easing }) };
+  return [...rest, key].sort((a, b) => a.time - b.time);
+}
+
 /** The [first, last] keyed time across all channels, or null when the track has no keys. */
 export function transformSpan(track: TransformTrack): { start: number; end: number } | null {
-  const times = transformKeyTimes(track).map((key) => key.time);
+  const times = transformKeyTimes(track);
   if (times.length === 0) return null;
   return { start: Math.min(...times), end: Math.max(...times) };
 }

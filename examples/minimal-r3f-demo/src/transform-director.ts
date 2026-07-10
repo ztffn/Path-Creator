@@ -14,11 +14,11 @@ interface BaseTransform {
 
 export class TransformDirector {
   private base = new Map<string, BaseTransform>();
-  private driving = false;
+  private wasDriving = false;
 
   sync(registry: ActivatablesRegistry, tracks: readonly TransformTrack[], driving: boolean, time: number): void {
     if (driving) {
-      this.driving = true;
+      this.wasDriving = true;
       // Capture the base transform of any object not yet seen — handles tracks bound
       // after driving already started, so it still restores cleanly on leave.
       for (const track of tracks) {
@@ -38,9 +38,9 @@ export class TransformDirector {
         if (want.rotation) object.quaternion.set(want.rotation[0], want.rotation[1], want.rotation[2], want.rotation[3]);
         if (want.scale) object.scale.set(want.scale[0], want.scale[1], want.scale[2]);
       }
-    } else if (this.driving) {
+    } else if (this.wasDriving) {
       this.restore(registry);
-      this.driving = false;
+      this.wasDriving = false;
     }
   }
 

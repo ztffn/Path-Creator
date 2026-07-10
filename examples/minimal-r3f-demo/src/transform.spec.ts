@@ -3,7 +3,7 @@
 // present-channel-only output, channel-wise merge across tracks, and scrub
 // determinism. Plus the span/bounds helpers used by the timeline lane.
 import { describe, expect, it } from "vitest";
-import { evaluateTransform, transformSpan, maxClipEnd, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
+import { evaluateTransform, transformSpan, maxClipEnd, insertTransformKey, upsertTransformKey, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
 
 const track = (over: Partial<TransformTrack> = {}): TransformTrack => ({ id: "t", objectId: "obj", ...over });
 
@@ -69,5 +69,25 @@ describe("transformSpan / maxClipEnd", () => {
   it("maxClipEnd includes transform key times", () => {
     const tracks = { ...EMPTY_EXTRA_TRACKS, transformTracks: [track({ rotation: [{ time: 7, value: [0, 0, 0] }] })] };
     expect(maxClipEnd(tracks)).toBe(7);
+  });
+});
+
+describe("key insertion helpers", () => {
+  it("insertTransformKey holds the prior value and no-ops on a duplicate time", () => {
+    const keys = [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 4, value: [8, 0, 0] as [number, number, number] }];
+    const inserted = insertTransformKey(keys, 2, [1, 1, 1]);
+    expect(inserted.map((k) => k.time)).toEqual([0, 2, 4]);
+    expect(inserted[1]!.value).toEqual([0, 0, 0]); // held from the prior key, not the fallback
+    expect(insertTransformKey(keys, 4, [1, 1, 1])).toHaveLength(2); // duplicate time -> no-op
+    expect(insertTransformKey(undefined, 1, [5, 5, 5])[0]!.value).toEqual([5, 5, 5]); // fallback when empty
+  });
+
+  it("upsertTransformKey overwrites the value at a time (keeping easing) or inserts sorted", () => {
+    const keys = [{ time: 2, value: [0, 0, 0] as [number, number, number], easing: "easeIn" as const }];
+    const over = upsertTransformKey(keys, 2, [9, 9, 9]);
+    expect(over).toHaveLength(1);
+    expect(over[0]!.value).toEqual([9, 9, 9]);
+    expect(over[0]!.easing).toBe("easeIn"); // preserved
+    expect(upsertTransformKey(keys, 0, [1, 1, 1]).map((k) => k.time)).toEqual([0, 2]); // inserted, sorted
   });
 });

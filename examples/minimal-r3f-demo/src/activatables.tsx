@@ -4,8 +4,12 @@
 // An <Activatable id name> wrapper registers its group on mount; useActivatables
 // lists the bound objects for the authoring UI. Purely demo scaffolding.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { Box3, BoxGeometry, EdgesGeometry, Vector3, type AnimationAction, type AnimationMixer, type Group, type Object3D } from "three";
+import { TransformControls } from "@react-three/drei";
+import { Box3, BoxGeometry, EdgesGeometry, Matrix4, Vector3, type AnimationAction, type AnimationMixer, type Group, type Object3D } from "three";
 import { evaluateActivation, type ActivationTrack } from "./extra-tracks";
+
+/** Gizmo manipulation mode for the transform handles, or null for no gizmo. */
+export type GizmoMode = "translate" | "rotate" | "scale" | null;
 
 /**
  * The animation side of an activatable: a GLB model's mixer plus its baked clips,
@@ -196,6 +200,11 @@ export function Activatable({
   selected = false,
   onSelect,
   animation,
+  position,
+  rotation,
+  scale,
+  gizmoMode = null,
+  onTransformingChange,
   children
 }: {
   id: string;
@@ -204,30 +213,58 @@ export function Activatable({
   onSelect?: () => void;
   /** Present when the child is an animated GLB model; surfaced via resolveAnimation. */
   animation?: AnimationFacet;
+  /** Base placement applied to the registered group (so the gizmo + transform tracks
+   *  drive the same node the object visibly sits on). */
+  position?: [number, number, number];
+  rotation?: [number, number, number];
+  scale?: number | [number, number, number];
+  /** When set (and selected), a transform gizmo controls the group directly. */
+  gizmoMode?: GizmoMode;
+  /** Fired on gizmo drag start/end so the host can suspend orbit controls. */
+  onTransformingChange?: (transforming: boolean) => void;
   children: ReactNode;
 }) {
   const registry = useActivatablesRegistry();
   const groupRef = useRef<Group>(null);
   const [bounds, setBounds] = useState<{ center: [number, number, number]; size: [number, number, number] } | null>(null);
+  // Placement values arrive as fresh arrays each render; key by value so the effect
+  // re-applies only on a real change (never clobbering a gizmo/director pose).
+  const placeKey = JSON.stringify({ position, rotation, scale });
   useEffect(() => {
     const group = groupRef.current;
     if (!group) return;
+    if (position) group.position.set(position[0], position[1], position[2]);
+    if (rotation) group.rotation.set(rotation[0], rotation[1], rotation[2]);
+    if (scale !== undefined) typeof scale === "number" ? group.scale.setScalar(scale) : group.scale.set(scale[0], scale[1], scale[2]);
+    group.updateWorldMatrix(true, true);
     const unregister = registry.register(id, group, name ?? id, animation);
-    // Measure once (objects don't resize); the group sits at identity so the
-    // world box's center doubles as the local center for the selection outline.
+    // Measure in the group's LOCAL frame (world box mapped back through the group's
+    // inverse), so a placed/scaled group still outlines correctly as a child.
     const box = new Box3().setFromObject(group);
     if (!box.isEmpty()) {
+      box.applyMatrix4(new Matrix4().copy(group.matrixWorld).invert());
       const c = box.getCenter(new Vector3());
       const s = box.getSize(new Vector3());
       setBounds({ center: [c.x, c.y, c.z], size: [s.x * 1.3 + 0.12, s.y * 1.3 + 0.12, s.z * 1.3 + 0.12] });
     }
     return unregister;
-  }, [registry, id, name, animation]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [registry, id, name, animation, placeKey]);
   return (
+    <>
     <group ref={groupRef} {...(onSelect && { onPointerDown: (event: { stopPropagation: () => void }) => { event.stopPropagation(); onSelect(); } })}>
       {children}
       {selected && bounds ? <SelectionBox center={bounds.center} size={bounds.size} /> : null}
     </group>
+    {selected && gizmoMode && groupRef.current ? (
+      <TransformControls
+        object={groupRef.current}
+        mode={gizmoMode}
+        onMouseDown={() => onTransformingChange?.(true)}
+        onMouseUp={() => onTransformingChange?.(false)}
+      />
+    ) : null}
+    </>
   );
 }
 

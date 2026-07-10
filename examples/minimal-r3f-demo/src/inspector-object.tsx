@@ -4,9 +4,15 @@
 // object), and — for a GLB carrying baked clips — the Animation editor. Each is
 // scoped to the tracks bound to this object with a local "bind a new track"
 // affordance; onChange emits only the changed ExtraTracks slice (merged at App level).
-import { ActivationTracksEditor, AnimationTracksEditor, TransformTracksEditor, newActivationTrack, newAnimationTrack, newTransformTrack } from "./extra-tracks-panel";
-import type { ActivatableInfo } from "./activatables";
+import { ActivationTracksEditor, AnimationTracksEditor, TransformTracksEditor, newActivationTrack, newAnimationTrack, newTransformTrack, type ObjectPose } from "./extra-tracks-panel";
+import type { ActivatableInfo, GizmoMode } from "./activatables";
 import type { ExtraTracks } from "./extra-tracks";
+
+const GIZMO_MODES: { mode: Exclude<GizmoMode, null>; label: string }[] = [
+  { mode: "translate", label: "Move" },
+  { mode: "rotate", label: "Rotate" },
+  { mode: "scale", label: "Scale" }
+];
 
 export interface ObjectInspectorProps {
   objectId: string;
@@ -16,9 +22,14 @@ export interface ObjectInspectorProps {
   onChange: (next: Partial<ExtraTracks>) => void;
   /** Live playhead time (s); forwarded to the transform editor's "key @ playhead". */
   getPlayhead?: () => number;
+  /** Reads the object's live local transform, for "key pose @ playhead". */
+  readObjectPose?: (objectId: string) => ObjectPose | null;
+  /** Current viewport gizmo mode + setter, for the Move/Rotate/Scale toggle. */
+  gizmoMode?: GizmoMode;
+  onGizmoModeChange?: (mode: GizmoMode) => void;
 }
 
-export function ObjectInspector({ objectId, objectName, extraTracks, activatables, onChange, getPlayhead }: ObjectInspectorProps) {
+export function ObjectInspector({ objectId, objectName, extraTracks, activatables, onChange, getPlayhead, readObjectPose, gizmoMode, onGizmoModeChange }: ObjectInspectorProps) {
   const bound = extraTracks.activationTracks.filter((track) => track.objectId === objectId);
   const others = extraTracks.activationTracks.filter((track) => track.objectId !== objectId);
   const clips = activatables.find((a) => a.id === objectId)?.clips ?? [];
@@ -50,11 +61,23 @@ export function ObjectInspector({ objectId, objectName, extraTracks, activatable
           ? "Keyframe position / rotation / scale over time — no baked clip needed."
           : `${boundXf.length} transform track${boundXf.length === 1 ? "" : "s"} keying ${objectName}.`}
       </div>
+      {onGizmoModeChange ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+          <span style={{ color: "rgba(232,238,245,0.42)", marginRight: 2 }}>gizmo</span>
+          {GIZMO_MODES.map(({ mode, label }) => (
+            <button key={mode} onClick={() => onGizmoModeChange(gizmoMode === mode ? null : mode)}
+              style={{ padding: "1px 7px", ...(gizmoMode === mode && { background: "#f59e0b", color: "#1a1a1a" }) }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
       <TransformTracksEditor
         transformTracks={boundXf}
         activatables={activatables}
         hideAdd
         {...(getPlayhead && { getPlayhead })}
+        {...(readObjectPose && { readObjectPose })}
         onChange={(next) => onChange({ transformTracks: [...otherXf, ...(next.transformTracks ?? boundXf)] })}
       />
       <button
