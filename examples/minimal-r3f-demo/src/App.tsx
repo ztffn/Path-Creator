@@ -2383,8 +2383,13 @@ export function App() {
       const oldTime = Number(clipId);
       const newTime = Math.max(0, Math.round(start * 4) / 4);
       if (newTime === oldTime) return;
-      const retime = (keys: TransformKey[]): TransformKey[] =>
-        keys.map((k) => (Math.abs(k.time - oldTime) < 1e-6 ? { ...k, time: newTime } : k)).sort((a, b) => a.time - b.time);
+      // Move every key at oldTime to newTime; if a key already sits at newTime, the
+      // moved one overwrites it (drop the collision) so two keys never share a time.
+      const retime = (keys: TransformKey[]): TransformKey[] => {
+        const moved = keys.map((k) => (Math.abs(k.time - oldTime) < 1e-6 ? { ...k, time: newTime } : k));
+        const byTime = new Map(moved.map((k) => [k.time, k]));
+        return [...byTime.values()].sort((a, b) => a.time - b.time);
+      };
       setExtraTracks((prev) => ({
         ...prev,
         transformTracks: prev.transformTracks.map((t) =>
@@ -2427,18 +2432,20 @@ export function App() {
       }));
     } else if (laneId.startsWith("xf:")) {
       // Click inserts a keyframe (holding the current value) into each existing channel;
-      // a channel-less track seeds a position key so the lane has something to show.
+      // a channel-less track seeds a position key AT THE OBJECT'S CURRENT POSITION (not
+      // the origin) so playback doesn't snap it to world zero.
       const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
         transformTracks: prev.transformTracks.map((t) => {
           if (t.id !== trackId) return t;
-          if (!t.position && !t.rotation && !t.scale) return { ...t, position: [{ time: start, value: [0, 0, 0] }] };
+          const pose = readObjectPose(t.objectId);
+          if (!t.position && !t.rotation && !t.scale) return { ...t, position: [{ time: start, value: pose?.position ?? [0, 0, 0] }] };
           return {
             ...t,
-            ...(t.position && { position: insertTransformKey(t.position, start, [0, 0, 0]) }),
-            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, [0, 0, 0]) }),
-            ...(t.scale && { scale: insertTransformKey(t.scale, start, [1, 1, 1]) })
+            ...(t.position && { position: insertTransformKey(t.position, start, pose?.position ?? [0, 0, 0]) }),
+            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, pose?.rotation ?? [0, 0, 0]) }),
+            ...(t.scale && { scale: insertTransformKey(t.scale, start, pose?.scale ?? [1, 1, 1]) })
           };
         })
       }));

@@ -40,6 +40,16 @@ export class MixerDirector {
     }
     this.wasDriving = true;
     const desired = evaluateAnimation(tracks, time);
+    // A bound model with no active clip at t (scrubbed back before its first clip) is
+    // absent from `desired`; reset it to rest so it doesn't freeze at its last pose.
+    for (const track of tracks) {
+      if (desired.has(track.objectId)) continue;
+      const facet = registry.resolveAnimation(track.objectId);
+      if (!facet || !this.current.has(facet.mixer)) continue;
+      for (const action of facet.actions.values()) action.stop();
+      facet.resetToRest();
+      this.current.delete(facet.mixer);
+    }
     for (const [objectId, want] of desired) {
       const facet = registry.resolveAnimation(objectId);
       if (!facet) continue;

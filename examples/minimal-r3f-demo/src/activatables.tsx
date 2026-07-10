@@ -250,6 +250,15 @@ export function Activatable({
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registry, id, name, animation, placeKey]);
+  // TransformControls only fires onMouseUp on a real pointer release; if it unmounts
+  // mid-drag (e.g. the timeline starts driving), that never fires, so re-enable orbit
+  // on unmount to avoid leaving the editor's OrbitControls stuck disabled.
+  const gizmoActive = selected && !!gizmoMode;
+  useEffect(() => {
+    if (!gizmoActive) return;
+    return () => onTransformingChange?.(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [gizmoActive]);
   return (
     <>
     <group ref={groupRef} {...(onSelect && { onPointerDown: (event: { stopPropagation: () => void }) => { event.stopPropagation(); onSelect(); } })}>

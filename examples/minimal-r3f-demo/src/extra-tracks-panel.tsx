@@ -332,16 +332,19 @@ export interface TransformEditorProps {
 export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead, readObjectPose }: TransformEditorProps) {
   const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
   const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
-  // Snapshot the gizmo-posed transform into all three channels at the playhead.
+  // Snapshot the gizmo-posed transform at the playhead — into the channels the track
+  // already keys (so it doesn't inject rotation/scale a sibling track may be driving),
+  // or all three when the track is still empty.
   const keyPose = (track: TransformTrack): void => {
     if (!readObjectPose || !getPlayhead) return;
     const pose = readObjectPose(track.objectId);
     if (!pose) return;
     const t = snapSeconds(getPlayhead());
+    const empty = !track.position && !track.rotation && !track.scale;
     patch(track.id, {
-      position: upsertTransformKey(track.position, t, pose.position),
-      rotation: upsertTransformKey(track.rotation, t, pose.rotation),
-      scale: upsertTransformKey(track.scale, t, pose.scale)
+      ...((track.position || empty) && { position: upsertTransformKey(track.position, t, pose.position) }),
+      ...((track.rotation || empty) && { rotation: upsertTransformKey(track.rotation, t, pose.rotation) }),
+      ...((track.scale || empty) && { scale: upsertTransformKey(track.scale, t, pose.scale) })
     });
   };
   const setChannel = (track: TransformTrack, channel: "position" | "rotation" | "scale", keys: TransformKey[]): void =>
@@ -371,9 +374,13 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
           </div>
           {CHANNELS.map(({ key, label, defaultValue, step }) => {
             const keys = track[key] ?? [];
+            // Seed a new key from the object's CURRENT value for this channel (so it
+            // doesn't snap to origin/unit-scale on playback — the group carries the
+            // object's placement, e.g. the Fox's 0.025 scale); fall back to the default.
+            const seed = (): [number, number, number] => readObjectPose?.(track.objectId)?.[key] ?? defaultValue;
             const addKey = (): void => {
               const at = keys.length ? snapSeconds(Math.max(...keys.map((k) => k.time)) + 1) : 0;
-              setChannel(track, key, [...keys, { time: at, value: [...defaultValue] }]);
+              setChannel(track, key, [...keys, { time: at, value: [...seed()] }]);
             };
             return (
               <div key={key} style={{ display: "grid", gap: 2 }}>
@@ -383,7 +390,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     + key
                   </button>
                   {getPlayhead ? (
-                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), defaultValue))}>
+                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), seed()))}>
                       ◆ now
                     </button>
                   ) : null}
