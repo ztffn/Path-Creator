@@ -1,8 +1,9 @@
-// Left-panel authoring editors for the Activation and Audio timeline tracks, one
-// exported component each (they live in separate collapsible sections). Follows the
-// demo panel idiom: each track is a header row of controls, and clips are
-// number-input rows (start/end) like the dolly-runs editor. Controlled — each calls
-// onChange with the full next ExtraTracks. The bottom TimelineLanes plays/scrubs it.
+// Left-panel authoring editors for the Activation, Audio, and Animation timeline
+// tracks, one exported component each (they live in separate collapsible sections).
+// Follows the demo panel idiom: each track is a header row of controls, and clips
+// are number-input rows (start/end) like the dolly-runs editor. Controlled — each
+// calls onChange with only the ExtraTracks slice it owns (merged at the App level,
+// so track kinds it doesn't touch survive). The bottom TimelineLanes plays/scrubs it.
 import type { CSSProperties } from "react";
 import type { Easing, EasingCurve } from "@huma/path-creator/core";
 import { EasingEditor } from "@huma/path-creator/timeline-ui";
@@ -11,6 +12,8 @@ import type { ActivatableInfo } from "./activatables";
 import {
   snapSeconds,
   type ActivationTrack,
+  type AnimationClip,
+  type AnimationTrack,
   type AudioClip,
   type AudioTrack,
   type ExtraTracks,
@@ -35,6 +38,9 @@ export const uid = (prefix: string): string => `${prefix}-${Date.now().toString(
 /** A blank activation track bound to `objectId` (shared by the panel + object inspector). */
 export const newActivationTrack = (objectId: string): ActivationTrack => ({ id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
 
+/** A blank animation track bound to `objectId` (shared by the panel + object inspector). */
+export const newAnimationTrack = (objectId: string): AnimationTrack => ({ id: uid("anim"), objectId, clips: [] });
+
 const POST_PLAYBACK_LABELS: Record<PostPlaybackState, string> = {
   revert: "Revert",
   active: "Active",
@@ -50,15 +56,14 @@ const iconBtn: CSSProperties = { padding: "0 8px", flex: "0 0 auto" };
 
 export interface ActivationEditorProps {
   activationTracks: ActivationTrack[];
-  audioTracks: AudioTrack[];
   activatables: ActivatableInfo[];
-  onChange: (next: ExtraTracks) => void;
+  onChange: (next: Partial<ExtraTracks>) => void;
   /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
   hideAdd?: boolean;
 }
 
-export function ActivationTracksEditor({ activationTracks, audioTracks, activatables, onChange, hideAdd = false }: ActivationEditorProps) {
-  const emit = (next: ActivationTrack[]): void => onChange({ activationTracks: next, audioTracks });
+export function ActivationTracksEditor({ activationTracks, activatables, onChange, hideAdd = false }: ActivationEditorProps) {
+  const emit = (next: ActivationTrack[]): void => onChange({ activationTracks: next });
   const patch = (id: string, p: Partial<ActivationTrack>): void => emit(activationTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
   return (
@@ -115,9 +120,8 @@ export function ActivationTracksEditor({ activationTracks, audioTracks, activata
 }
 
 export interface AudioEditorProps {
-  activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
-  onChange: (next: ExtraTracks) => void;
+  onChange: (next: Partial<ExtraTracks>) => void;
   /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
   hideAdd?: boolean;
   /** Play one clip once (with its volume envelope) from the inspector. */
@@ -126,8 +130,8 @@ export interface AudioEditorProps {
   peaksFor?: (clip: AudioClip) => number[] | null;
 }
 
-export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
-  const emit = (next: AudioTrack[]): void => onChange({ activationTracks, audioTracks: next });
+export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
+  const emit = (next: AudioTrack[]): void => onChange({ audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
 
   return (
@@ -192,6 +196,96 @@ export function AudioTracksEditor({ activationTracks, audioTracks, onChange, hid
       {hideAdd ? null : (
         <button onClick={() => emit([...audioTracks, { id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
           Add Audio Track
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** Set or clear an optional numeric clip field (blank input clears it → native/default). */
+function setClipOpt(clip: AnimationClip, key: "clipStart" | "clipEnd", raw: string): AnimationClip {
+  const next = { ...clip };
+  if (raw === "") delete next[key];
+  else next[key] = Number(raw);
+  return next;
+}
+
+export interface AnimationEditorProps {
+  animationTracks: AnimationTrack[];
+  activatables: ActivatableInfo[];
+  onChange: (next: Partial<ExtraTracks>) => void;
+  /** Suppress the "Add track" button when the editor is scoped inside an inspector. */
+  hideAdd?: boolean;
+}
+
+export function AnimationTracksEditor({ animationTracks, activatables, onChange, hideAdd = false }: AnimationEditorProps) {
+  // Only GLB models expose baked clips; primitives can't back an animation track.
+  const models = activatables.filter((a) => a.clips && a.clips.length > 0);
+  const clipsFor = (objectId: string): string[] => models.find((m) => m.id === objectId)?.clips ?? [];
+  const emit = (next: AnimationTrack[]): void => onChange({ animationTracks: next });
+  const patch = (id: string, p: Partial<AnimationTrack>): void => emit(animationTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
+  const patchClip = (trackId: string, clipId: string, update: (c: AnimationClip) => AnimationClip): void => {
+    const track = animationTracks.find((t) => t.id === trackId);
+    if (track) patch(trackId, { clips: track.clips.map((c) => (c.id === clipId ? update(c) : c)) });
+  };
+
+  return (
+    <div style={{ display: "grid", gap: 8 }}>
+      {animationTracks.map((track) => {
+        const names = clipsFor(track.objectId);
+        return (
+          <div key={track.id} style={{ display: "grid", gap: 3 }}>
+            <div style={headerRow}>
+              <select style={{ flex: 1 }} value={track.objectId} title="Bound model" onChange={(e) => patch(track.id, { objectId: e.target.value })}>
+                {models.length === 0 ? <option value="">(no animated models)</option> : null}
+                {models.map((m) => (
+                  <option key={m.id} value={m.id}>
+                    {m.name}
+                  </option>
+                ))}
+              </select>
+              <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(animationTracks.filter((t) => t.id !== track.id))}>
+                ×
+              </button>
+            </div>
+            {track.clips.map((clip) => (
+              <div key={clip.id} style={clipRow}>
+                <select value={clip.clipName} title="Baked clip" style={{ width: 74 }}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => ({ ...c, clipName: e.target.value }))}>
+                  {names.length === 0 ? <option value="">(none)</option> : null}
+                  {names.map((n) => (
+                    <option key={n} value={n}>
+                      {n}
+                    </option>
+                  ))}
+                </select>
+                <input type="number" title="start (s)" value={clip.start} step={0.25} style={numInput}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => ({ ...c, start: snapSeconds(Number(e.target.value)) }))} />
+                <input type="number" title="end (s)" value={clip.end} step={0.25} style={numInput}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => ({ ...c, end: snapSeconds(Number(e.target.value)) }))} />
+                <input type="number" title="clip in (s) — retime start; blank = 0" placeholder="in" value={clip.clipStart ?? ""} step={0.1} style={numInput}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => setClipOpt(c, "clipStart", e.target.value))} />
+                <input type="number" title="clip out (s) — retime end; blank = native speed" placeholder="native" value={clip.clipEnd ?? ""} step={0.1} style={numInput}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => setClipOpt(c, "clipEnd", e.target.value))} />
+                <select value={clip.loop ?? "loop"} title="Past the clip end: loop it, or hold the last frame" style={{ width: 58 }}
+                  onChange={(e) => patchClip(track.id, clip.id, (c) => ({ ...c, loop: e.target.value as "loop" | "once" }))}>
+                  <option value="loop">loop</option>
+                  <option value="once">once</option>
+                </select>
+                <button className="pc-danger" style={iconBtn} title="Delete clip" onClick={() => patch(track.id, { clips: track.clips.filter((c) => c.id !== clip.id) })}>
+                  ×
+                </button>
+              </div>
+            ))}
+            <button style={addClipBtn} onClick={() => patch(track.id, { clips: [...track.clips, { id: uid("clip"), clipName: names[0] ?? "", start: 0, end: 2 }] })}>
+              + clip
+            </button>
+          </div>
+        );
+      })}
+      {hideAdd ? null : (
+        <button disabled={models.length === 0} onClick={() => emit([...animationTracks, newAnimationTrack(models[0]?.id ?? "")])}>
+          Add Animation Track
         </button>
       )}
     </div>

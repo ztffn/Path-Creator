@@ -53,7 +53,7 @@ import {
   type TimelinePlayer,
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
@@ -69,6 +69,7 @@ import {
   useActivatables,
   useActivatablesRegistry
 } from "./activatables";
+import { GltfActivatable } from "./gltf-activatable";
 import {
   EMPTY_DESIRED,
   EMPTY_EXTRA_TRACKS,
@@ -76,10 +77,12 @@ import {
   resizeAudioClip,
   maxClipEnd,
   type ActivationTrack,
+  type AnimationTrack,
   type AudioTrack,
   type ExtraTracks
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
+import { MixerDirector } from "./mixer-director";
 import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { Hierarchy } from "./hierarchy";
@@ -154,7 +157,8 @@ function loadExtraTracks(): ExtraTracks {
     const parsed = JSON.parse(raw) as Partial<ExtraTracks>;
     return {
       activationTracks: parsed.activationTracks ?? [],
-      audioTracks: parsed.audioTracks ?? []
+      audioTracks: parsed.audioTracks ?? [],
+      animationTracks: parsed.animationTracks ?? []
     };
   } catch {
     return EMPTY_EXTRA_TRACKS;
@@ -421,6 +425,7 @@ function Scene({
   timelinePlayerRef,
   activationTracks,
   audioTracks,
+  animationTracks,
   audioPlayer,
   selection,
   onSelectEntity
@@ -477,6 +482,7 @@ function Scene({
   timelinePlayerRef: { current: TimelinePlayer };
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
+  animationTracks: AnimationTrack[];
   audioPlayer: AudioTrackPlayer;
   selection: Selection;
   onSelectEntity: (kind: EntityKind, id: string) => void;
@@ -485,6 +491,8 @@ function Scene({
   const activatablesRegistry = useActivatablesRegistry();
   // Owns the per-frame activation state machine (Unity director semantics).
   const activationDirector = useMemo(() => new ActivationDirector(), []);
+  // Drives bound GLB models' baked clips by time (scrub-safe), like the audio player.
+  const mixerDirector = useMemo(() => new MixerDirector(), []);
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
@@ -663,6 +671,9 @@ function Scene({
     );
     const audioLive = timelineDriving && player.playing;
     audioPlayer.reconcile(audioLive ? evaluateAudio(audioTracks, player.time) : EMPTY_DESIRED, audioLive);
+    // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
+    // gated on player.playing like audio, which must stay silent outside forward play.
+    mixerDirector.sync(activatablesRegistry, animationTracks, timelineDriving, player.time);
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
@@ -756,6 +767,19 @@ function Scene({
         selectedId={selectedIdOf(selection, "object")}
         onSelect={(propId) => onSelectEntity("object", propId)}
       />
+      {/* Animated GLB (CC0 Khronos Fox): baked clips Survey/Walk/Run driven by an
+          Animation track. Suspense-gated so the loading model doesn't block the scene. */}
+      <Suspense fallback={null}>
+        <GltfActivatable
+          id="fox"
+          src="/Fox.glb"
+          name="Fox (animated)"
+          selected={isSelected(selection, "object", "fox")}
+          onSelect={() => onSelectEntity("object", "fox")}
+          position={[3, 0, -2]}
+          scale={0.025}
+        />
+      </Suspense>
 
       <EditorHelpers>
       {dollies.map((dolly) => (
@@ -1269,7 +1293,26 @@ export function App() {
       player: timelinePlayerRef.current,
       setExtraTracks,
       setFovAnimation,
-      enterTimeline: () => setPipDriver("timeline")
+      enterTimeline: () => setPipDriver("timeline"),
+      clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
+      // Pose signature over every node's world position + orientation, so a different
+      // applied clip time yields a different number — proves the mixer wrote a pose.
+      poseHash: (id: string) => {
+        const object = activatablesRegistry.resolve(id);
+        if (!object) return null;
+        object.updateWorldMatrix(true, true);
+        const p = new Vector3();
+        const q = new Quaternion();
+        let hash = 0;
+        let i = 0;
+        object.traverse((node) => {
+          node.getWorldPosition(p);
+          node.getWorldQuaternion(q);
+          i += 1;
+          hash += (p.x + p.y * 1.7 + p.z * 2.3 + q.x + q.y * 1.3 + q.z * 1.7 + q.w * 2.1) * i;
+        });
+        return hash;
+      }
     };
   }, [activatablesRegistry]);
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
@@ -2166,9 +2209,9 @@ export function App() {
     }
   }
 
-  // Activation + audio tracks as timeline lanes (alongside shot/dolly lanes). Lane
-  // id encodes the kind (act:/aud:) + track id; clip create/move routes back into
-  // extraTracks. Delete stays in the side-panel editors, like dolly moves.
+  // Activation + audio + animation tracks as timeline lanes (alongside shot/dolly
+  // lanes). Lane id encodes the kind (act:/aud:/anim:) + track id; clip create/move
+  // routes back into extraTracks. Delete stays in the side-panel editors, like dolly moves.
   const newClipId = (): string => `clip-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   // Hierarchy "add audio track" affordance; the clip/gain/mute edits live in the
   // Audio inspector, so a fresh track starts empty and selects itself.
@@ -2208,6 +2251,13 @@ export function App() {
           ...(series.length > 0 && { series })
         };
       })
+    })),
+    ...extraTracks.animationTracks.map((track) => ({
+      id: `anim:${track.id}`,
+      name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Animation",
+      color: "rgba(52, 211, 153, 0.6)",
+      icon: <IconVideo size={14} />,
+      clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.clipName }))
     }))
   ];
   // Timeline lane ↔ selection sync. Clicking an activation lane selects its bound
@@ -2218,6 +2268,9 @@ export function App() {
       if (track?.objectId) select("object", track.objectId);
     } else if (laneId.startsWith("aud:")) {
       select("audio", laneId.slice(4));
+    } else if (laneId.startsWith("anim:")) {
+      const track = extraTracks.animationTracks.find((t) => t.id === laneId.slice(5));
+      if (track?.objectId) select("object", track.objectId);
     }
   };
   const selectedLaneId =
@@ -2225,8 +2278,10 @@ export function App() {
       ? `aud:${selection.id}`
       : selection?.kind === "object"
         ? (() => {
-            const track = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
-            return track ? `act:${track.id}` : null;
+            const act = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
+            if (act) return `act:${act.id}`;
+            const anim = extraTracks.animationTracks.find((t) => t.objectId === selection.id);
+            return anim ? `anim:${anim.id}` : null;
           })()
         : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
@@ -2244,6 +2299,14 @@ export function App() {
         ...prev,
         audioTracks: prev.audioTracks.map((t) =>
           t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? resizeAudioClip(c, start, end) : c)) } : t
+        )
+      }));
+    } else if (laneId.startsWith("anim:")) {
+      const trackId = laneId.slice(5);
+      setExtraTracks((prev) => ({
+        ...prev,
+        animationTracks: prev.animationTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, start, end } : c)) } : t
         )
       }));
     }
@@ -2267,6 +2330,16 @@ export function App() {
             ? { ...t, clips: [...t.clips, { id: newClipId(), src: SAMPLE_AUDIO[t.clips.length % SAMPLE_AUDIO.length]!, start, duration: 4, gain: 1 }] }
             : t
         )
+      }));
+    } else if (laneId.startsWith("anim:")) {
+      const trackId = laneId.slice(5);
+      setExtraTracks((prev) => ({
+        ...prev,
+        animationTracks: prev.animationTracks.map((t) => {
+          if (t.id !== trackId) return t;
+          const names = activatables.find((a) => a.id === t.objectId)?.clips ?? [];
+          return { ...t, clips: [...t.clips, { id: newClipId(), clipName: names[0] ?? "", start, end: start + 2 }] };
+        })
       }));
     }
   };
@@ -2437,7 +2510,7 @@ export function App() {
           }
           object={
             selectedObject
-              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: setExtraTracks }
+              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
               : null
           }
           audio={
@@ -2445,7 +2518,7 @@ export function App() {
               ? {
                   track: selectedAudioTrack,
                   extraTracks,
-                  onChange: setExtraTracks,
+                  onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })),
                   onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
                   peaksFor: (clip) => clipPeaks(clip.src, clip.offset ?? 0, clip.duration, () => setPeaksTick((t) => t + 1))
                 }
@@ -2557,6 +2630,7 @@ export function App() {
           timelinePlayerRef={timelinePlayerRef}
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
+          animationTracks={extraTracks.animationTracks}
           audioPlayer={audioPlayer}
           selection={selection}
           onSelectEntity={select}

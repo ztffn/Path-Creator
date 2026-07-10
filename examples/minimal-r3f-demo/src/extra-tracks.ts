@@ -1,8 +1,9 @@
-// Demo-side timeline track types + pure evaluators for the two Unity Timeline
-// track kinds the core package doesn't model yet: an Activation track (toggles a
-// bound scene object's visibility over clip windows) and an Audio track (2D
-// clips). Evaluation is a pure function of time t (scrub-safe, matching
-// evaluateTimeline's determinism contract); statefulness lives in the appliers.
+// Demo-side timeline track types + pure evaluators for the Unity Timeline track
+// kinds the core package doesn't model yet: an Activation track (toggles a bound
+// scene object's visibility over clip windows), an Audio track (2D clips), and an
+// Animation track (drives a bound GLB model's baked clips by time). Evaluation is
+// a pure function of time t (scrub-safe, matching evaluateTimeline's determinism
+// contract); statefulness lives in the appliers (directors/players).
 import { sampleEasingCurve, type EasingCurve } from "@huma/path-creator/core";
 
 /** Unity Activation Track "Post-playback state": what to do when the director stops. */
@@ -50,6 +51,49 @@ export interface AudioTrack {
 }
 
 /**
+ * A window on the timeline that maps to one baked GLB clip. `clipStart`/`clipEnd`
+ * are source-clip-local seconds: omit `clipEnd` for native-speed playback (the
+ * clip advances 1:1 with t, held at its window-end frame in a following gap, and
+ * loops if the window outlasts the clip); set `clipEnd` to retime — stretch to
+ * slow-mo, equal to hold on a frame, or `clipEnd < clipStart` to play in reverse.
+ */
+export interface AnimationClip {
+  id: string;
+  clipName: string;
+  start: number;
+  end: number;
+  /** Source-clip-local start in seconds (default 0). */
+  clipStart?: number;
+  /** Source-clip-local end in seconds; when set the window retimes to fit it. */
+  clipEnd?: number;
+  /**
+   * What happens when the local time runs past the source clip's end (window/retime
+   * outlasts the clip): "loop" (default) repeats the clip; "once" plays it a single
+   * time and holds the final frame. Scrub-safe either way — a pure function of t.
+   */
+  loop?: "loop" | "once";
+}
+
+/** Binds one GLB model (by activatable id); its baked clips are driven over clip windows. */
+export interface AnimationTrack {
+  id: string;
+  name?: string;
+  objectId: string;
+  clips: AnimationClip[];
+}
+
+/** What a bound model's mixer should show at time t: a clip at a clip-local time. */
+export interface DesiredAnimation {
+  clipName: string;
+  /** Clip-local time in seconds to apply (via mixer.setTime). */
+  localTime: number;
+  /** 0..1 blend weight (1 for now). */
+  weight: number;
+  /** true repeats the clip when localTime exceeds its duration; false holds the last frame. */
+  loop: boolean;
+}
+
+/**
  * Apply a timeline resize/move to an audio clip. A left-trim (right edge fixed, so the
  * duration changes) advances the source offset by how far the start moved, cutting the
  * head; a move (duration unchanged) or right-trim leaves the offset alone. Pure.
@@ -73,9 +117,10 @@ export interface DesiredAudio {
 export interface ExtraTracks {
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
+  animationTracks: AnimationTrack[];
 }
 
-export const EMPTY_EXTRA_TRACKS: ExtraTracks = { activationTracks: [], audioTracks: [] };
+export const EMPTY_EXTRA_TRACKS: ExtraTracks = { activationTracks: [], audioTracks: [], animationTracks: [] };
 
 /** Shared empty desired-audio map, to avoid a per-frame allocation when idle. */
 export const EMPTY_DESIRED: ReadonlyMap<string, DesiredAudio> = new Map();
@@ -88,7 +133,8 @@ export function maxClipEnd(tracks: ExtraTracks): number {
   return Math.max(
     0,
     ...tracks.activationTracks.flatMap((track) => track.clips.map((clip) => clip.end)),
-    ...tracks.audioTracks.flatMap((track) => track.clips.map((clip) => clip.start + clip.duration))
+    ...tracks.audioTracks.flatMap((track) => track.clips.map((clip) => clip.start + clip.duration)),
+    ...tracks.animationTracks.flatMap((track) => track.clips.map((clip) => clip.end))
   );
 }
 
@@ -134,6 +180,33 @@ export function evaluateAudio(tracks: readonly AudioTrack[], t: number): Map<str
         });
       }
     }
+  }
+  return desired;
+}
+
+/**
+ * Desired clip + clip-local time per bound model id at time t. The active clip is
+ * the last one that has started (start <= t), so a clip holds through a following
+ * gap — mirroring the camera timeline's "hold" gapMode rather than Activation's
+ * hide-in-gap. localTime follows the clip window's retime (see AnimationClip);
+ * before a track's first clip the model is left un-driven (absent from the map).
+ * Later tracks binding the same model win, mirroring evaluateActivation.
+ */
+export function evaluateAnimation(tracks: readonly AnimationTrack[], t: number): Map<string, DesiredAnimation> {
+  const desired = new Map<string, DesiredAnimation>();
+  for (const track of tracks) {
+    let active: AnimationClip | null = null;
+    for (const clip of track.clips) {
+      if (clip.start <= t && (!active || clip.start >= active.start)) active = clip;
+    }
+    if (!active) continue;
+    const span = active.end - active.start;
+    const clipStart = active.clipStart ?? 0;
+    const localTime =
+      active.clipEnd !== undefined
+        ? clipStart + (active.clipEnd - clipStart) * Math.min(1, Math.max(0, span > 0 ? (t - active.start) / span : 1))
+        : clipStart + Math.min(Math.max(0, t - active.start), span);
+    desired.set(track.objectId, { clipName: active.clipName, localTime, weight: 1, loop: active.loop !== "once" });
   }
   return desired;
 }
