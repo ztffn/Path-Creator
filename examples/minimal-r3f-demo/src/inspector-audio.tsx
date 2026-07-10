@@ -9,7 +9,7 @@ import type { AudioClip, AudioTrack, ExtraTracks } from "./extra-tracks";
 export interface AudioInspectorProps {
   track: AudioTrack;
   extraTracks: ExtraTracks;
-  onChange: (next: ExtraTracks) => void;
+  onChange: (next: Partial<ExtraTracks>) => void;
   onPreviewClip?: (clip: AudioClip, trackGain: number) => void;
   peaksFor?: (clip: AudioClip) => number[] | null;
 }
@@ -17,15 +17,14 @@ export interface AudioInspectorProps {
 export function AudioInspector({ track, extraTracks, onChange, onPreviewClip, peaksFor }: AudioInspectorProps) {
   return (
     <AudioTracksEditor
-      activationTracks={extraTracks.activationTracks}
       audioTracks={[track]}
       hideAdd
       {...(onPreviewClip && { onPreviewClip })}
       {...(peaksFor && { peaksFor })}
       onChange={(next) => {
-        const edited = next.audioTracks.find((t) => t.id === track.id);
+        const edited = next.audioTracks?.find((t) => t.id === track.id);
         const merged = extraTracks.audioTracks.flatMap((t) => (t.id === track.id ? (edited ? [edited] : []) : [t]));
-        onChange({ activationTracks: next.activationTracks, audioTracks: merged });
+        onChange({ audioTracks: merged });
       }}
     />
   );

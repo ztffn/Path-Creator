@@ -1,23 +1,42 @@
-// Object inspector: identity + activation timeline for the one selected activatable
-// (a bindable "GameObject": the turbine or a demo prop). Reuses ActivationTracksEditor
-// scoped to just the tracks bound to this object (add suppressed), plus a local
-// "bind a new activation track to this object" affordance. onChange re-merges the
-// scoped subset back into the full ExtraTracks. Pure presentation via App handlers.
-import { ActivationTracksEditor, newActivationTrack } from "./extra-tracks-panel";
-import type { ActivatableInfo } from "./activatables";
+// Object inspector: identity + timeline tracks for the one selected activatable (a
+// bindable "GameObject": the turbine, a demo prop, or an animated GLB). Reuses the
+// Activation editor (visibility), the Transform editor (keyframed pos/rot/scale, any
+// object), and — for a GLB carrying baked clips — the Animation editor. Each is
+// scoped to the tracks bound to this object with a local "bind a new track"
+// affordance; onChange emits only the changed ExtraTracks slice (merged at App level).
+import { ActivationTracksEditor, AnimationTracksEditor, TransformTracksEditor, newActivationTrack, newAnimationTrack, newTransformTrack, type ObjectPose } from "./extra-tracks-panel";
+import type { ActivatableInfo, GizmoMode } from "./activatables";
 import type { ExtraTracks } from "./extra-tracks";
+
+const GIZMO_MODES: { mode: Exclude<GizmoMode, null>; label: string }[] = [
+  { mode: "translate", label: "Move" },
+  { mode: "rotate", label: "Rotate" },
+  { mode: "scale", label: "Scale" }
+];
 
 export interface ObjectInspectorProps {
   objectId: string;
   objectName: string;
   extraTracks: ExtraTracks;
   activatables: ActivatableInfo[];
-  onChange: (next: ExtraTracks) => void;
+  onChange: (next: Partial<ExtraTracks>) => void;
+  /** Live playhead time (s); forwarded to the transform editor's "key @ playhead". */
+  getPlayhead?: () => number;
+  /** Reads the object's live local transform, for "key pose @ playhead". */
+  readObjectPose?: (objectId: string) => ObjectPose | null;
+  /** Current viewport gizmo mode + setter, for the Move/Rotate/Scale toggle. */
+  gizmoMode?: GizmoMode;
+  onGizmoModeChange?: (mode: GizmoMode) => void;
 }
 
-export function ObjectInspector({ objectId, objectName, extraTracks, activatables, onChange }: ObjectInspectorProps) {
+export function ObjectInspector({ objectId, objectName, extraTracks, activatables, onChange, getPlayhead, readObjectPose, gizmoMode, onGizmoModeChange }: ObjectInspectorProps) {
   const bound = extraTracks.activationTracks.filter((track) => track.objectId === objectId);
   const others = extraTracks.activationTracks.filter((track) => track.objectId !== objectId);
+  const clips = activatables.find((a) => a.id === objectId)?.clips ?? [];
+  const boundAnim = extraTracks.animationTracks.filter((track) => track.objectId === objectId);
+  const otherAnim = extraTracks.animationTracks.filter((track) => track.objectId !== objectId);
+  const boundXf = extraTracks.transformTracks.filter((track) => track.objectId === objectId);
+  const otherXf = extraTracks.transformTracks.filter((track) => track.objectId !== objectId);
   return (
     <div style={{ display: "grid", gap: 8 }}>
       <div style={{ fontSize: 12, color: "#94a3b8" }}>
@@ -27,22 +46,67 @@ export function ObjectInspector({ objectId, objectName, extraTracks, activatable
       </div>
       <ActivationTracksEditor
         activationTracks={bound}
-        audioTracks={extraTracks.audioTracks}
         activatables={activatables}
         hideAdd
-        onChange={(next) => onChange({ activationTracks: [...others, ...next.activationTracks], audioTracks: next.audioTracks })}
+        onChange={(next) => onChange({ activationTracks: [...others, ...(next.activationTracks ?? bound)] })}
       />
       <button
         style={{ justifySelf: "start" }}
-        onClick={() =>
-          onChange({
-            activationTracks: [...extraTracks.activationTracks, newActivationTrack(objectId)],
-            audioTracks: extraTracks.audioTracks
-          })
-        }
+        onClick={() => onChange({ activationTracks: [...extraTracks.activationTracks, newActivationTrack(objectId)] })}
       >
         Add activation track
       </button>
+      <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+        {boundXf.length === 0
+          ? "Keyframe position / rotation / scale over time — no baked clip needed."
+          : `${boundXf.length} transform track${boundXf.length === 1 ? "" : "s"} keying ${objectName}.`}
+      </div>
+      {onGizmoModeChange ? (
+        <div style={{ display: "flex", alignItems: "center", gap: 4, fontSize: 11 }}>
+          <span style={{ color: "rgba(232,238,245,0.42)", marginRight: 2 }}>gizmo</span>
+          {GIZMO_MODES.map(({ mode, label }) => (
+            <button key={mode} onClick={() => onGizmoModeChange(gizmoMode === mode ? null : mode)}
+              style={{ padding: "1px 7px", ...(gizmoMode === mode && { background: "#f59e0b", color: "#1a1a1a" }) }}>
+              {label}
+            </button>
+          ))}
+        </div>
+      ) : null}
+      <TransformTracksEditor
+        transformTracks={boundXf}
+        activatables={activatables}
+        hideAdd
+        {...(getPlayhead && { getPlayhead })}
+        {...(readObjectPose && { readObjectPose })}
+        onChange={(next) => onChange({ transformTracks: [...otherXf, ...(next.transformTracks ?? boundXf)] })}
+      />
+      <button
+        style={{ justifySelf: "start" }}
+        onClick={() => onChange({ transformTracks: [...extraTracks.transformTracks, newTransformTrack(objectId)] })}
+      >
+        Add transform track
+      </button>
+      {clips.length > 0 ? (
+        <>
+          <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
+            {boundAnim.length === 0
+              ? `Baked clips: ${clips.join(", ")}. Bind an animation track to drive them from the timeline.`
+              : `${boundAnim.length} animation track${boundAnim.length === 1 ? "" : "s"} driving ${objectName}.`}
+          </div>
+          <AnimationTracksEditor
+            animationTracks={boundAnim}
+            activatables={activatables}
+            hideAdd
+            onChange={(next) => onChange({ animationTracks: [...otherAnim, ...(next.animationTracks ?? boundAnim)] })}
+          />
+          <button
+            style={{ justifySelf: "start" }}
+            onClick={() => onChange({ animationTracks: [...extraTracks.animationTracks, newAnimationTrack(objectId)] })}
+          >
+            Add animation track
+          </button>
+        </>
+      ) : null}
     </div>
   );
 }

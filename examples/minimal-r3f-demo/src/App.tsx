@@ -53,7 +53,7 @@ import {
   type TimelinePlayer,
   type TimelineRigContext
 } from "@huma/path-creator/timeline";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
@@ -67,19 +67,28 @@ import {
   ActivatablesRegistry,
   ActivationDirector,
   useActivatables,
-  useActivatablesRegistry
+  useActivatablesRegistry,
+  type GizmoMode
 } from "./activatables";
+import { GltfActivatable } from "./gltf-activatable";
 import {
   EMPTY_DESIRED,
   EMPTY_EXTRA_TRACKS,
   evaluateAudio,
   resizeAudioClip,
   maxClipEnd,
+  transformKeyTimes,
+  insertTransformKey,
   type ActivationTrack,
+  type AnimationTrack,
   type AudioTrack,
-  type ExtraTracks
+  type ExtraTracks,
+  type TransformKey,
+  type TransformTrack
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
+import { MixerDirector } from "./mixer-director";
+import { TransformDirector } from "./transform-director";
 import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { Hierarchy } from "./hierarchy";
@@ -154,7 +163,9 @@ function loadExtraTracks(): ExtraTracks {
     const parsed = JSON.parse(raw) as Partial<ExtraTracks>;
     return {
       activationTracks: parsed.activationTracks ?? [],
-      audioTracks: parsed.audioTracks ?? []
+      audioTracks: parsed.audioTracks ?? [],
+      animationTracks: parsed.animationTracks ?? [],
+      transformTracks: parsed.transformTracks ?? []
     };
   } catch {
     return EMPTY_EXTRA_TRACKS;
@@ -312,7 +323,7 @@ const DEMO_PROP_DEFS: { id: string; name: string; position: [number, number, num
   { id: "prop/pylon", name: "Pylon", position: [0.4, 1.9, -1.6], color: "#3b82f6" }
 ];
 
-function DemoProps({ selectedId, onSelect }: { selectedId?: string | null; onSelect?: (id: string) => void }) {
+function DemoProps({ selectedId, onSelect, gizmoMode, onTransformingChange }: { selectedId?: string | null; onSelect?: (id: string) => void; gizmoMode?: GizmoMode; onTransformingChange?: (transforming: boolean) => void }) {
   return (
     <>
       {DEMO_PROP_DEFS.map((prop) => (
@@ -322,8 +333,11 @@ function DemoProps({ selectedId, onSelect }: { selectedId?: string | null; onSel
           name={prop.name}
           selected={selectedId === prop.id}
           onSelect={() => onSelect?.(prop.id)}
+          position={prop.position}
+          {...(gizmoMode !== undefined && { gizmoMode })}
+          {...(onTransformingChange && { onTransformingChange })}
         >
-          <mesh position={prop.position}>
+          <mesh>
             <boxGeometry args={[0.5, 0.5, 0.5]} />
             <meshStandardMaterial color={prop.color} emissive={prop.color} emissiveIntensity={0.25} />
           </mesh>
@@ -421,8 +435,11 @@ function Scene({
   timelinePlayerRef,
   activationTracks,
   audioTracks,
+  animationTracks,
+  transformTracks,
   audioPlayer,
   selection,
+  gizmoMode,
   onSelectEntity
 }: {
   bezierPath: BezierPath | null;
@@ -477,14 +494,24 @@ function Scene({
   timelinePlayerRef: { current: TimelinePlayer };
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
+  animationTracks: AnimationTrack[];
+  transformTracks: TransformTrack[];
   audioPlayer: AudioTrackPlayer;
   selection: Selection;
+  gizmoMode: GizmoMode;
   onSelectEntity: (kind: EntityKind, id: string) => void;
 }) {
   useEditorHelpersVisible();
   const activatablesRegistry = useActivatablesRegistry();
   // Owns the per-frame activation state machine (Unity director semantics).
   const activationDirector = useMemo(() => new ActivationDirector(), []);
+  // Drives bound GLB models' baked clips by time (scrub-safe), like the audio player.
+  const mixerDirector = useMemo(() => new MixerDirector(), []);
+  // Writes keyframed pos/rot/scale to bound objects; restores base transform on leave.
+  const transformDirector = useMemo(() => new TransformDirector(), []);
+  // The gizmo is an authoring affordance: only while the timeline isn't driving the
+  // object (Shots mode), so posing never fights playback.
+  const objectGizmoMode: GizmoMode = activeTimeline ? null : gizmoMode;
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
@@ -663,6 +690,12 @@ function Scene({
     );
     const audioLive = timelineDriving && player.playing;
     audioPlayer.reconcile(audioLive ? evaluateAudio(audioTracks, player.time) : EMPTY_DESIRED, audioLive);
+    // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
+    // gated on player.playing like audio, which must stay silent outside forward play.
+    mixerDirector.sync(activatablesRegistry, animationTracks, timelineDriving, player.time);
+    // Keyframed transforms are pure in t too; they follow scrubbing and restore the
+    // object's base pose when the timeline is left.
+    transformDirector.sync(activatablesRegistry, transformTracks, timelineDriving, player.time);
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
@@ -743,19 +776,39 @@ function Scene({
         name="Turbine (spinning)"
         selected={isSelected(selection, "object", "turbine/Nacelle")}
         onSelect={() => onSelectEntity("object", "turbine/Nacelle")}
+        position={[-3.2, 1, -2.2]}
+        gizmoMode={objectGizmoMode}
+        onTransformingChange={onTransformingChange}
       >
         <SpinningTargetProbe
           targetRegistry={targetRegistry}
           id="turbine/Nacelle"
           name="Turbine (spinning)"
-          position={[-3.2, 1, -2.2]}
+          position={[0, 0, 0]}
           degPerSec={18}
         />
       </Activatable>
       <DemoProps
         selectedId={selectedIdOf(selection, "object")}
         onSelect={(propId) => onSelectEntity("object", propId)}
+        gizmoMode={objectGizmoMode}
+        onTransformingChange={onTransformingChange}
       />
+      {/* Animated GLB (CC0 Khronos Fox): baked clips Survey/Walk/Run driven by an
+          Animation track. Suspense-gated so the loading model doesn't block the scene. */}
+      <Suspense fallback={null}>
+        <GltfActivatable
+          id="fox"
+          src="/Fox.glb"
+          name="Fox (animated)"
+          selected={isSelected(selection, "object", "fox")}
+          onSelect={() => onSelectEntity("object", "fox")}
+          position={[3, 0, -2]}
+          scale={0.025}
+          gizmoMode={objectGizmoMode}
+          onTransformingChange={onTransformingChange}
+        />
+      </Suspense>
 
       <EditorHelpers>
       {dollies.map((dolly) => (
@@ -1269,7 +1322,30 @@ export function App() {
       player: timelinePlayerRef.current,
       setExtraTracks,
       setFovAnimation,
-      enterTimeline: () => setPipDriver("timeline")
+      enterTimeline: () => setPipDriver("timeline"),
+      leaveTimeline: () => setPipDriver("shots"),
+      selectObject: (id: string) => select("object", id),
+      setGizmoMode: (mode: GizmoMode) => setGizmoMode(mode),
+      clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
+      readPose: (id: string) => readObjectPose(id),
+      // Pose signature over every node's world position + orientation, so a different
+      // applied clip time yields a different number — proves the mixer wrote a pose.
+      poseHash: (id: string) => {
+        const object = activatablesRegistry.resolve(id);
+        if (!object) return null;
+        object.updateWorldMatrix(true, true);
+        const p = new Vector3();
+        const q = new Quaternion();
+        let hash = 0;
+        let i = 0;
+        object.traverse((node) => {
+          node.getWorldPosition(p);
+          node.getWorldQuaternion(q);
+          i += 1;
+          hash += (p.x + p.y * 1.7 + p.z * 2.3 + q.x + q.y * 1.3 + q.z * 1.7 + q.w * 2.1) * i;
+        });
+        return hash;
+      }
     };
   }, [activatablesRegistry]);
   // Live cart frames, shared by Scene (writer) and PointTargets/glyphs (readers).
@@ -1685,6 +1761,19 @@ export function App() {
   const [, setPeaksTick] = useState(0);
   const [pathStyle, setPathStyle] = useState<"line" | "rail">("rail");
   const [isTransforming, setIsTransforming] = useState(false);
+  // Active transform-gizmo mode for the selected object (null hides the gizmo).
+  const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
+  // Reads a bound object's live local transform (rotation in Euler degrees) for "key pose".
+  const readObjectPose = (objectId: string) => {
+    const object = activatablesRegistry.resolve(objectId);
+    if (!object) return null;
+    const k = 180 / Math.PI;
+    return {
+      position: [object.position.x, object.position.y, object.position.z] as [number, number, number],
+      rotation: [object.rotation.x * k, object.rotation.y * k, object.rotation.z * k] as [number, number, number],
+      scale: [object.scale.x, object.scale.y, object.scale.z] as [number, number, number]
+    };
+  };
   const [selectedHandleIndex, setSelectedHandleIndex] = useState<number | null>(0);
   const [selectedMidpointIndex, setSelectedMidpointIndex] = useState<number | null>(null);
   const [anchorScales, setAnchorScales] = useState<number[]>(
@@ -2166,9 +2255,9 @@ export function App() {
     }
   }
 
-  // Activation + audio tracks as timeline lanes (alongside shot/dolly lanes). Lane
-  // id encodes the kind (act:/aud:) + track id; clip create/move routes back into
-  // extraTracks. Delete stays in the side-panel editors, like dolly moves.
+  // Activation + audio + animation tracks as timeline lanes (alongside shot/dolly
+  // lanes). Lane id encodes the kind (act:/aud:/anim:) + track id; clip create/move
+  // routes back into extraTracks. Delete stays in the side-panel editors, like dolly moves.
   const newClipId = (): string => `clip-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
   // Hierarchy "add audio track" affordance; the clip/gain/mute edits live in the
   // Audio inspector, so a fresh track starts empty and selects itself.
@@ -2208,16 +2297,45 @@ export function App() {
           ...(series.length > 0 && { series })
         };
       })
-    }))
+    })),
+    ...extraTracks.animationTracks.map((track) => ({
+      id: `anim:${track.id}`,
+      name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Animation",
+      color: "rgba(52, 211, 153, 0.6)",
+      icon: <IconVideo size={14} />,
+      clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.clipName }))
+    })),
+    ...extraTracks.transformTracks.map((track) => {
+      const label = [track.position && "P", track.rotation && "R", track.scale && "S"].filter(Boolean).join("/");
+      const times = [...new Set(transformKeyTimes(track))].sort((a, b) => a - b);
+      return {
+        id: `xf:${track.id}`,
+        name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Transform",
+        color: "rgba(251, 191, 36, 0.6)",
+        icon: <IconTrack size={14} />,
+        // Each keyframe time is a small draggable marker (drag retimes all keys at that
+        // time); the first carries the channel label. Click empty lane to insert a key.
+        clips: times.map((tm, i) => ({ id: `${tm}`, start: tm, end: tm + 0.12, ...(i === 0 && label ? { label } : {}) }))
+      };
+    })
   ];
+  // Lane ids are `<kind>:<trackId>`; the track id is everything after the first colon
+  // (avoids per-kind slice-length magic numbers that must be hand-kept in sync).
+  const laneTrackId = (laneId: string): string => laneId.slice(laneId.indexOf(":") + 1);
   // Timeline lane ↔ selection sync. Clicking an activation lane selects its bound
   // object; an audio lane selects its track. The reverse drives the lane highlight.
   const selectLaneEntity = (laneId: string): void => {
     if (laneId.startsWith("act:")) {
-      const track = extraTracks.activationTracks.find((t) => t.id === laneId.slice(4));
+      const track = extraTracks.activationTracks.find((t) => t.id === laneTrackId(laneId));
       if (track?.objectId) select("object", track.objectId);
     } else if (laneId.startsWith("aud:")) {
-      select("audio", laneId.slice(4));
+      select("audio", laneTrackId(laneId));
+    } else if (laneId.startsWith("anim:")) {
+      const track = extraTracks.animationTracks.find((t) => t.id === laneTrackId(laneId));
+      if (track?.objectId) select("object", track.objectId);
+    } else if (laneId.startsWith("xf:")) {
+      const track = extraTracks.transformTracks.find((t) => t.id === laneTrackId(laneId));
+      if (track?.objectId) select("object", track.objectId);
     }
   };
   const selectedLaneId =
@@ -2225,13 +2343,17 @@ export function App() {
       ? `aud:${selection.id}`
       : selection?.kind === "object"
         ? (() => {
-            const track = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
-            return track ? `act:${track.id}` : null;
+            const act = extraTracks.activationTracks.find((t) => t.objectId === selection.id);
+            if (act) return `act:${act.id}`;
+            const anim = extraTracks.animationTracks.find((t) => t.objectId === selection.id);
+            if (anim) return `anim:${anim.id}`;
+            const xf = extraTracks.transformTracks.find((t) => t.objectId === selection.id);
+            return xf ? `xf:${xf.id}` : null;
           })()
         : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
     if (laneId.startsWith("act:")) {
-      const trackId = laneId.slice(4);
+      const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
         activationTracks: prev.activationTracks.map((t) =>
@@ -2239,11 +2361,41 @@ export function App() {
         )
       }));
     } else if (laneId.startsWith("aud:")) {
-      const trackId = laneId.slice(4);
+      const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
         audioTracks: prev.audioTracks.map((t) =>
           t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? resizeAudioClip(c, start, end) : c)) } : t
+        )
+      }));
+    } else if (laneId.startsWith("anim:")) {
+      const trackId = laneTrackId(laneId);
+      setExtraTracks((prev) => ({
+        ...prev,
+        animationTracks: prev.animationTracks.map((t) =>
+          t.id === trackId ? { ...t, clips: t.clips.map((c) => (c.id === clipId ? { ...c, start, end } : c)) } : t
+        )
+      }));
+    } else if (laneId.startsWith("xf:")) {
+      // Each transform-lane marker is a keyframe time; dragging it retimes every key at
+      // that time (across channels). clipId is the marker's original time.
+      const trackId = laneTrackId(laneId);
+      const oldTime = Number(clipId);
+      const newTime = Math.max(0, Math.round(start * 4) / 4);
+      if (newTime === oldTime) return;
+      // Move every key at oldTime to newTime; if a key already sits at newTime, the
+      // moved one overwrites it (drop the collision) so two keys never share a time.
+      const retime = (keys: TransformKey[]): TransformKey[] => {
+        const moved = keys.map((k) => (Math.abs(k.time - oldTime) < 1e-6 ? { ...k, time: newTime } : k));
+        const byTime = new Map(moved.map((k) => [k.time, k]));
+        return [...byTime.values()].sort((a, b) => a.time - b.time);
+      };
+      setExtraTracks((prev) => ({
+        ...prev,
+        transformTracks: prev.transformTracks.map((t) =>
+          t.id === trackId
+            ? { ...t, ...(t.position && { position: retime(t.position) }), ...(t.rotation && { rotation: retime(t.rotation) }), ...(t.scale && { scale: retime(t.scale) }) }
+            : t
         )
       }));
     }
@@ -2251,7 +2403,7 @@ export function App() {
   const addExtraClip = (laneId: string, time: number): void => {
     const start = Math.max(0, Math.round(time * 4) / 4);
     if (laneId.startsWith("act:")) {
-      const trackId = laneId.slice(4);
+      const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
         activationTracks: prev.activationTracks.map((t) =>
@@ -2259,7 +2411,7 @@ export function App() {
         )
       }));
     } else if (laneId.startsWith("aud:")) {
-      const trackId = laneId.slice(4);
+      const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
         audioTracks: prev.audioTracks.map((t) =>
@@ -2267,6 +2419,35 @@ export function App() {
             ? { ...t, clips: [...t.clips, { id: newClipId(), src: SAMPLE_AUDIO[t.clips.length % SAMPLE_AUDIO.length]!, start, duration: 4, gain: 1 }] }
             : t
         )
+      }));
+    } else if (laneId.startsWith("anim:")) {
+      const trackId = laneTrackId(laneId);
+      setExtraTracks((prev) => ({
+        ...prev,
+        animationTracks: prev.animationTracks.map((t) => {
+          if (t.id !== trackId) return t;
+          const names = activatables.find((a) => a.id === t.objectId)?.clips ?? [];
+          return { ...t, clips: [...t.clips, { id: newClipId(), clipName: names[0] ?? "", start, end: start + 2 }] };
+        })
+      }));
+    } else if (laneId.startsWith("xf:")) {
+      // Click inserts a keyframe (holding the current value) into each existing channel;
+      // a channel-less track seeds a position key AT THE OBJECT'S CURRENT POSITION (not
+      // the origin) so playback doesn't snap it to world zero.
+      const trackId = laneTrackId(laneId);
+      setExtraTracks((prev) => ({
+        ...prev,
+        transformTracks: prev.transformTracks.map((t) => {
+          if (t.id !== trackId) return t;
+          const pose = readObjectPose(t.objectId);
+          if (!t.position && !t.rotation && !t.scale) return { ...t, position: [{ time: start, value: pose?.position ?? [0, 0, 0] }] };
+          return {
+            ...t,
+            ...(t.position && { position: insertTransformKey(t.position, start, pose?.position ?? [0, 0, 0]) }),
+            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, pose?.rotation ?? [0, 0, 0]) }),
+            ...(t.scale && { scale: insertTransformKey(t.scale, start, pose?.scale ?? [1, 1, 1]) })
+          };
+        })
       }));
     }
   };
@@ -2437,7 +2618,7 @@ export function App() {
           }
           object={
             selectedObject
-              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, onChange: setExtraTracks }
+              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, getPlayhead: () => timelinePlayerRef.current.time, readObjectPose, gizmoMode, onGizmoModeChange: setGizmoMode, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
               : null
           }
           audio={
@@ -2445,7 +2626,7 @@ export function App() {
               ? {
                   track: selectedAudioTrack,
                   extraTracks,
-                  onChange: setExtraTracks,
+                  onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })),
                   onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
                   peaksFor: (clip) => clipPeaks(clip.src, clip.offset ?? 0, clip.duration, () => setPeaksTick((t) => t + 1))
                 }
@@ -2557,6 +2738,9 @@ export function App() {
           timelinePlayerRef={timelinePlayerRef}
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
+          animationTracks={extraTracks.animationTracks}
+          transformTracks={extraTracks.transformTracks}
+          gizmoMode={gizmoMode}
           audioPlayer={audioPlayer}
           selection={selection}
           onSelectEntity={select}
