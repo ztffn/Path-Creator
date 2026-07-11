@@ -1,16 +1,15 @@
 // Bridges the demo's editing state and the portable RigDocument scene file.
 // The package owns the real I/O (serializeRigDocument/parseRigDocument, schema
-// validation); this module only assembles a document from the editor's working
-// state and hydrates it back — plus the demo's show-timeline build/reverse and
-// noise-preset matching. The scene file is a pure RigDocument; editor-only bits
-// (active path, noise-preset label) are derived or defaulted on load.
+// validation); this module assembles a document from the editor's working state and
+// hydrates it back — plus the show-timeline build/reverse and noise-preset matching.
+// The scene file stays a valid RigDocument; the demo's extra tracks (not expressible
+// in the core Timeline union) ride in a namespaced key the core parser ignores.
 import {
   BezierPath,
   VertexPath,
   createRigDocument,
   createTimeline,
   parseRigDocument,
-  serializeRigDocument,
   type CameraBlock,
   type CartTrack,
   type RigCartDefinition,
@@ -20,6 +19,7 @@ import {
   type Timeline,
   type VirtualCameraDefinition
 } from "@huma/path-creator/core";
+import { EMPTY_EXTRA_TRACKS, normalizeExtraTracks, type ExtraTracks } from "./extra-tracks";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   DEFAULT_DOLLY_EASING,
@@ -33,6 +33,10 @@ import {
 } from "./vcam-model";
 
 const SHOW_TIMELINE_ID = "show";
+// Namespaced RigDocument key carrying the demo's extra tracks (activation/audio/
+// animation/transform) — the core Timeline union can't express them, so they ride
+// alongside as an extension the package parser ignores (glTF-extensions style).
+const EXTRA_TRACKS_KEY = "x-demo-tracks";
 
 /** The demo's editing working-set — all package types plus the sidecars the UI edits. */
 export interface DemoScene {
@@ -47,6 +51,8 @@ export interface DemoScene {
   /** Per-vcam FOV push/pull over the shot; persisted portably as CameraBlock.lensAnimation. */
   fovAnimations: Record<string, FovAnimation>;
   targets: SceneTarget[];
+  /** Activation/audio/animation/transform tracks; ride in the RigDocument's x-demo-tracks key. */
+  extraTracks: ExtraTracks;
 }
 
 /**
@@ -236,16 +242,21 @@ export function hydrateScene(document: RigDocument): DemoScene {
     fovAnimations: fovAnimationsFromTimeline(document.timelines?.[0], vcamDefs),
     targets: (document.targets ?? []).filter(
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
-    )
+    ),
+    // The typed RigDocument carries no extra tracks; deserializeScene fills these from
+    // the x-demo-tracks key. Empty here so hydrate stays a pure function of the document.
+    extraTracks: EMPTY_EXTRA_TRACKS
   };
 }
 
-/** Serializes the scene to the portable RigDocument JSON. */
+/** Serializes the scene to RigDocument JSON, with the demo's extra tracks in x-demo-tracks. */
 export function serializeScene(scene: DemoScene): string {
-  return serializeRigDocument(assembleDocument(scene));
+  return JSON.stringify({ ...assembleDocument(scene), [EXTRA_TRACKS_KEY]: scene.extraTracks });
 }
 
-/** Parses + hydrates a scene from RigDocument JSON (throws on bad schema). */
+/** Parses + hydrates a scene from RigDocument JSON (throws on bad schema); restores extra tracks. */
 export function deserializeScene(json: string): DemoScene {
-  return hydrateScene(parseRigDocument(json));
+  const scene = hydrateScene(parseRigDocument(json));
+  const raw = JSON.parse(json) as Record<string, unknown>;
+  return { ...scene, extraTracks: normalizeExtraTracks(raw[EXTRA_TRACKS_KEY]) };
 }

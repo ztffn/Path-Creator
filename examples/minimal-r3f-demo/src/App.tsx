@@ -79,6 +79,8 @@ import {
   maxClipEnd,
   transformKeyTimes,
   insertTransformKey,
+  normalizeExtraTracks,
+  hasExtraTracks,
   type ActivationTrack,
   type AnimationTrack,
   type AudioTrack,
@@ -156,17 +158,13 @@ function speedSeriesFor(easing: Easing): ReturnType<typeof dollyMoveSpeedSeries>
   return series;
 }
 
+// Legacy loader for extra tracks saved under their own key (pre-portability). Read
+// once at mount to migrate; new writes ride inside the scene document instead.
 function loadExtraTracks(): ExtraTracks {
   try {
     const raw = localStorage.getItem(EXTRA_STORAGE_KEY);
     if (!raw) return EMPTY_EXTRA_TRACKS;
-    const parsed = JSON.parse(raw) as Partial<ExtraTracks>;
-    return {
-      activationTracks: parsed.activationTracks ?? [],
-      audioTracks: parsed.audioTracks ?? [],
-      animationTracks: parsed.animationTracks ?? [],
-      transformTracks: parsed.transformTracks ?? []
-    };
+    return normalizeExtraTracks(JSON.parse(raw));
   } catch {
     return EMPTY_EXTRA_TRACKS;
   }
@@ -1288,11 +1286,11 @@ export function App() {
   const activatablesRegistry = useMemo(() => new ActivatablesRegistry(), []);
   const audioPlayer = useMemo(() => new AudioTrackPlayer(), []);
   const activatables = useActivatables(activatablesRegistry);
-  const [extraTracks, setExtraTracks] = useState<ExtraTracks>(loadExtraTracks);
-  // Persist activation/audio tracks; unlock audio on the first user gesture.
-  useEffect(() => {
-    localStorage.setItem(EXTRA_STORAGE_KEY, JSON.stringify(extraTracks));
-  }, [extraTracks]);
+  // Extra tracks ride inside the scene document now; seed from there, falling back to
+  // the legacy per-key sidecar once (older autosaves). Persisted via the scene autosave.
+  const [extraTracks, setExtraTracks] = useState<ExtraTracks>(() =>
+    loadedScene && hasExtraTracks(loadedScene.extraTracks) ? loadedScene.extraTracks : loadExtraTracks()
+  );
   // Per-vcam FOV animation, keyed by vcam id. Part of the portable scene (persisted
   // as CameraBlock.lensAnimation via the scene autosave), so no separate sidecar key.
   const [fovAnimations, setFovAnimations] = useState<Record<string, FovAnimation>>(
@@ -1623,13 +1621,14 @@ export function App() {
     shotTiming,
     dollyRuns,
     fovAnimations,
-    targets: pointTargets
+    targets: pointTargets,
+    extraTracks
   };
   useEffect(() => {
     localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
     // currentScene is rebuilt each render from the deps below.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, paths, activePathId, pointTargets]);
+  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, paths, activePathId, pointTargets, extraTracks]);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -1644,6 +1643,7 @@ export function App() {
     setDollyRuns(scene.dollyRuns);
     setFovAnimations(scene.fovAnimations);
     setPointTargets(scene.targets);
+    setExtraTracks(scene.extraTracks);
     setSelection(null);
     setSelectedMidpointIndex(null);
     setSelectedHandleIndex(active ? 0 : null);
@@ -1682,7 +1682,8 @@ export function App() {
       shotTiming: {},
       dollyRuns: {},
       fovAnimations: {},
-      targets: []
+      targets: [],
+      extraTracks: EMPTY_EXTRA_TRACKS
     });
   }
 
