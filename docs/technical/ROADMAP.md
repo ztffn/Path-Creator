@@ -20,6 +20,38 @@ Ordered roughly by priority. "Deferred from" notes where the decision was made.
 
 ## Active / next
 
+### ✅ Demo timeline tracks — GLB clips, keyframed transforms, gizmo, portability (DONE — 2026-07)
+Four authorable **sidecar** track kinds on the demo timeline, beyond the core
+camera/cart/event tracks. Each is a **pure `evaluate(t)`** (scrub-safe, in
+`examples/minimal-r3f-demo/src/extra-tracks.ts`) applied by a **stateful director**
+run once per frame from the Scene `useFrame`:
+- **Activation** — object visibility over clip windows (`ActivationDirector`, `activatables.tsx`).
+- **Audio** — 2D clips, forward-play only (`AudioTrackPlayer`, `audio-player.ts`).
+- **Animation (GLB)** — a loaded GLB's baked clips (`GltfActivatable` + `MixerDirector`).
+  Loads via drei `useGLTF`; a bundled CC0 Fox lives in `public/Fox.glb`. Per-clip loop/once.
+  **Scrub-safe gotcha (load-bearing):** skinned meshes only apply via a *playing* action +
+  `mixer.setTime(localT)` — a paused action + `mixer.update(0)` silently no-ops, and sibling
+  clips must be `stop()`ed, not just disabled.
+- **Transform** — keyframed position/rotation/scale for any object, no baked clip
+  (`TransformDirector`). Position/scale eased-lerp; rotation shortest-arc **slerp** from
+  Euler-degree keys. Composes with GLB clips (a clip walks the skeleton while a transform
+  track moves the root).
+
+Authoring: an object-transform **gizmo** (drei `TransformControls`, Move/Rotate/Scale, Shots
+mode only) → "key pose @ playhead" snapshots the pose into keyframes. Placement lives on each
+activatable's registered **group** so the gizmo, director, and registry all drive the same node
+(selection bounds measure in that group's local frame). Both mesh + transform directors restore
+to base/bind pose on leave; new-key defaults seed from the current pose (so keying never jumps).
+
+**Portability:** the four kinds can't be expressed in the closed core `Timeline` union, so they
+ride in a namespaced **`x-demo-tracks`** key on the RigDocument JSON — the package parser ignores
+unknown keys, so the file stays a valid RigDocument. `DemoScene.extraTracks` +
+`serializeScene`/`deserializeScene` (`scene-io.ts`) carry them through Export/Import and autosave.
+
+Demo-first by design ("grow the demo, don't cap the library"): promoting any of these into the
+core package as schema-bumped track types is the open follow-on — the FOV lens-animation
+promotion (`CameraBlock.lensAnimation`) is the reference pattern.
+
 ### ✅ Twin integration (DONE — exceeded the spike)
 Consumed `@huma/path-creator` from the geospatial twin's `/author` route as a
 dolly+timeline scenario type; went past the spike to in-scene editing, server

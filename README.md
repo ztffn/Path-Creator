@@ -11,7 +11,7 @@ This repository is focused on reusable runtime path functionality for Three.js a
 - `docs/plans`: design docs, implementation status, and handoff notes
 - `Assets`: original Unity source kept as reference during porting
 
-## Current Status (March 8, 2026)
+## Current Status (July 11, 2026)
 
 Implemented:
 - Core Bezier path editing model (`anchors`, `controls`, `open/closed`, control modes, auto-smooth)
@@ -19,7 +19,8 @@ Implemented:
 - End-of-path behavior (`loop`, `reverse`, `stop`)
 - Three adapter mesh buffer builders (`road`, `tube`, `polyline`)
 - R3F runtime helpers/hooks (`usePathFollower`, `usePathSample`, `useDollyCamera`)
-- Minimal demo with in-scene path editing workflow
+- Virtual cameras + a pure, scrub-safe timeline evaluator (camera/cart/event tracks, crossfade blends, FOV lens animation)
+- Minimal demo with in-scene path editing, virtual-camera authoring, and timeline tracks — activation, audio, GLB animation clips, and keyframed transforms (viewport gizmo + key-pose) — all scrub-safe and portable via the scene file
 
 ## Workspace Commands
 
