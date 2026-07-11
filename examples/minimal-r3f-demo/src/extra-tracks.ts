@@ -153,6 +153,22 @@ export interface ExtraTracks {
 
 export const EMPTY_EXTRA_TRACKS: ExtraTracks = { activationTracks: [], audioTracks: [], animationTracks: [], transformTracks: [] };
 
+/** Coerce a parsed/partial value into a full ExtraTracks (missing kinds default to empty). */
+export function normalizeExtraTracks(value: unknown): ExtraTracks {
+  const v = (value ?? {}) as Partial<ExtraTracks>;
+  return {
+    activationTracks: v.activationTracks ?? [],
+    audioTracks: v.audioTracks ?? [],
+    animationTracks: v.animationTracks ?? [],
+    transformTracks: v.transformTracks ?? []
+  };
+}
+
+/** True when any track kind carries at least one track (used to prefer embedded over legacy state). */
+export function hasExtraTracks(tracks: ExtraTracks): boolean {
+  return tracks.activationTracks.length > 0 || tracks.audioTracks.length > 0 || tracks.animationTracks.length > 0 || tracks.transformTracks.length > 0;
+}
+
 /** Shared empty desired-audio map, to avoid a per-frame allocation when idle. */
 export const EMPTY_DESIRED: ReadonlyMap<string, DesiredAudio> = new Map();
 
