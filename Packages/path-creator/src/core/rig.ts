@@ -10,9 +10,9 @@ import { normalizeTimelineEasing, sortTimelineTracks, TIMELINE_SCHEMA_VERSION, t
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
 
-// v3: embedded timelines carry v2 easing (cubic-bezier custom curves). Older
-// documents load unchanged — their string easing is a valid subset.
-export const RIG_SCHEMA_VERSION = 3;
+// v4: embedded timeline v4 adds portable activation/audio/animation/transform tracks.
+// Older documents migrate by version stamp because the new union members are additive.
+export const RIG_SCHEMA_VERSION = 4;
 
 export interface RigPathDefinition {
   id: string;

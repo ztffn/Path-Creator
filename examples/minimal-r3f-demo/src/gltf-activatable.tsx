@@ -1,12 +1,12 @@
 // Loads an animated GLB and registers it as an activatable that also exposes its
 // baked clips. drei's useGLTF gives { scene, animations }; we build one
 // AnimationMixer per instance and pre-create (but do not start) an action per clip,
-// so the MixerDirector can play + drive any clip by time (mixer.setTime) without a
+// so AnimationTrackDirector can play and blend clips at explicit local times without a
 // play clock. Purely demo scaffolding — the GLB analogue of <Activatable>.
 import { useEffect, useMemo } from "react";
 import { useGLTF } from "@react-three/drei";
 import { AnimationMixer, Quaternion, Vector3, type AnimationAction, type Object3D } from "three";
-import { Activatable, type AnimationFacet, type GizmoMode } from "./activatables";
+import { Activatable, type AnimationFacet } from "./activatables";
 
 export function GltfActivatable({
   id,
@@ -16,7 +16,7 @@ export function GltfActivatable({
   onSelect,
   position,
   scale,
-  gizmoMode = null,
+  gizmoEnabled = false,
   onTransformingChange
 }: {
   id: string;
@@ -26,7 +26,7 @@ export function GltfActivatable({
   onSelect?: () => void;
   position?: [number, number, number];
   scale?: number | [number, number, number];
-  gizmoMode?: GizmoMode;
+  gizmoEnabled?: boolean;
   onTransformingChange?: (transforming: boolean) => void;
 }) {
   const { scene, animations } = useGLTF(src);
@@ -65,7 +65,7 @@ export function GltfActivatable({
       animation={facet}
       {...(position && { position })}
       {...(scale !== undefined && { scale })}
-      gizmoMode={gizmoMode}
+      gizmoEnabled={gizmoEnabled}
       {...(onTransformingChange && { onTransformingChange })}
     >
       <primitive object={scene} />

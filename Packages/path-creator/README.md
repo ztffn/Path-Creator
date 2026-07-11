@@ -22,6 +22,141 @@ npm install react @react-three/fiber
 - `@huma/path-creator/timeline` — headless timeline model + player (`buildShowTimeline`, `createTimelinePlayer`, `evaluateTimeline`, `seekTimelinePlayer`)
 - `@huma/path-creator/timeline-ui` — `TimelineLanes`, a themeable DOM multilane editor (renderer-agnostic)
 
+Timeline schema v4 supports portable camera, cart, event, activation, audio,
+animation, and keyframed transform tracks. Pure track evaluators are exported from
+`@huma/path-creator/timeline`; Three.js object binding and track directors are
+exported from `@huma/path-creator/three`.
+
+## Portable Timeline Tracks
+
+Timeline v4 stores object and media tracks directly in `Timeline.tracks`, so they
+survive `serializeRigDocument` / `parseRigDocument` without application sidecars.
+All evaluators are pure functions of `time`, making playback, scrubbing, and replay
+deterministic.
+
+```ts
+import {
+  createTimeline,
+  evaluateActivation,
+  evaluateAnimation,
+  evaluateAudio,
+  evaluateTransform,
+  type ActivationTrack,
+  type AnimationTrack,
+  type AudioTrack,
+  type TransformTrack
+} from "@huma/path-creator/timeline";
+
+const activation: ActivationTrack = {
+  type: "activation",
+  id: "visibility",
+  objectId: "fox",
+  postPlaybackState: "revert",
+  clips: [{ id: "visible", start: 0, end: 8 }]
+};
+
+const audio: AudioTrack = {
+  type: "audio",
+  id: "dialogue",
+  gain: 0.8,
+  clips: [
+    { id: "line-a", src: "/audio/a.mp3", start: 0, duration: 4 },
+    { id: "line-b", src: "/audio/b.mp3", start: 3, duration: 4 }
+  ]
+};
+
+const animation: AnimationTrack = {
+  type: "animation",
+  id: "fox-motion",
+  objectId: "fox",
+  clips: [
+    { id: "walk", clipName: "Walk", start: 0, end: 4 },
+    { id: "run", clipName: "Run", start: 3, end: 8, loop: "once" }
+  ]
+};
+
+const transform: TransformTrack = {
+  type: "transform",
+  id: "fox-root",
+  objectId: "fox",
+  position: [
+    { time: 0, value: [0, 0, 0] },
+    { time: 8, value: [10, 0, 0], easing: "easeInOut" }
+  ],
+  rotation: [
+    { time: 0, value: [0, 0, 0] },
+    { time: 8, value: [0, 180, 0] }
+  ]
+};
+
+const timeline = createTimeline({
+  duration: 8,
+  tracks: [activation, audio, animation, transform]
+});
+
+const atThreeSeconds = {
+  visibility: evaluateActivation([activation], 3),
+  audio: evaluateAudio([audio], 3),
+  animation: evaluateAnimation([animation], 3),
+  transform: evaluateTransform([transform], 3)
+};
+```
+
+Adjacent overlapping audio and animation clips crossfade automatically across the
+overlap duration. Audio crossfade weights multiply the authored clip envelope, clip
+gain, and track gain. Transform rotation keys use shortest-arc quaternion slerp.
+
+### Applying object tracks in Three.js
+
+The package directors apply evaluated state and restore the original object state
+when timeline ownership ends. Register GLTF animation actions as an optional animation
+binding on the same object id used by timeline tracks.
+
+```ts
+import {
+  ActivationTrackDirector,
+  AnimationTrackDirector,
+  ObjectBindingRegistry,
+  TransformTrackDirector
+} from "@huma/path-creator/three";
+
+const bindings = new ObjectBindingRegistry();
+bindings.register("fox", foxRoot, {
+  mixer,
+  actions: new Map([
+    ["Walk", mixer.clipAction(walkClip)],
+    ["Run", mixer.clipAction(runClip)]
+  ]),
+  clips: ["Walk", "Run"],
+  resetToRest
+});
+
+const activationDirector = new ActivationTrackDirector();
+const animationDirector = new AnimationTrackDirector();
+const transformDirector = new TransformTrackDirector();
+
+function frame(time: number, playing: boolean, driving: boolean) {
+  activationDirector.sync(bindings, [activation], driving, timeline.duration, time, playing);
+  animationDirector.sync(bindings, [animation], driving, time);
+  transformDirector.sync(bindings, [transform], driving, time);
+}
+```
+
+Audio evaluation is package-owned, but decoding URLs and scheduling Web Audio nodes
+remain host-owned because asset loading policy differs between browsers, servers, and
+render workers.
+
+### Migrating to schema v4
+
+- `parseRigDocument` accepts RigDocument versions 1 through 4 and returns a v4 document.
+- Embedded timeline versions are stamped to timeline schema v4 during migration.
+- Existing camera, cart, and event tracks require no field changes.
+- New tracks must include their `type` discriminator: `activation`, `audio`,
+  `animation`, or `transform`.
+- The minimal demo still imports its historical `x-demo-tracks` extension, but new
+  exports embed those tracks directly in the show timeline. Consumers with a custom
+  sidecar should move its arrays into `timeline.tracks` before serialization.
+
 ## Core Quick Start
 
 ```ts

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Group, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from "three";
+import { AnimationClip, AnimationMixer, Group, Matrix4, NumberKeyframeTrack, PerspectiveCamera, Quaternion, Vector3 } from "three";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   VertexPath,
@@ -11,6 +11,8 @@ import {
 } from "../src/core";
 import {
   activateVirtualCameraBrain,
+  ActivationTrackDirector,
+  AnimationTrackDirector,
   applyScreenComposerAim,
   applyVirtualCameraBrain,
   applyVirtualCameraSnapshot,
@@ -36,9 +38,11 @@ import {
   markEditorHelpers,
   orbitOffset,
   orbitParamsFromLocalOffset,
+  ObjectBindingRegistry,
   createOverrideInputAccumulator,
   resolveCameraPivot,
   stepCameraOverride,
+  TransformTrackDirector,
   setVirtualCameraBrainLive,
   showEditorHelpers,
   resolveVirtualCameraDefinition,
@@ -1459,6 +1463,71 @@ describe("driveActivation", () => {
     expect(result.activeVcamId).toBeNull();
     expect(result.cameraSnapshot?.position.x).toBeCloseTo(10);
     expect(state.activation.vcamId).toBeNull();
+  });
+});
+
+describe("portable object track directors", () => {
+  it("stops and restores an animation binding when its track is removed", () => {
+    const object = new Group();
+    const mixer = new AnimationMixer(object);
+    const clip = new AnimationClip("Walk", 2, [new NumberKeyframeTrack(".position[x]", [0, 2], [0, 2])]);
+    const action = mixer.clipAction(clip);
+    let restored = 0;
+    const registry = new ObjectBindingRegistry();
+    registry.register("fox", object, {
+      mixer,
+      actions: new Map([["Walk", action]]),
+      clips: ["Walk"],
+      resetToRest: () => { restored += 1; }
+    });
+    const director = new AnimationTrackDirector();
+    director.sync(registry, [{
+      type: "animation",
+      id: "track",
+      objectId: "fox",
+      clips: [{ id: "clip", clipName: "Walk", start: 0, end: 2 }]
+    }], true, 1);
+    expect(action.isRunning()).toBe(true);
+    director.sync(registry, [], true, 1);
+    expect(action.isRunning()).toBe(false);
+    expect(restored).toBe(1);
+  });
+
+  it("restores a transform after timeline driving ends", () => {
+    const object = new Group();
+    object.position.set(4, 5, 6);
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "track",
+      objectId: "prop",
+      position: [{ time: 0, value: [1, 2, 3] as [number, number, number] }]
+    }];
+    director.sync(registry, tracks, true, 0);
+    expect(object.position.toArray()).toEqual([1, 2, 3]);
+    director.sync(registry, tracks, false, 0);
+    expect(object.position.toArray()).toEqual([4, 5, 6]);
+  });
+
+  it("applies activation post-playback state", () => {
+    const object = new Group();
+    object.visible = false;
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const tracks = [{
+      type: "activation" as const,
+      id: "track",
+      objectId: "prop",
+      clips: [{ id: "clip", start: 0, end: 2 }],
+      postPlaybackState: "revert" as const
+    }];
+    director.sync(registry, tracks, true, 2, 1, true);
+    expect(object.visible).toBe(true);
+    director.sync(registry, tracks, false, 2, 1, false);
+    expect(object.visible).toBe(false);
   });
 });
 

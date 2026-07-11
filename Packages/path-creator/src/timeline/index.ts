@@ -41,6 +41,12 @@ import {
 } from "../three";
 
 export type {
+  ActivationClip,
+  ActivationTrack,
+  AnimationClip,
+  AnimationTrack,
+  AudioClip,
+  AudioTrack,
   CameraBlock,
   CameraTrack,
   CartKey,
@@ -49,9 +55,23 @@ export type {
   Timeline,
   TimelineBlendIn,
   TimelineEvent,
-  TimelineTrack
+  TimelineTrack,
+  TransformKey,
+  TransformTrack
 } from "../core";
-export { TIMELINE_SCHEMA_VERSION, createTimeline } from "../core";
+export {
+  TIMELINE_SCHEMA_VERSION,
+  createTimeline,
+  evaluateActivation,
+  evaluateAnimation,
+  evaluateAudio,
+  evaluateTransform,
+  insertTransformKey,
+  snapSeconds,
+  transformKeyTimes,
+  transformSpan,
+  upsertTransformKey
+} from "../core";
 
 export interface TimelineRigContext {
   rig: Pick<RigRuntime, "paths" | "carts" | "cartPaths">;

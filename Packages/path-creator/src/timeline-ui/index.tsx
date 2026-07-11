@@ -56,6 +56,8 @@ export interface ExtraLane {
   name: string;
   color: string;
   icon?: ReactNode;
+  /** Render overlapping adjacent clips as interlocking crossfade wedges. */
+  crossfade?: boolean;
   clips: ExtraLaneClip[];
 }
 
@@ -315,7 +317,7 @@ export function TimelineLanes({
   const moveSeries = new Map<string, BlockSeriesData>(
     dollyMoves.flatMap((move) => (move.series ? [[`move-${move.shotId}`, move.series] as [string, BlockSeriesData]] : []))
   );
-  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[] }>();
+  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[]; fadeIn?: number; fadeOut?: number }>();
   for (const lane of extraLanes) {
     for (const clip of lane.clips)
       extraActionStyle.set(EXTRA_ID(lane.id, clip.id), {
@@ -323,6 +325,20 @@ export function TimelineLanes({
         label: clip.label ?? "",
         ...(clip.series && { series: clip.series })
       });
+    if (lane.crossfade) {
+      const ordered = [...lane.clips].sort((a, b) => a.start - b.start);
+      for (let i = 1; i < ordered.length; i += 1) {
+        const outgoing = ordered[i - 1];
+        const incoming = ordered[i];
+        if (!outgoing || !incoming) continue;
+        const overlap = outgoing.end - incoming.start;
+        if (overlap <= 0) continue;
+        const outStyle = extraActionStyle.get(EXTRA_ID(lane.id, outgoing.id));
+        const inStyle = extraActionStyle.get(EXTRA_ID(lane.id, incoming.id));
+        if (outStyle) outStyle.fadeOut = Math.min(1, overlap / Math.max(1e-6, outgoing.end - outgoing.start));
+        if (inStyle) inStyle.fadeIn = Math.min(1, overlap / Math.max(1e-6, incoming.end - incoming.start));
+      }
+    }
   }
 
   // Blend zones: fraction of each clip's width overlapped by the previous
@@ -592,6 +608,8 @@ export function TimelineLanes({
           getActionRender={(action) => {
             if (action.effectId === "extra") {
               const style = extraActionStyle.get(action.id);
+              const fadeIn = (style?.fadeIn ?? 0) * 100;
+              const fadeOut = (style?.fadeOut ?? 0) * 100;
               return (
                 <div
                   style={{
@@ -606,7 +624,12 @@ export function TimelineLanes({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     borderRadius: 4,
-                    background: style?.color ?? "rgba(148,163,184,0.4)"
+                    background: style?.color ?? "rgba(148,163,184,0.4)",
+                    clipPath:
+                      fadeIn > 0 || fadeOut > 0
+                        ? `polygon(0 ${fadeIn > 0 ? "100%" : "0"}, ${fadeIn}% 0, ${100 - fadeOut}% 0, 100% ${fadeOut > 0 ? "100%" : "0"}, 0 100%)`
+                        : undefined,
+                    border: fadeIn > 0 || fadeOut > 0 ? "1px solid rgba(255,255,255,0.22)" : undefined
                   }}
                 >
                   {style?.series

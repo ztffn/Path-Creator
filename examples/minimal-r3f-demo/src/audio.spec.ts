@@ -9,6 +9,7 @@ const clip = (over: Partial<AudioClip> = {}): AudioClip => ({ id: "c", src: "ton
 
 describe("evaluateAudio gain envelope", () => {
   const track: AudioTrack = {
+    type: "audio",
     id: "t",
     clips: [{ id: "c", src: "tone:1", start: 0, duration: 4, gain: 0.5, gainCurve: { type: "curve", keys: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } }]
   };
@@ -21,6 +22,35 @@ describe("evaluateAudio gain envelope", () => {
   it("applies track gain and mute", () => {
     expect(evaluateAudio([{ ...track, gain: 0.5 }], 3.999).get("c")?.gain).toBeCloseTo(0.25, 1);
     expect(evaluateAudio([{ ...track, mute: true }], 2).size).toBe(0);
+  });
+  it("crossfades adjacent overlapping clips with complementary weights", () => {
+    const crossfadeTrack: AudioTrack = {
+      type: "audio",
+      id: "xf",
+      clips: [
+        { id: "out", src: "tone:1", start: 0, duration: 4 },
+        { id: "in", src: "tone:2", start: 2, duration: 4 }
+      ]
+    };
+    expect(evaluateAudio([crossfadeTrack], 2).get("out")?.gain).toBeCloseTo(1, 6);
+    expect(evaluateAudio([crossfadeTrack], 2).get("in")?.gain).toBeCloseTo(0, 6);
+    expect(evaluateAudio([crossfadeTrack], 3).get("out")?.gain).toBeCloseTo(0.5, 6);
+    expect(evaluateAudio([crossfadeTrack], 3).get("in")?.gain).toBeCloseTo(0.5, 6);
+    expect(evaluateAudio([crossfadeTrack], 3.999).get("out")?.gain).toBeCloseTo(0, 2);
+    expect(evaluateAudio([crossfadeTrack], 3.999).get("in")?.gain).toBeCloseTo(1, 2);
+  });
+  it("multiplies automatic crossfade weight by authored gain and envelope", () => {
+    const crossfadeTrack: AudioTrack = {
+      type: "audio",
+      id: "xf",
+      gain: 0.5,
+      clips: [
+        { id: "out", src: "tone:1", start: 0, duration: 4, gain: 0.5 },
+        { id: "in", src: "tone:2", start: 2, duration: 4, gainCurve: { type: "curve", keys: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } }
+      ]
+    };
+    expect(evaluateAudio([crossfadeTrack], 3).get("out")?.gain).toBeCloseTo(0.125, 6);
+    expect(evaluateAudio([crossfadeTrack], 3).get("in")?.gain).toBeCloseTo(0.0625, 6);
   });
 });
 

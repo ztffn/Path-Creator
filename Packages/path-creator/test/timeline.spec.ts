@@ -13,6 +13,9 @@ import {
   createPathCart,
   createRigDocument,
   createTimeline,
+  evaluateAnimation,
+  evaluateAudio,
+  evaluateTransform,
   normalizeTimelineEasing,
   serializeRigCart,
   serializeRigPath,
@@ -89,6 +92,61 @@ const showTimeline = createTimeline({
       ]
     }
   ]
+});
+
+describe("portable object and media tracks", () => {
+  it("crossfades embedded animation and audio clips deterministically", () => {
+    const animation = evaluateAnimation([{ type: "animation", id: "anim", objectId: "fox", clips: [
+      { id: "walk", clipName: "Walk", start: 0, end: 4 },
+      { id: "run", clipName: "Run", start: 2, end: 6 }
+    ] }], 3).get("fox");
+    expect(animation?.map((sample) => sample.weight)).toEqual([0.5, 0.5]);
+    const audio = evaluateAudio([{ type: "audio", id: "audio", clips: [
+      { id: "out", src: "a", start: 0, duration: 4 },
+      { id: "in", src: "b", start: 2, duration: 4 }
+    ] }], 3);
+    expect(audio.get("out")?.gain).toBeCloseTo(0.5);
+    expect(audio.get("in")?.gain).toBeCloseTo(0.5);
+  });
+
+  it("evaluates portable transform tracks", () => {
+    const value = evaluateTransform([{ type: "transform", id: "xf", objectId: "fox", position: [
+      { time: 0, value: [0, 0, 0] }, { time: 2, value: [4, 0, 0] }
+    ] }], 1).get("fox");
+    expect(value?.position).toEqual([2, 0, 0]);
+  });
+
+  it("drops malformed persisted audio gain curves instead of crashing", () => {
+    const timeline = normalizeTimelineEasing(createTimeline({
+      tracks: [{
+        type: "audio",
+        id: "audio",
+        clips: [{ id: "clip", src: "a", start: 0, duration: 2, gainCurve: "invalid" as never }]
+      }]
+    }));
+    const track = timeline.tracks.find((candidate) => candidate.type === "audio");
+    expect(track?.clips[0]?.gainCurve).toBeUndefined();
+    expect(() => evaluateAudio(track ? [track] : [], 1)).not.toThrow();
+    expect(evaluateAudio(track ? [track] : [], 1).get("clip")?.gain).toBe(1);
+  });
+
+  it("emits only the incoming animation after a crossfade ends", () => {
+    const samples = evaluateAnimation([{ type: "animation", id: "anim", objectId: "fox", clips: [
+      { id: "walk", clipName: "Walk", start: 0, end: 4 },
+      { id: "run", clipName: "Run", start: 2, end: 6 }
+    ] }], 4).get("fox");
+    expect(samples).toEqual([{ clipName: "Run", localTime: 2, weight: 1, loop: true }]);
+  });
+
+  it("keeps duplicate transform-key times finite", () => {
+    const value = evaluateTransform([{ type: "transform", id: "xf", objectId: "fox", position: [
+      { time: 0, value: [0, 0, 0] },
+      { time: 1, value: [1, 0, 0] },
+      { time: 1, value: [2, 0, 0] },
+      { time: 2, value: [3, 0, 0] }
+    ] }], 1).get("fox")?.position;
+    expect(value?.every(Number.isFinite)).toBe(true);
+  });
 });
 
 describe("evaluateTimeline camera semantics", () => {

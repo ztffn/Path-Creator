@@ -6,44 +6,47 @@ import { describe, expect, it } from "vitest";
 import { evaluateAnimation, maxClipEnd, EMPTY_EXTRA_TRACKS, type AnimationTrack } from "./extra-tracks";
 
 const track = (clips: AnimationTrack["clips"], over: Partial<AnimationTrack> = {}): AnimationTrack => ({
+  type: "animation",
   id: "t",
   objectId: "fox",
   clips,
   ...over
 });
+const samplesAt = (t: AnimationTrack, time: number) => evaluateAnimation([t], time).get("fox") ?? [];
+const sampleAt = (t: AnimationTrack, time: number) => samplesAt(t, time).at(-1);
 
 describe("evaluateAnimation window mapping", () => {
   it("native (no clipEnd) advances clip-local time 1:1 with t inside the window", () => {
     const t = track([{ id: "c", clipName: "Run", start: 2, end: 6 }]);
-    expect(evaluateAnimation([t], 2).get("fox")).toEqual({ clipName: "Run", localTime: 0, weight: 1, loop: true });
-    expect(evaluateAnimation([t], 4).get("fox")?.localTime).toBeCloseTo(2, 6);
-    expect(evaluateAnimation([t], 6).get("fox")?.localTime).toBeCloseTo(4, 6);
+    expect(evaluateAnimation([t], 2).get("fox")).toEqual([{ clipName: "Run", localTime: 0, weight: 1, loop: true }]);
+    expect(sampleAt(t, 4)?.localTime).toBeCloseTo(2, 6);
+    expect(sampleAt(t, 6)?.localTime).toBeCloseTo(4, 6);
   });
 
   it("carries the loop flag (default loop; 'once' => loop:false)", () => {
     const looped = track([{ id: "c", clipName: "Run", start: 0, end: 4 }]);
     const once = track([{ id: "c", clipName: "Run", start: 0, end: 4, loop: "once" }]);
-    expect(evaluateAnimation([looped], 1).get("fox")?.loop).toBe(true);
-    expect(evaluateAnimation([once], 1).get("fox")?.loop).toBe(false);
+    expect(sampleAt(looped, 1)?.loop).toBe(true);
+    expect(sampleAt(once, 1)?.loop).toBe(false);
   });
 
   it("retimed (clipEnd set) maps the window onto [clipStart, clipEnd]", () => {
     // 4s window plays 1s of clip => slow-mo (quarter speed).
     const slow = track([{ id: "c", clipName: "Walk", start: 0, end: 4, clipStart: 0, clipEnd: 1 }]);
-    expect(evaluateAnimation([slow], 2).get("fox")?.localTime).toBeCloseTo(0.5, 6);
+    expect(sampleAt(slow, 2)?.localTime).toBeCloseTo(0.5, 6);
     // clipStart == clipEnd => hold on a single frame.
     const hold = track([{ id: "c", clipName: "Walk", start: 0, end: 4, clipStart: 0.7, clipEnd: 0.7 }]);
-    expect(evaluateAnimation([hold], 3).get("fox")?.localTime).toBeCloseTo(0.7, 6);
+    expect(sampleAt(hold, 3)?.localTime).toBeCloseTo(0.7, 6);
     // clipEnd < clipStart => reverse.
     const rev = track([{ id: "c", clipName: "Walk", start: 0, end: 4, clipStart: 1, clipEnd: 0 }]);
-    expect(evaluateAnimation([rev], 1).get("fox")?.localTime).toBeCloseTo(0.75, 6);
+    expect(sampleAt(rev, 1)?.localTime).toBeCloseTo(0.75, 6);
   });
 
   it("holds the window-end frame through a following gap (like camera 'hold' gapMode)", () => {
     const t = track([{ id: "c", clipName: "Run", start: 0, end: 3 }]);
-    expect(evaluateAnimation([t], 10).get("fox")?.localTime).toBeCloseTo(3, 6); // native: clamped to span
+    expect(sampleAt(t, 10)?.localTime).toBeCloseTo(3, 6); // native: clamped to span
     const retimed = track([{ id: "c", clipName: "Run", start: 0, end: 3, clipStart: 0, clipEnd: 2 }]);
-    expect(evaluateAnimation([retimed], 10).get("fox")?.localTime).toBeCloseTo(2, 6); // clamped to clipEnd
+    expect(sampleAt(retimed, 10)?.localTime).toBeCloseTo(2, 6); // clamped to clipEnd
   });
 
   it("leaves the model un-driven before its first clip", () => {
@@ -51,24 +54,35 @@ describe("evaluateAnimation window mapping", () => {
     expect(evaluateAnimation([t], 2).has("fox")).toBe(false);
   });
 
-  it("the last started clip wins when clips overlap", () => {
+  it("crossfades overlapping clips with complementary weights", () => {
     const t = track([
       { id: "a", clipName: "Walk", start: 0, end: 4 },
       { id: "b", clipName: "Run", start: 2, end: 6 }
     ]);
-    expect(evaluateAnimation([t], 3).get("fox")?.clipName).toBe("Run");
-    expect(evaluateAnimation([t], 1).get("fox")?.clipName).toBe("Walk");
+    expect(samplesAt(t, 2).map(({ clipName, weight }) => [clipName, weight])).toEqual([["Walk", 1], ["Run", 0]]);
+    expect(samplesAt(t, 3).map(({ clipName, weight }) => [clipName, weight])).toEqual([["Walk", 0.5], ["Run", 0.5]]);
+    expect(sampleAt(t, 4)?.clipName).toBe("Run");
+    expect(sampleAt(t, 1)?.clipName).toBe("Walk");
+  });
+
+  it("uses the incoming time when the same baked clip overlaps itself", () => {
+    const t = track([
+      { id: "a", clipName: "Walk", start: 0, end: 4 },
+      { id: "b", clipName: "Walk", start: 2, end: 6 }
+    ]);
+    expect(samplesAt(t, 3)).toEqual([{ clipName: "Walk", localTime: 1, weight: 1, loop: true }]);
   });
 
   it("a later track binding the same model wins", () => {
     const a = track([{ id: "c", clipName: "Walk", start: 0, end: 4 }], { id: "a" });
     const b = track([{ id: "c", clipName: "Run", start: 0, end: 4 }], { id: "b" });
-    expect(evaluateAnimation([a, b], 1).get("fox")?.clipName).toBe("Run");
+    expect(sampleAt(b, 1)?.clipName).toBe("Run");
+    expect(evaluateAnimation([a, b], 1).get("fox")?.at(-1)?.clipName).toBe("Run");
   });
 
   it("is a pure function of t (scrub == play == replay)", () => {
     const t = track([{ id: "c", clipName: "Run", start: 0, end: 4 }]);
-    const at = (x: number) => evaluateAnimation([t], x).get("fox")?.localTime;
+    const at = (x: number) => sampleAt(t, x)?.localTime;
     for (const x of [0, 1.3, 2.7, 3.9]) expect(at(x)).toBeCloseTo(at(x)!, 9);
     expect(at(2.7)).toBeCloseTo(2.7, 6);
   });

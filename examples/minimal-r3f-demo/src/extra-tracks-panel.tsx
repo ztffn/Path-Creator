@@ -43,13 +43,13 @@ export const SAMPLE_AUDIO = [
 export const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 
 /** A blank activation track bound to `objectId` (shared by the panel + object inspector). */
-export const newActivationTrack = (objectId: string): ActivationTrack => ({ id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
+export const newActivationTrack = (objectId: string): ActivationTrack => ({ type: "activation", id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
 
 /** A blank animation track bound to `objectId` (shared by the panel + object inspector). */
-export const newAnimationTrack = (objectId: string): AnimationTrack => ({ id: uid("anim"), objectId, clips: [] });
+export const newAnimationTrack = (objectId: string): AnimationTrack => ({ type: "animation", id: uid("anim"), objectId, clips: [] });
 
 /** A blank transform track bound to `objectId` (shared by the panel + object inspector). */
-export const newTransformTrack = (objectId: string): TransformTrack => ({ id: uid("xf"), objectId });
+export const newTransformTrack = (objectId: string): TransformTrack => ({ type: "transform", id: uid("xf"), objectId });
 
 const POST_PLAYBACK_LABELS: Record<PostPlaybackState, string> = {
   revert: "Revert",
@@ -204,7 +204,7 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
         </div>
       ))}
       {hideAdd ? null : (
-        <button onClick={() => emit([...audioTracks, { id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
+        <button onClick={() => emit([...audioTracks, { type: "audio", id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
           Add Audio Track
         </button>
       )}

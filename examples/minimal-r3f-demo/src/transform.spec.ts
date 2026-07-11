@@ -5,7 +5,7 @@
 import { describe, expect, it } from "vitest";
 import { evaluateTransform, transformSpan, maxClipEnd, insertTransformKey, upsertTransformKey, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
 
-const track = (over: Partial<TransformTrack> = {}): TransformTrack => ({ id: "t", objectId: "obj", ...over });
+const track = (over: Partial<TransformTrack> = {}): TransformTrack => ({ type: "transform", id: "t", objectId: "obj", ...over });
 
 describe("evaluateTransform", () => {
   it("holds before the first key and after the last", () => {

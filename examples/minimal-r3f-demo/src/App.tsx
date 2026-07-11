@@ -1,5 +1,5 @@
-import { Canvas, useFrame, useThree } from "@react-three/fiber";
-import { OrbitControls, PivotControls } from "@react-three/drei";
+import { Canvas } from "@react-three/fiber";
+import { OrbitControls } from "@react-three/drei";
 import {
   BezierPath,
   ControlMode,
@@ -43,7 +43,6 @@ import {
   type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraLens,
-  type VirtualCameraResolveContext,
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
 import {
@@ -51,24 +50,19 @@ import {
   seekTimelinePlayer,
   type Timeline,
   type TimelinePlayer,
-  type TimelineRigContext
 } from "@huma/path-creator/timeline";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
-  deserializeScene,
-  serializeScene,
   type DemoScene
 } from "./scene-io";
 import {
   Activatable,
   ActivatablesProvider,
   ActivatablesRegistry,
-  ActivationDirector,
   useActivatables,
-  useActivatablesRegistry,
-  type GizmoMode
+  useActivatablesRegistry
 } from "./activatables";
 import { GltfActivatable } from "./gltf-activatable";
 import {
@@ -89,10 +83,11 @@ import {
   type TransformTrack
 } from "./extra-tracks";
 import { AudioTrackPlayer } from "./audio-player";
-import { MixerDirector } from "./mixer-director";
-import { TransformDirector } from "./transform-director";
 import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
+import { DollyPreviewChrome } from "./camera-pip";
+import { DemoSceneViewport, type VirtualCameraActivation } from "./demo-scene-viewport";
+import { downloadScene, readSceneFile, usePersistedScene, useSceneAutosave } from "./scene-storage";
 import { Hierarchy } from "./hierarchy";
 import { Inspector } from "./inspector";
 import { panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
@@ -132,8 +127,7 @@ const SHOW_STORAGE_KEY = "path-creator:minimal-demo:show";
 // The scene is persisted as a portable RigDocument; the two keys above are only
 // read for one-time migration of shows saved before this format.
 const SCENE_STORAGE_KEY = "path-creator:minimal-demo:scene";
-// Activation/audio tracks persist in a demo sidecar (not the portable RigDocument,
-// whose Timeline union is closed to camera/cart/event).
+// Legacy standalone extra-track storage, read only for one-time migration.
 const EXTRA_STORAGE_KEY = "path-creator:minimal-demo:tracks";
 // Bundled sample voices under public/audio (pretend-uploaded assets); new audio
 // clips cycle through these so the waveform preview has real content to draw.
@@ -177,42 +171,11 @@ function loadExtraTracks(): ExtraTracks {
 const FALLBACK_PATH_ID = "path-1";
 const FALLBACK_DOLLY: RigCartDefinition = makeDolly({ id: "dolly-1", name: "Dolly 1", pathId: FALLBACK_PATH_ID });
 const INITIAL_DOLLIES: RigCartDefinition[] = [FALLBACK_DOLLY];
-const DOLLY_PIP_ASPECT = 16 / 9;
-const DOLLY_PIP_MARGIN = 16;
 
 // Fallbacks for a vcam whose sidecar entry is missing (shouldn't happen, but
 // keeps the derived view total). Stable identities, so hoisted out of render.
 const DEFAULT_EDITOR_VCAM: EditorVcam = { noisePreset: "off", composerSettings: DEFAULT_COMPOSER_SETTINGS };
 const DEFAULT_SHOT_TIMING: ShotTiming = { start: 0, end: 5 };
-
-type VirtualCameraActivation = {
-  key: number;
-  toId: string;
-  durationSeconds: number;
-  curve: VirtualCameraBlendCurve;
-};
-
-type VirtualCameraResolved = {
-  snapshot: VirtualCameraSnapshot;
-  progress: number;
-  done: boolean;
-};
-
-function getComposerZones(settings: ComposerSettings) {
-  return {
-    deadZone: { width: settings.deadWidth, height: settings.deadHeight },
-    softZone: { width: settings.softWidth, height: settings.softHeight }
-  };
-}
-
-function getComposerLookaheadTarget(target: Vec3, settings: ComposerSettings, velocity?: Vec3): Vec3 {
-  if (!velocity || settings.lookaheadTime <= 0) return target;
-  return {
-    x: target.x + velocity.x * settings.lookaheadTime,
-    y: target.y + velocity.y * settings.lookaheadTime,
-    z: target.z + velocity.z * settings.lookaheadTime
-  };
-}
 
 // A new path starts as a simple two-anchor segment (start → stop); the user
 // builds from there with Add Anchor / Insert Midpoint.
@@ -229,128 +192,6 @@ function createDefaultBezier(): BezierPath {
   );
 }
 
-function getSnapshotMatrix(snapshot: VirtualCameraSnapshot): Matrix4 {
-  return new Matrix4().compose(
-    new Vector3(snapshot.position.x, snapshot.position.y, snapshot.position.z),
-    new Quaternion(
-      snapshot.quaternion.x,
-      snapshot.quaternion.y,
-      snapshot.quaternion.z,
-      snapshot.quaternion.w
-    ),
-    new Vector3(1, 1, 1)
-  );
-}
-
-function updateSnapshotTransform(snapshot: VirtualCameraSnapshot, matrix: Matrix4): VirtualCameraSnapshot {
-  const position = new Vector3();
-  const quaternion = new Quaternion();
-  const scale = new Vector3();
-  matrix.decompose(position, quaternion, scale);
-
-  return {
-    ...snapshot,
-    position: { x: position.x, y: position.y, z: position.z },
-    quaternion: {
-      x: quaternion.x,
-      y: quaternion.y,
-      z: quaternion.z,
-      w: quaternion.w
-    }
-  };
-}
-
-const VCAM_PIVOT_PROPS = {
-  autoTransform: false,
-  fixed: true,
-  scale: 75,
-  lineWidth: 2,
-  depthTest: false
-} as const;
-
-/**
- * A slowly yawing scene object registered as an oriented tracking target — the
- * wind-turbine stand-in. Because it exposes orientation (via registerObjectTarget),
- * an orbit vcam bound `lockYaw`/`lock` to it visibly follows its rotation, while a
- * `world`-bound orbit stays compass-anchored as it spins. A pointer nub marks the
- * target's forward so the yaw is legible.
- */
-function SpinningTargetProbe({
-  targetRegistry,
-  id,
-  name,
-  position,
-  degPerSec
-}: {
-  targetRegistry: TargetRegistry;
-  id: string;
-  name: string;
-  position: [number, number, number];
-  degPerSec: number;
-}) {
-  const groupRef = useRef<Group>(null);
-  useEffect(() => {
-    const group = groupRef.current;
-    if (!group) return;
-    return registerObjectTarget(targetRegistry, id, group, name);
-  }, [targetRegistry, id, name]);
-  useFrame((_, delta) => {
-    const group = groupRef.current;
-    if (group) group.rotation.y += (degPerSec * Math.PI) / 180 * delta;
-  });
-  return (
-    <group ref={groupRef} position={position}>
-      <mesh>
-        <boxGeometry args={[0.5, 0.5, 0.5]} />
-        <meshStandardMaterial color="#a3a3a3" />
-      </mesh>
-      {/* forward nub (local +Z), so the yaw is visible */}
-      <mesh position={[0, 0, 0.45]}>
-        <boxGeometry args={[0.12, 0.12, 0.4]} />
-        <meshStandardMaterial color="#f59e0b" emissive="#f59e0b" emissiveIntensity={0.4} />
-      </mesh>
-    </group>
-  );
-}
-
-// A few bindable demo props so an Activation track has something obvious to
-// show/hide (the demo's stand-in for "GameObjects you drag onto the track").
-const DEMO_PROP_DEFS: { id: string; name: string; position: [number, number, number]; color: string }[] = [
-  { id: "prop/beacon", name: "Beacon", position: [2.6, 0.6, 1.8], color: "#ef4444" },
-  { id: "prop/marker", name: "Marker", position: [-1.4, 1.4, 1.2], color: "#22c55e" },
-  { id: "prop/pylon", name: "Pylon", position: [0.4, 1.9, -1.6], color: "#3b82f6" }
-];
-
-function DemoProps({ selectedId, onSelect, gizmoMode, onTransformingChange }: { selectedId?: string | null; onSelect?: (id: string) => void; gizmoMode?: GizmoMode; onTransformingChange?: (transforming: boolean) => void }) {
-  return (
-    <>
-      {DEMO_PROP_DEFS.map((prop) => (
-        <Activatable
-          key={prop.id}
-          id={prop.id}
-          name={prop.name}
-          selected={selectedId === prop.id}
-          onSelect={() => onSelect?.(prop.id)}
-          position={prop.position}
-          {...(gizmoMode !== undefined && { gizmoMode })}
-          {...(onTransformingChange && { onTransformingChange })}
-        >
-          <mesh>
-            <boxGeometry args={[0.5, 0.5, 0.5]} />
-            <meshStandardMaterial color={prop.color} emissive={prop.color} emissiveIntensity={0.25} />
-          </mesh>
-        </Activatable>
-      ))}
-    </>
-  );
-}
-
-// Targets are cyan across the demo (look-target ball, point targets). Point
-// targets are authored, deletable entities: a world position registered under an
-// id that vcam aims can track. `visibleInRender` controls whether the sphere
-// shows in the PiP (the stand-in for the real renderer) — off makes it an
-// invisible aim point, still manipulable in the authoring view. `cartId` mounts
-// the target on a dolly (it then rides the rail); null = static at `position`.
 const INITIAL_POINT_TARGETS: SceneTarget[] = [
   { id: "target-1", name: "Target 1", type: "point", position: { x: 3.3, y: 0.8, z: 0 }, visibleInRender: true },
   { id: "target-2", name: "Target 2", type: "point", position: { x: 1.95, y: 1.15, z: 0.78 }, visibleInRender: true },
@@ -389,834 +230,10 @@ function nextTargetName(current: SceneTarget[]): string {
   return `Target ${highest + 1}`;
 }
 
-function Scene({
-  bezierPath,
-  vertexPath,
-  pathVersion,
-  debugPreview,
-  debugFrustum,
-  playMode,
-  pathStyle,
-  selectedHandleIndex,
-  selectedMidpointIndex,
-  anchorScales,
-  useWorldSpaceGizmo,
-  isTransforming,
-  onSelectHandle,
-  onSelectMidpoint,
-  onMovePoint,
-  onSetAnchorScale,
-  onRotateMidpointNormal,
-  onTransformingChange,
-  dollyTargetMarkerRef,
-  dollyTargetLineRef,
-  lookaheadMarkerRef,
-  lookaheadLineRef,
-  virtualCameraCaptureRequest,
-  virtualCameraActivation,
-  virtualCameras,
-  vcamDefs,
-  selectedVirtualCameraId,
-  onVirtualCameraCaptured,
-  onVirtualCameraResolved,
-  onSelectVirtualCamera,
-  onActiveVcamChange,
-  onUpdateVirtualCameraSnapshot,
-  onUpdateCartOffset,
-  onUpdateOrbitParams,
-  overrideAcc,
-  targetRegistry,
-  dollyFramesRef,
-  dollies,
-  vertexPaths,
-  activeTimeline,
-  timelinePlayerRef,
-  activationTracks,
-  audioTracks,
-  animationTracks,
-  transformTracks,
-  audioPlayer,
-  selection,
-  gizmoMode,
-  onSelectEntity
-}: {
-  bezierPath: BezierPath | null;
-  vertexPath: VertexPath | null;
-  pathVersion: number;
-  debugPreview: boolean;
-  debugFrustum: boolean;
-  playMode: boolean;
-  pathStyle: "line" | "rail";
-  selectedHandleIndex: number | null;
-  selectedMidpointIndex: number | null;
-  anchorScales: number[];
-  useWorldSpaceGizmo: boolean;
-  isTransforming: boolean;
-  onSelectHandle: (index: number | null) => void;
-  onSelectMidpoint: (index: number | null) => void;
-  onMovePoint: (index: number, point: Vec3) => void;
-  onSetAnchorScale: (anchorIndex: number, scale: number) => void;
-  onRotateMidpointNormal: (segmentIndex: number, deltaDegrees: number) => void;
-  onTransformingChange: (isTransforming: boolean) => void;
-  dollyTargetMarkerRef: { current: HTMLDivElement | null };
-  dollyTargetLineRef: { current: SVGLineElement | null };
-  lookaheadMarkerRef: { current: HTMLDivElement | null };
-  lookaheadLineRef: { current: SVGLineElement | null };
-  virtualCameraCaptureRequest: number;
-  virtualCameraActivation: VirtualCameraActivation | null;
-  /** UI-facing view (glyphs, composer fields); authoritative defs are vcamDefs. */
-  virtualCameras: DemoVirtualCamera[];
-  /** Real definitions the drive-loop resolves/blends; parallel to virtualCameras by id. */
-  vcamDefs: VirtualCameraDefinition[];
-  selectedVirtualCameraId: string | null;
-  onVirtualCameraCaptured: (snapshot: VirtualCameraSnapshot) => void;
-  onVirtualCameraResolved: (resolved: VirtualCameraResolved) => void;
-  onSelectVirtualCamera: (id: string | null) => void;
-  /** The vcam actually driving the PiP this frame (timeline picks it per-frame). */
-  onActiveVcamChange: (id: string | null) => void;
-  onUpdateVirtualCameraSnapshot: (id: string, snapshot: VirtualCameraSnapshot) => void;
-  onUpdateCartOffset: (id: string, offset: Vec3) => void;
-  onUpdateOrbitParams: (
-    id: string,
-    params: { azimuthDeg: number; elevationDeg: number; radius: number }
-  ) => void;
-  /** Manual-override input the capture surface accumulates; drained per frame. */
-  overrideAcc: OverrideInputAccumulator;
-  targetRegistry: TargetRegistry;
-  /** Shared live cart frames: Scene writes them; targets/glyphs read them. */
-  dollyFramesRef: { current: Map<string, CartFrame> };
-  dollies: RigCartDefinition[];
-  vertexPaths: Map<string, VertexPath>;
-  /** Non-null while the timeline owns the PiP. */
-  activeTimeline: Timeline | null;
-  timelinePlayerRef: { current: TimelinePlayer };
-  activationTracks: ActivationTrack[];
-  audioTracks: AudioTrack[];
-  animationTracks: AnimationTrack[];
-  transformTracks: TransformTrack[];
-  audioPlayer: AudioTrackPlayer;
-  selection: Selection;
-  gizmoMode: GizmoMode;
-  onSelectEntity: (kind: EntityKind, id: string) => void;
-}) {
-  useEditorHelpersVisible();
-  const activatablesRegistry = useActivatablesRegistry();
-  // Owns the per-frame activation state machine (Unity director semantics).
-  const activationDirector = useMemo(() => new ActivationDirector(), []);
-  // Drives bound GLB models' baked clips by time (scrub-safe), like the audio player.
-  const mixerDirector = useMemo(() => new MixerDirector(), []);
-  // Writes keyframed pos/rot/scale to bound objects; restores base transform on leave.
-  const transformDirector = useMemo(() => new TransformDirector(), []);
-  // The gizmo is an authoring affordance: only while the timeline isn't driving the
-  // object (Shots mode), so posing never fights playback.
-  const objectGizmoMode: GizmoMode = activeTimeline ? null : gizmoMode;
-  // One live free-running cart per dolly; the timeline branch overwrites the
-  // frames with evaluated ones while it owns playback.
-  const liveDollies = useMemo(
-    () => new Map(dollies.map((dolly) => [dolly.id, createPathCart({ endOfPathInstruction: dolly.endOfPathInstruction })])),
-    [dollies]
-  );
-  const demoResolveContext = (elapsedSeconds: number): VirtualCameraResolveContext => ({
-    getCartFrame: (id) => dollyFramesRef.current.get(id) ?? null,
-    getTargetPosition: (id) => targetRegistry.resolve(id),
-    getTargetOrientation: (id) => targetRegistry.resolveOrientation(id),
-    elapsedSeconds
-  });
-  const vcamDefById = useMemo(
-    () => new Map(vcamDefs.map((def) => [def.id, def])),
-    [vcamDefs]
-  );
-  const timelineContext = useMemo<TimelineRigContext>(
-    () => ({
-      rig: {
-        paths: vertexPaths,
-        carts: new Map(dollies.map((dolly) => [dolly.id, createPathCart({ speed: dolly.speed, endOfPathInstruction: dolly.endOfPathInstruction })])),
-        cartPaths: new Map(dollies.map((dolly) => [dolly.id, dolly.pathId]))
-      },
-      vcams: vcamDefById,
-      getTargetPosition: (id) => targetRegistry.resolve(id),
-      getTargetOrientation: (id) => targetRegistry.resolveOrientation(id)
-    }),
-    [targetRegistry, vertexPaths, vcamDefById, dollies]
-  );
-  const brainCamera = useMemo(() => {
-    const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
-    camera.name = "virtual-camera-brain";
-    camera.updateProjectionMatrix();
-    return camera;
-  }, []);
-  const selectedVirtualCamera = selectedVirtualCameraId
-    ? virtualCameras.find((camera) => camera.id === selectedVirtualCameraId) ?? null
-    : null;
-  // The PiP shows an authored camera: timeline output, an activated shot, or
-  // the selected shot. Otherwise nothing drives it ("no output").
-  const pipCamera = brainCamera;
-  const hasPipSource = Boolean(
-    activeTimeline || virtualCameraActivation || selectedVirtualCamera
-  );
-  const frustumHelper = useMemo(() => new CameraHelper(pipCamera), [pipCamera]);
-  // Green while a shot/timeline is live, orange for the selected shot.
-  const frustumColor = activeTimeline || virtualCameraActivation ? "#22c55e" : "#f97316";
-  useEffect(() => {
-    const color = new Color(frustumColor);
-    frustumHelper.setColors(color, color, color, color, color);
-  }, [frustumHelper, frustumColor]);
-
-  const lastCaptureRequestRef = useRef(virtualCameraCaptureRequest);
-  // Dedup for the resolved-shot callback (fire while blending, then once on done).
-  const resolvedVirtualCameraKeyRef = useRef<number | null>(null);
-  // Last reported driven-vcam id, so onActiveVcamChange fires only on change.
-  const lastActiveVcamRef = useRef<string | null>(null);
-  // The extracted drive-loop: one shared brain + composer stage, driven each
-  // frame via a neutral intent. Replaces the hand-rolled brain/composer refs.
-  const rigDrive = useRigDrive();
-  const projectedTarget = useMemo(() => new Vector3(), []);
-  const { gl } = useThree();
-
-  useEffect(() => {
-    const onContextMenu = (e: Event) => e.preventDefault();
-    gl.domElement.addEventListener("contextmenu", onContextMenu);
-    return () => gl.domElement.removeEventListener("contextmenu", onContextMenu);
-  }, [gl.domElement]);
-
-  useEffect(() => {
-    return () => frustumHelper.dispose();
-  }, [frustumHelper]);
-
-  useFrame(({ camera }, delta) => {
-    const mainCamera = camera as PerspectiveCamera;
-    const elapsed = performance.now() / 1000;
-
-    if (virtualCameraCaptureRequest !== lastCaptureRequestRef.current) {
-      lastCaptureRequestRef.current = virtualCameraCaptureRequest;
-      // Capture the main viewport (orbit) camera as a new static vcam.
-      onVirtualCameraCaptured(captureVirtualCameraSnapshot(mainCamera));
-    }
-
-    // Shots mode parks every dolly at its rail start (a constant frame);
-    // driveTimeline overwrites these with evaluated frames while it owns the PiP.
-    if (!activeTimeline) {
-      for (const dolly of dollies) {
-        const dollyPath = vertexPaths.get(dolly.pathId);
-        const cart = liveDollies.get(dolly.id);
-        if (dollyPath && cart) dollyFramesRef.current.set(dolly.id, sampleCartFrame(dollyPath, cart, 0));
-      }
-    }
-
-    // Map editor state to a neutral drive intent, then drive the PiP brain:
-    // timeline plays the show; an activated or selected shot previews through the
-    // activation driver (blend vs cut); otherwise idle ("no output").
-    const isActivationPreview = Boolean(virtualCameraActivation && !isTransforming);
-    // Live pilot input is consumed once per frame, only in Play mode. Every driver
-    // (timeline + activation) forwards it; the package applies it to whichever shot
-    // carries an override `control` (any body), and no-ops shots that don't.
-    const overrideInput = playMode ? overrideAcc.drain() : null;
-    let intent: RigDriveIntent;
-    if (activeTimeline) {
-      intent = {
-        mode: "timeline",
-        timeline: activeTimeline,
-        player: timelinePlayerRef.current,
-        context: timelineContext,
-        cartFrames: dollyFramesRef.current,
-        ...(overrideInput && { overrideInput })
-      };
-    } else if (isActivationPreview && virtualCameraActivation) {
-      const liveVcam = virtualCameras.find((item) => item.id === virtualCameraActivation.toId);
-      intent = {
-        mode: "activation",
-        activeVcamId: virtualCameraActivation.toId,
-        vcams: vcamDefById,
-        context: demoResolveContext(elapsed),
-        blend: {
-          durationSeconds: virtualCameraActivation.durationSeconds,
-          curve: virtualCameraActivation.curve
-        },
-        activationKey: virtualCameraActivation.key,
-        ...(liveVcam && { fallbackSnapshot: liveVcam.snapshot }),
-        ...(overrideInput && { overrideInput })
-      };
-    } else if (selectedVirtualCamera) {
-      // Cut (no blend): park on the selected shot, re-resolving as it moves.
-      intent = {
-        mode: "activation",
-        activeVcamId: selectedVirtualCamera.id,
-        vcams: vcamDefById,
-        context: demoResolveContext(elapsed),
-        fallbackSnapshot: selectedVirtualCamera.snapshot,
-        ...(overrideInput && { overrideInput })
-      };
-    } else {
-      intent = { mode: "idle" };
-    }
-
-    const result = rigDrive.drive(brainCamera, intent, delta);
-    frustumHelper.update();
-
-    // Surface the actually-driven vcam id (timeline picks it per-frame) so the host
-    // can label the PiP and enable piloting for the active orbit shot.
-    if (result.activeVcamId !== lastActiveVcamRef.current) {
-      lastActiveVcamRef.current = result.activeVcamId;
-      onActiveVcamChange(result.activeVcamId);
-    }
-
-    // Report the activated shot's resolved pose/progress to the panels — only for
-    // a real activation, not the selected-shot preview.
-    if (isActivationPreview && virtualCameraActivation && result.cameraSnapshot) {
-      const done = result.blendDone;
-      if (!done || resolvedVirtualCameraKeyRef.current !== virtualCameraActivation.key) {
-        onVirtualCameraResolved({ snapshot: result.cameraSnapshot, progress: result.blendProgress, done });
-        if (done) resolvedVirtualCameraKeyRef.current = virtualCameraActivation.key;
-      }
-    } else {
-      resolvedVirtualCameraKeyRef.current = null;
-    }
-
-    // Activation + audio tracks drive off the timeline clock (they aren't part of
-    // the core Timeline). The director applies Unity Post-Playback semantics; audio
-    // sounds only during forward playback (silent on scrub/pause), matching
-    // stepTimelinePlayer's forward-only event semantics.
-    const player = timelinePlayerRef.current;
-    const timelineDriving = Boolean(activeTimeline);
-    activationDirector.sync(
-      activatablesRegistry,
-      activationTracks,
-      timelineDriving,
-      activeTimeline?.duration ?? 0,
-      player.time,
-      player.playing
-    );
-    const audioLive = timelineDriving && player.playing;
-    audioPlayer.reconcile(audioLive ? evaluateAudio(audioTracks, player.time) : EMPTY_DESIRED, audioLive);
-    // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
-    // gated on player.playing like audio, which must stay silent outside forward play.
-    mixerDirector.sync(activatablesRegistry, animationTracks, timelineDriving, player.time);
-    // Keyframed transforms are pure in t too; they follow scrubbing and restore the
-    // object's base pose when the timeline is left.
-    transformDirector.sync(activatablesRegistry, transformTracks, timelineDriving, player.time);
-
-    // Composer overlay: project the driven vcam's tracked target (and its
-    // lookahead) onto the PiP camera so the zone markers track it live.
-    const composerVcam = result.activeVcamId
-      ? virtualCameras.find((item) => item.id === result.activeVcamId) ?? null
-      : null;
-    const composerTarget = result.composerTarget;
-    if (composerVcam && composerTarget) {
-      projectedTarget.set(composerTarget.x, composerTarget.y, composerTarget.z).project(pipCamera);
-      const inFrame =
-        projectedTarget.z >= -1 && projectedTarget.z <= 1 &&
-        projectedTarget.x >= -1 && projectedTarget.x <= 1 &&
-        projectedTarget.y >= -1 && projectedTarget.y <= 1;
-      updateDollyTargetOverlay(
-        dollyTargetMarkerRef.current,
-        dollyTargetLineRef.current,
-        (projectedTarget.x + 1) * 0.5,
-        (1 - projectedTarget.y) * 0.5,
-        inFrame
-      );
-      const lookahead = getComposerLookaheadTarget(
-        composerTarget,
-        composerVcam.composerSettings,
-        rigDrive.state.current.composer.aim.smoothedVelocity
-      );
-      projectedTarget.set(lookahead.x, lookahead.y, lookahead.z).project(pipCamera);
-      updateDollyTargetOverlay(
-        lookaheadMarkerRef.current,
-        lookaheadLineRef.current,
-        (projectedTarget.x + 1) * 0.5,
-        (1 - projectedTarget.y) * 0.5,
-        composerVcam.composerSettings.lookaheadTime > 0 &&
-          projectedTarget.z >= -1 && projectedTarget.z <= 1 &&
-          projectedTarget.x >= -1 && projectedTarget.x <= 1 &&
-          projectedTarget.y >= -1 && projectedTarget.y <= 1,
-        "lookahead"
-      );
-    } else {
-      updateDollyTargetOverlay(dollyTargetMarkerRef.current, dollyTargetLineRef.current, 0.5, 0.5, false);
-      updateDollyTargetOverlay(lookaheadMarkerRef.current, lookaheadLineRef.current, 0.5, 0.5, false, "lookahead");
-    }
-  });
-
-  return (
-    <>
-      <ambientLight intensity={0.6} />
-      <directionalLight position={[2, 3, 4]} intensity={1.2} />
-
-      {bezierPath && vertexPath ? (
-        <PathEditor
-          bezierPath={bezierPath}
-          vertexPath={vertexPath}
-          pathVersion={pathVersion}
-          pathStyle={pathStyle}
-          otherPaths={[...vertexPaths.entries()]
-            .filter(([, path]) => path !== vertexPath)
-            .map(([id, path]) => ({ id, vertexPath: path }))}
-          selectedHandleIndex={selectedHandleIndex}
-          selectedMidpointIndex={selectedMidpointIndex}
-          anchorScales={anchorScales}
-          useWorldSpaceGizmo={useWorldSpaceGizmo}
-          onSelectHandle={onSelectHandle}
-          onSelectMidpoint={onSelectMidpoint}
-          onMovePoint={onMovePoint}
-          onSetAnchorScale={onSetAnchorScale}
-          onRotateMidpointNormal={onRotateMidpointNormal}
-          onTransformingChange={onTransformingChange}
-          onClearSelection={() => {
-            onSelectHandle(null);
-            onSelectMidpoint(null);
-            onSelectVirtualCamera(null);
-          }}
-        />
-      ) : null}
-
-      <Activatable
-        id="turbine/Nacelle"
-        name="Turbine (spinning)"
-        selected={isSelected(selection, "object", "turbine/Nacelle")}
-        onSelect={() => onSelectEntity("object", "turbine/Nacelle")}
-        position={[-3.2, 1, -2.2]}
-        gizmoMode={objectGizmoMode}
-        onTransformingChange={onTransformingChange}
-      >
-        <SpinningTargetProbe
-          targetRegistry={targetRegistry}
-          id="turbine/Nacelle"
-          name="Turbine (spinning)"
-          position={[0, 0, 0]}
-          degPerSec={18}
-        />
-      </Activatable>
-      <DemoProps
-        selectedId={selectedIdOf(selection, "object")}
-        onSelect={(propId) => onSelectEntity("object", propId)}
-        gizmoMode={objectGizmoMode}
-        onTransformingChange={onTransformingChange}
-      />
-      {/* Animated GLB (CC0 Khronos Fox): baked clips Survey/Walk/Run driven by an
-          Animation track. Suspense-gated so the loading model doesn't block the scene. */}
-      <Suspense fallback={null}>
-        <GltfActivatable
-          id="fox"
-          src="/Fox.glb"
-          name="Fox (animated)"
-          selected={isSelected(selection, "object", "fox")}
-          onSelect={() => onSelectEntity("object", "fox")}
-          position={[3, 0, -2]}
-          scale={0.025}
-          gizmoMode={objectGizmoMode}
-          onTransformingChange={onTransformingChange}
-        />
-      </Suspense>
-
-      <EditorHelpers>
-      {dollies.map((dolly) => (
-        <CartGizmo
-          key={dolly.id}
-          framesRef={dollyFramesRef}
-          cartId={dolly.id}
-          name={dolly.name ?? dolly.id}
-          selected={isSelected(selection, "dolly", dolly.id)}
-          onSelect={() => onSelectEntity("dolly", dolly.id)}
-        />
-      ))}
-      {virtualCameras.map((virtualCamera) => {
-        const isSelected = virtualCamera.id === selectedVirtualCameraId;
-        const isActive = virtualCamera.id === virtualCameraActivation?.toId;
-        const snapshot = virtualCamera.snapshot;
-
-        if (virtualCamera.bodyType === "cart") {
-          return (
-            <CartVcamGlyphRig
-              key={virtualCamera.id}
-              framesRef={dollyFramesRef}
-              cartId={virtualCamera.cartId}
-              selected={isSelected}
-              offset={virtualCamera.cartOffset}
-              onOffsetChange={(cartOffset) => onUpdateCartOffset(virtualCamera.id, cartOffset)}
-              onTransformingChange={onTransformingChange}
-            >
-              <VirtualCameraGlyph
-                name={virtualCamera.name}
-                selected={isSelected}
-                active={isActive}
-                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
-              />
-            </CartVcamGlyphRig>
-          );
-        }
-
-        if (virtualCamera.bodyType === "orbit") {
-          const orbitTargetId = virtualCamera.orbitTargetId;
-          return (
-            <OrbitVcamGlyphRig
-              key={virtualCamera.id}
-              resolveTarget={() => (orbitTargetId ? targetRegistry.resolve(orbitTargetId) : { x: 0, y: 0, z: 0 })}
-              resolveOrientation={() =>
-                orbitTargetId ? targetRegistry.resolveOrientation(orbitTargetId) : null
-              }
-              binding={virtualCamera.orbitBinding}
-              azimuthDeg={virtualCamera.orbitAzimuthDeg}
-              elevationDeg={virtualCamera.orbitElevationDeg}
-              radius={virtualCamera.orbitRadius}
-              selected={isSelected}
-              onChange={(params) => onUpdateOrbitParams(virtualCamera.id, params)}
-              onTransformingChange={onTransformingChange}
-            >
-              <VirtualCameraGlyph
-                name={virtualCamera.name}
-                selected={isSelected}
-                active={isActive}
-                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
-              />
-            </OrbitVcamGlyphRig>
-          );
-        }
-
-        if (isSelected) {
-          return (
-            <PivotControls
-              key={virtualCamera.id}
-              {...VCAM_PIVOT_PROPS}
-              matrix={getSnapshotMatrix(snapshot)}
-              disableScaling
-              onDragStart={() => onTransformingChange(true)}
-              onDragEnd={() => onTransformingChange(false)}
-              onDrag={(matrix) => {
-                onUpdateVirtualCameraSnapshot(
-                  virtualCamera.id,
-                  updateSnapshotTransform(snapshot, matrix)
-                );
-              }}
-            >
-              <VirtualCameraGlyph
-                name={virtualCamera.name}
-                selected
-                active={isActive}
-                onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
-              />
-            </PivotControls>
-          );
-        }
-
-        return (
-          <group
-            key={virtualCamera.id}
-            position={[
-              snapshot.position.x,
-              snapshot.position.y,
-              snapshot.position.z
-            ]}
-            quaternion={[
-              snapshot.quaternion.x,
-              snapshot.quaternion.y,
-              snapshot.quaternion.z,
-              snapshot.quaternion.w
-            ]}
-          >
-            <VirtualCameraGlyph
-              name={virtualCamera.name}
-              selected={false}
-              active={isActive}
-              onSelect={() => onSelectVirtualCamera(virtualCamera.id)}
-            />
-          </group>
-        );
-      })}
-      {debugFrustum && hasPipSource ? <primitive object={frustumHelper} /> : null}
-      </EditorHelpers>
-
-      {debugPreview || playMode ? (
-        <DollyCameraPip
-          camera={pipCamera}
-          frustumHelper={frustumHelper}
-          hasSource={hasPipSource}
-          playMode={playMode}
-          showPip={debugPreview}
-        />
-      ) : null}
-    </>
-  );
-}
-
-const PIP_NO_SIGNAL_COLOR = new Color("#0a101c");
-const _pipClearScratch = new Color();
-
-function DollyCameraPip({
-  camera: dollyCamera,
-  frustumHelper,
-  hasSource,
-  playMode,
-  showPip
-}: {
-  camera: PerspectiveCamera;
-  frustumHelper: CameraHelper;
-  hasSource: boolean;
-  /** Play: the driven camera fills the main viewport, editor drops to the PiP. */
-  playMode: boolean;
-  /** Whether to draw the small inset at all ("Show camera PiP"). */
-  showPip: boolean;
-}) {
-  const { gl, scene, size } = useThree();
-
-  useFrame(({ camera: editorCamera }) => {
-    // Play mode promotes the driven camera to the main viewport (only when one
-    // actually drives it). The inset then shows the editor camera.
-    const play = playMode && hasSource;
-    const mainCamera = play ? dollyCamera : editorCamera;
-    const pipCamera = play ? editorCamera : dollyCamera;
-
-    // Full-viewport render. Hide the frustum helper while looking THROUGH the
-    // dolly camera (you're inside its own frustum).
-    gl.setScissorTest(false);
-    gl.setViewport(0, 0, size.width, size.height);
-    const hideFrustumMain = mainCamera === dollyCamera;
-    if (hideFrustumMain) frustumHelper.visible = false;
-    gl.render(scene, mainCamera);
-    if (hideFrustumMain) frustumHelper.visible = true;
-
-    if (!showPip) return; // Play mode with the inset hidden: main render only.
-
-    // PiP scissor region (bottom-right).
-    const width = Math.min(360, Math.max(220, size.width * 0.28));
-    const height = width / DOLLY_PIP_ASPECT;
-    const x = Math.max(DOLLY_PIP_MARGIN, size.width - width - DOLLY_PIP_MARGIN);
-    const y = DOLLY_PIP_MARGIN;
-
-    gl.clearDepth();
-    gl.setScissorTest(true);
-    gl.setScissor(x, y, width, height);
-    gl.setViewport(x, y, width, height);
-    const pipIsDolly = pipCamera === dollyCamera;
-    if (pipIsDolly && !hasSource) {
-      // No camera drives the PiP: paint a dark "no signal" panel instead of a
-      // view from an undriven camera.
-      const prevColor = gl.getClearColor(_pipClearScratch);
-      const prevAlpha = gl.getClearAlpha();
-      gl.setClearColor(PIP_NO_SIGNAL_COLOR, 1);
-      gl.clear(true, true, false);
-      gl.setClearColor(prevColor, prevAlpha);
-    } else {
-      if (pipIsDolly) frustumHelper.visible = false;
-      gl.render(scene, pipCamera);
-      if (pipIsDolly) frustumHelper.visible = true;
-    }
-    gl.setScissorTest(false);
-    gl.setViewport(0, 0, size.width, size.height);
-  }, 1);
-
-  return null;
-}
-
-// The PiP overlay chrome: the composer zone overview (dead/soft/hard) plus the
-// tracked-target and lookahead markers, drawn over the camera view that
-// DollyCameraPip renders into this region. With no source it's a slate "no
-// output" panel; the zones/markers only show when a composer vcam drives the PiP.
-function DollyPreviewChrome({
-  label,
-  hasSource,
-  composerActive,
-  composerSettings,
-  targetMarkerRef,
-  targetLineRef,
-  lookaheadMarkerRef,
-  lookaheadLineRef
-}: {
-  label: string;
-  hasSource: boolean;
-  composerActive: boolean;
-  composerSettings: ComposerSettings;
-  targetMarkerRef: { current: HTMLDivElement | null };
-  targetLineRef: { current: SVGLineElement | null };
-  lookaheadMarkerRef: { current: HTMLDivElement | null };
-  lookaheadLineRef: { current: SVGLineElement | null };
-}) {
-  const zones = getComposerZones(composerSettings);
-  const labelChip = (
-    <div
-      style={{
-        position: "absolute",
-        top: 8,
-        left: 8,
-        padding: "3px 7px",
-        borderRadius: 4,
-        background: "rgba(15, 23, 42, 0.72)",
-        color: hasSource ? "#f8fafc" : "#64748b",
-        fontSize: 11,
-        fontWeight: 700,
-        fontFamily: "ui-sans-serif, system-ui, sans-serif"
-      }}
-    >
-      {label}
-    </div>
-  );
-
-  return (
-    <div
-      style={{
-        position: "fixed",
-        right: DOLLY_PIP_MARGIN,
-        bottom: DOLLY_PIP_MARGIN,
-        zIndex: 9,
-        width: "min(360px, max(220px, 28vw))",
-        aspectRatio: "16 / 9",
-        pointerEvents: "none",
-        border: `2px solid ${hasSource ? "rgba(248, 250, 252, 0.92)" : "rgba(148, 163, 184, 0.35)"}`,
-        boxShadow: "0 18px 44px rgba(15, 23, 42, 0.28)",
-        background: hasSource ? "transparent" : "rgba(10, 16, 28, 0.55)",
-        boxSizing: "border-box"
-      }}
-    >
-      {composerActive ? (
-        <>
-          <DollyPipZone
-            width={zones.softZone.width}
-            height={zones.softZone.height}
-            centerX={composerSettings.screenX}
-            centerY={composerSettings.screenY}
-            color="rgba(6, 182, 212, 0.78)"
-            fill="rgba(6, 182, 212, 0.035)"
-          />
-          <DollyPipZone
-            width={zones.deadZone.width}
-            height={zones.deadZone.height}
-            centerX={composerSettings.screenX}
-            centerY={composerSettings.screenY}
-            color="rgba(249, 115, 22, 0.92)"
-            fill="rgba(249, 115, 22, 0.04)"
-          />
-          <svg
-            viewBox="0 0 100 100"
-            preserveAspectRatio="none"
-            style={{ position: "absolute", inset: 0, width: "100%", height: "100%", overflow: "visible" }}
-          >
-            <line ref={targetLineRef} x1="50" y1="50" x2="50" y2="50" stroke="rgba(6, 182, 212, 0.72)" strokeWidth="0.55" vectorEffect="non-scaling-stroke" />
-            <line ref={lookaheadLineRef} x1="50" y1="50" x2="50" y2="50" stroke="rgba(250, 204, 21, 0)" strokeWidth="0.55" strokeDasharray="3 2" vectorEffect="non-scaling-stroke" />
-          </svg>
-          <div
-            ref={targetMarkerRef}
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              width: 14,
-              height: 14,
-              transform: "translate(-50%, -50%)",
-              borderRadius: 999,
-              background: "#06b6d4",
-              border: "2px solid rgba(248, 250, 252, 0.95)",
-              boxShadow: "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)",
-              boxSizing: "border-box"
-            }}
-          />
-          <div
-            ref={lookaheadMarkerRef}
-            style={{
-              position: "absolute",
-              left: "50%",
-              top: "50%",
-              width: 10,
-              height: 10,
-              transform: "translate(-50%, -50%) rotate(45deg)",
-              background: "rgba(250, 204, 21, 0)",
-              border: "2px solid rgba(250, 204, 21, 0)",
-              boxShadow: "0 0 0 3px rgba(250, 204, 21, 0)",
-              boxSizing: "border-box"
-            }}
-          />
-        </>
-      ) : null}
-      {labelChip}
-    </div>
-  );
-}
-
-function updateDollyTargetOverlay(
-  marker: HTMLDivElement | null,
-  line: SVGLineElement | null,
-  x: number,
-  y: number,
-  visible: boolean,
-  kind: "target" | "lookahead" = "target"
-): void {
-  const clampedX = Math.max(0.02, Math.min(0.98, x));
-  const clampedY = Math.max(0.02, Math.min(0.98, y));
-  const xPercent = clampedX * 100;
-  const yPercent = clampedY * 100;
-
-  if (marker) {
-    marker.style.left = `${xPercent}%`;
-    marker.style.top = `${yPercent}%`;
-    if (kind === "lookahead") {
-      marker.style.opacity = visible ? "1" : "0";
-      marker.style.background = visible ? "rgba(250, 204, 21, 0.95)" : "rgba(250, 204, 21, 0)";
-      marker.style.borderColor = visible ? "rgba(15, 23, 42, 0.8)" : "rgba(250, 204, 21, 0)";
-      marker.style.boxShadow = visible
-        ? "0 0 0 3px rgba(250, 204, 21, 0.24), 0 0 16px rgba(250, 204, 21, 0.75)"
-        : "0 0 0 3px rgba(250, 204, 21, 0)";
-    } else {
-      marker.style.opacity = visible ? "1" : "0.42";
-      marker.style.background = visible ? "#06b6d4" : "rgba(6, 182, 212, 0.42)";
-      marker.style.boxShadow = visible
-        ? "0 0 0 4px rgba(6, 182, 212, 0.22), 0 0 18px rgba(6, 182, 212, 0.85)"
-        : "0 0 0 4px rgba(6, 182, 212, 0.12)";
-    }
-  }
-
-  if (line) {
-    line.setAttribute("x2", xPercent.toFixed(3));
-    line.setAttribute("y2", yPercent.toFixed(3));
-    line.setAttribute(
-      "stroke",
-      kind === "lookahead"
-        ? visible ? "rgba(250, 204, 21, 0.72)" : "rgba(250, 204, 21, 0)"
-        : visible ? "rgba(6, 182, 212, 0.72)" : "rgba(6, 182, 212, 0.3)"
-    );
-  }
-}
-
-function DollyPipZone({
-  width,
-  height,
-  centerX,
-  centerY,
-  color,
-  fill
-}: {
-  width: number;
-  height: number;
-  centerX: number;
-  centerY: number;
-  color: string;
-  fill: string;
-}) {
-  return (
-    <div
-      style={{
-        position: "absolute",
-        left: `${50 + centerX * 100}%`,
-        top: `${50 - centerY * 100}%`,
-        width: `${width * 100}%`,
-        height: `${height * 100}%`,
-        transform: "translate(-50%, -50%)",
-        border: `1.5px solid ${color}`,
-        background: fill,
-        boxSizing: "border-box"
-      }}
-    />
-  );
-}
-
 export function App() {
   // The scene is a portable RigDocument. Load it if present; otherwise migrate a
   // pre-format show once (read here, rewritten in the new format on first save).
-  const loadedScene = useMemo<DemoScene | null>(() => {
-    try {
-      const raw = localStorage.getItem(SCENE_STORAGE_KEY);
-      return raw ? deserializeScene(raw) : null;
-    } catch {
-      return null;
-    }
-  }, []);
+  const loadedScene = usePersistedScene(SCENE_STORAGE_KEY);
 
   const [bezierPath, setBezierPath] = useState<BezierPath | null>(() => {
     if (loadedScene) {
@@ -1323,7 +340,6 @@ export function App() {
       enterTimeline: () => setPipDriver("timeline"),
       leaveTimeline: () => setPipDriver("shots"),
       selectObject: (id: string) => select("object", id),
-      setGizmoMode: (mode: GizmoMode) => setGizmoMode(mode),
       clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
       readPose: (id: string) => readObjectPose(id),
       // Pose signature over every node's world position + orientation, so a different
@@ -1612,7 +628,7 @@ export function App() {
   );
   // Persist the scene as a portable RigDocument. Each dolly carries its own
   // free-run speed (per-cart), so a loaded document plays faithfully.
-  const currentScene: DemoScene = {
+  const currentScene = useMemo<DemoScene>(() => ({
     paths,
     activePathId,
     dollies,
@@ -1623,12 +639,8 @@ export function App() {
     fovAnimations,
     targets: pointTargets,
     extraTracks
-  };
-  useEffect(() => {
-    localStorage.setItem(SCENE_STORAGE_KEY, serializeScene(currentScene));
-    // currentScene is rebuilt each render from the deps below.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, paths, activePathId, pointTargets, extraTracks]);
+  }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks]);
+  useSceneAutosave(SCENE_STORAGE_KEY, currentScene);
 
   // Replaces the whole editing state from a loaded/parsed scene.
   function applyScene(scene: DemoScene): void {
@@ -1651,19 +663,12 @@ export function App() {
   }
 
   function exportScene(): void {
-    const blob = new Blob([serializeScene(currentScene)], { type: "application/json" });
-    const url = URL.createObjectURL(blob);
-    const anchor = document.createElement("a");
-    anchor.href = url;
-    anchor.download = "scene.json";
-    anchor.click();
-    URL.revokeObjectURL(url);
+    downloadScene(currentScene);
   }
 
   function importSceneFile(file: File): void {
-    file
-      .text()
-      .then((text) => applyScene(deserializeScene(text)))
+    readSceneFile(file)
+      .then(applyScene)
       .catch((error: unknown) => console.error("Scene import failed", error));
   }
 
@@ -1762,8 +767,6 @@ export function App() {
   const [, setPeaksTick] = useState(0);
   const [pathStyle, setPathStyle] = useState<"line" | "rail">("rail");
   const [isTransforming, setIsTransforming] = useState(false);
-  // Active transform-gizmo mode for the selected object (null hides the gizmo).
-  const [gizmoMode, setGizmoMode] = useState<GizmoMode>("translate");
   // Reads a bound object's live local transform (rotation in Euler degrees) for "key pose".
   const readObjectPose = (objectId: string) => {
     const object = activatablesRegistry.resolve(objectId);
@@ -1841,9 +844,7 @@ export function App() {
       },
       fovAnimations
     );
-    // Extend the clock to cover activation/audio clips that outlast the camera/cart
-    // content. (The exported RigDocument timeline is intentionally NOT extended —
-    // extra tracks persist in a separate sidecar, not the portable document.)
+    // Extend the live clock to cover media/object clips that outlast camera/cart content.
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration]);
@@ -2266,7 +1267,7 @@ export function App() {
     const id = `aud-${Date.now().toString(36)}`;
     setExtraTracks((prev) => ({
       ...prev,
-      audioTracks: [...prev.audioTracks, { id, name: `Audio ${prev.audioTracks.length + 1}`, clips: [], gain: 1 }]
+      audioTracks: [...prev.audioTracks, { type: "audio", id, name: `Audio ${prev.audioTracks.length + 1}`, clips: [], gain: 1 }]
     }));
     select("audio", id);
   }
@@ -2283,6 +1284,7 @@ export function App() {
       name: track.name ?? "Audio",
       color: "rgba(167, 139, 250, 0.6)",
       icon: <IconVolume size={14} />,
+      crossfade: true,
       clips: track.clips.map((c) => {
         const peaks = clipPeaks(c.src, c.offset ?? 0, c.duration, () => setPeaksTick((t) => t + 1));
         // Waveform (envelope) with the volume envelope (line) drawn over it, DAW-style.
@@ -2304,6 +1306,7 @@ export function App() {
       name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Animation",
       color: "rgba(52, 211, 153, 0.6)",
       icon: <IconVideo size={14} />,
+      crossfade: true,
       clips: track.clips.map((c) => ({ id: c.id, start: c.start, end: c.end, label: c.clipName }))
     })),
     ...extraTracks.transformTracks.map((track) => {
@@ -2619,7 +1622,7 @@ export function App() {
           }
           object={
             selectedObject
-              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, getPlayhead: () => timelinePlayerRef.current.time, readObjectPose, gizmoMode, onGizmoModeChange: setGizmoMode, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
+              ? { objectId: selectedObject.id, objectName: selectedObject.name, extraTracks, activatables, getPlayhead: () => timelinePlayerRef.current.time, readObjectPose, onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })) }
               : null
           }
           audio={
@@ -2727,7 +1730,7 @@ export function App() {
           mouseButtons={{ MIDDLE: MOUSE.PAN, RIGHT: MOUSE.ROTATE }}
         />
         <ActivatablesProvider registry={activatablesRegistry}>
-        <Scene
+        <DemoSceneViewport
           bezierPath={bezierPath}
           vertexPath={vertexPath}
           targetRegistry={targetRegistry}
@@ -2741,7 +1744,6 @@ export function App() {
           audioTracks={extraTracks.audioTracks}
           animationTracks={extraTracks.animationTracks}
           transformTracks={extraTracks.transformTracks}
-          gizmoMode={gizmoMode}
           audioPlayer={audioPlayer}
           selection={selection}
           onSelectEntity={select}
