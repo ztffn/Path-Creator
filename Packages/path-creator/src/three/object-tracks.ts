@@ -136,8 +136,12 @@ export class AnimationTrackDirector {
         }
         action.setEffectiveWeight(want.weight);
         const duration = action.getClip().duration;
+        // This drive scrubs with mixer.update(0); three.js skips loop wrapping on a
+        // zero delta (AnimationAction._updateTime early-returns), so a looping clip
+        // whose local time runs past its duration would clamp to the final keyframe
+        // and freeze after one cycle. Wrap into [0, duration) here instead.
         action.time = want.loop
-          ? want.localTime
+          ? (duration > 0 ? want.localTime % duration : 0)
           : Math.min(want.localTime, Math.max(0, duration - CLAMP_EPSILON));
       }
       binding.mixer.update(0);

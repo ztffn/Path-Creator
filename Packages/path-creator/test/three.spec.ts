@@ -1493,6 +1493,21 @@ describe("portable object track directors", () => {
     expect(restored).toBe(1);
   });
 
+  it("wraps a looping clip's local time into [0, duration) (mixer.update(0) never wraps)", () => {
+    const object = new Group();
+    const mixer = new AnimationMixer(object);
+    const clip = new AnimationClip("Run", 2, [new NumberKeyframeTrack(".position[x]", [0, 2], [0, 2])]);
+    const action = mixer.clipAction(clip);
+    const registry = new ObjectBindingRegistry();
+    registry.register("fox", object, { mixer, actions: new Map([["Run", action]]), clips: ["Run"], resetToRest: () => {} });
+    const director = new AnimationTrackDirector();
+    // Window 0..8 is longer than the 2s clip, so at t=5 the native local time (5)
+    // runs past the clip; a looping action must keep cycling, not clamp to the end.
+    director.sync(registry, [{ type: "animation", id: "track", objectId: "fox", clips: [{ id: "clip", clipName: "Run", start: 0, end: 8 }] }], true, 5);
+    expect(action.isRunning()).toBe(true);
+    expect(action.time).toBeCloseTo(1, 6); // 5 % 2
+  });
+
   it("restores a transform after timeline driving ends", () => {
     const object = new Group();
     object.position.set(4, 5, 6);
