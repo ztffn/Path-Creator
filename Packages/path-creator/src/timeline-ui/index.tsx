@@ -407,7 +407,12 @@ export function TimelineLanes({
           background: t.panelBackground,
           color: t.text,
           fontFamily: t.fontFamily,
-          border: `1px solid ${t.panelBorder}`
+          border: `1px solid ${t.panelBorder}`,
+          // Text selection anchors at mousedown; making the whole lane
+          // non-selectable means grabbing the scrubber (or dragging a clip)
+          // never starts a page-text selection that fights the drag.
+          userSelect: "none",
+          WebkitUserSelect: "none"
         }}
       >
         <div
