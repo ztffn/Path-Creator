@@ -132,6 +132,9 @@ export function Activatable({
   const registry = useActivatablesRegistry();
   const groupRef = useRef<Group>(null);
   const [bounds, setBounds] = useState<{ center: [number, number, number]; size: [number, number, number] } | null>(null);
+  // Whether this object contains a SkinnedMesh — such meshes don't reliably register
+  // raycast clicks, so they get an invisible box collider (independent of any track).
+  const [hasSkinned, setHasSkinned] = useState(false);
   // Placement values arrive as fresh arrays each render; key by value so the effect
   // re-applies only on a real change (never clobbering a gizmo/director pose).
   const placeKey = JSON.stringify({ position, rotation, scale });
@@ -142,10 +145,20 @@ export function Activatable({
     if (rotation) group.rotation.set(rotation[0], rotation[1], rotation[2]);
     if (scale !== undefined) typeof scale === "number" ? group.scale.setScalar(scale) : group.scale.set(scale[0], scale[1], scale[2]);
     group.updateWorldMatrix(true, true);
+    // Pose the skeleton before measuring: skeleton.update() normally runs in the render
+    // loop, so on mount a GLB's bones are unset and its vertices collapse to the origin.
+    let sawSkinned = false;
+    group.traverse((node) => {
+      const skinned = node as { isSkinnedMesh?: boolean; skeleton?: { update: () => void } };
+      if (skinned.isSkinnedMesh) { sawSkinned = true; skinned.skeleton?.update(); }
+    });
+    if (sawSkinned) setHasSkinned(true);
     const unregister = registry.register(id, group, name ?? id, animation);
     // Measure in the group's LOCAL frame (world box mapped back through the group's
-    // inverse), so a placed/scaled group still outlines correctly as a child.
-    const box = new Box3().setFromObject(group);
+    // inverse), so a placed/scaled group still outlines correctly as a child. precise=true
+    // walks getVertexPosition (bone-transformed on SkinnedMesh) so a posed GLB measures its
+    // real extent, not the degenerate un-skinned box.
+    const box = new Box3().setFromObject(group, true);
     if (!box.isEmpty()) {
       box.applyMatrix4(new Matrix4().copy(group.matrixWorld).invert());
       const c = box.getCenter(new Vector3());
@@ -167,6 +180,10 @@ export function Activatable({
     <>
     <group ref={groupRef} {...(onSelect && { onPointerDown: (event: { stopPropagation: () => void }) => { event.stopPropagation(); onSelect(); } })}>
       {children}
+      {/* A GLB's SkinnedMesh doesn't reliably register raycast clicks, so animated
+          models get an invisible box collider at their bounds — the reliable click
+          target the plain box-mesh objects already have. Bubbles onPointerDown up. */}
+      {hasSkinned && bounds ? <HitProxy center={bounds.center} size={bounds.size} /> : null}
       {selected && bounds ? <SelectionBox center={bounds.center} size={bounds.size} /> : null}
     </group>
     {gizmoActive && groupRef.current ? (
@@ -184,6 +201,16 @@ export function Activatable({
       />
     ) : null}
     </>
+  );
+}
+
+/** Invisible-but-raycastable box collider so GLB models are click-selectable. */
+function HitProxy({ center, size }: { center: [number, number, number]; size: [number, number, number] }) {
+  return (
+    <mesh position={center}>
+      <boxGeometry args={size} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>
   );
 }
 
