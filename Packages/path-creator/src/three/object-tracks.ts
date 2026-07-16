@@ -141,7 +141,7 @@ export class AnimationTrackDirector {
         // whose local time runs past its duration would clamp to the final keyframe
         // and freeze after one cycle. Wrap into [0, duration) here instead.
         action.time = want.loop
-          ? (duration > 0 ? want.localTime % duration : 0)
+          ? (duration > 0 ? ((want.localTime % duration) + duration) % duration : 0)
           : Math.min(want.localTime, Math.max(0, duration - CLAMP_EPSILON));
       }
       binding.mixer.update(0);

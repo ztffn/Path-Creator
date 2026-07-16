@@ -434,7 +434,9 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     colors: AXIS_COLORS,
                     componentLabels: ["x", "y", "z"],
                     keys: track[c.key] ?? [],
-                    onChange: (next) => setChannel(track, c.key, toTransformKeys(next))
+                    onChange: (next) => setChannel(track, c.key, toTransformKeys(next)),
+                    // Rotation slerps with one shared easing, so per-axis tangents don't apply.
+                    tangents: c.key !== "rotation"
                   }))}
                   timeStart={0}
                   timeEnd={end}

@@ -45,6 +45,12 @@ export interface CurveChannel {
   componentLabels?: string[];
   keys: CurveChannelKey[];
   onChange: (keys: CurveChannelKey[]) => void;
+  /**
+   * Whether per-component tangent handles are editable (default true). Set false for
+   * channels the runtime does not ease per-axis (e.g. rotation, which slerps with a
+   * single shared easing) — otherwise dragged tangents would be silently discarded.
+   */
+  tangents?: boolean;
 }
 
 export interface KeyframeCurveEditorTheme {
@@ -212,10 +218,22 @@ export function KeyframeCurveEditor({
     setHandleDrag(target);
   }
 
-  function addKeyAt(channelIndex: number, event: ReactMouseEvent<SVGSVGElement>): void {
-    const channel = channels[channelIndex];
-    if (!channel) return;
+  function addKeyAt(event: ReactMouseEvent<SVGSVGElement>): void {
+    if (channels.length === 0 || !svgRef.current) return;
     const time = clamp(pointerTime(event), timeStart, timeEnd);
+    // Add to the channel whose curve is nearest the click (not always channel 0).
+    const clickY = event.clientY - svgRef.current.getBoundingClientRect().top;
+    let best = 0;
+    let bestDist = Infinity;
+    channels.forEach((ch, ci) => {
+      ch.colors.forEach((_c, comp) => {
+        const dist = Math.abs(pyFor(ci, sampleComponent(ch.keys, comp, time)) - clickY);
+        if (dist < bestDist) { bestDist = dist; best = ci; }
+      });
+    });
+    const channel = channels[best]!;
+    // One key per time, matching core insertTransformKey — no duplicate-time keys.
+    if (channel.keys.some((k) => Math.abs(k.time - time) < 1e-6)) return;
     const componentCount = channel.keys[0]?.value.length ?? channel.colors.length;
     // Seed the new key from the current curve at this time, so adding never jumps the motion.
     const value = Array.from({ length: componentCount }, (_c, comp) => sampleComponent(channel.keys, comp, time));
@@ -241,7 +259,7 @@ export function KeyframeCurveEditor({
         onPointerMove={onPointerMove}
         onPointerUp={() => { setDrag(null); setHandleDrag(null); }}
         onPointerLeave={() => { setDrag(null); setHandleDrag(null); }}
-        onDoubleClick={(e) => addKeyAt(0, e)}
+        onDoubleClick={(e) => addKeyAt(e)}
       >
         {gridV.map((g) => (
           <line key={g} x1={px(lerp(xAxis.min, xAxis.max, g))} y1={0} x2={px(lerp(xAxis.min, xAxis.max, g))} y2={height} stroke={t.grid} strokeWidth={1} vectorEffect="non-scaling-stroke" />
@@ -286,7 +304,7 @@ export function KeyframeCurveEditor({
           if (!selected) return null;
           const ch = channels[selected.channel];
           const key = ch?.keys[selected.keyIndex];
-          if (!ch || !key) return null;
+          if (!ch || !key || ch.tangents === false) return null;
           const ci = selected.channel;
           const c = selected.component;
           const color = ch.colors[c] ?? t.anchor;
