@@ -71,6 +71,8 @@ import {
   evaluateAudio,
   resizeAudioClip,
   maxClipEnd,
+  snapSeconds,
+  transformBlock,
   transformKeyTimes,
   insertTransformKey,
   normalizeExtraTracks,
@@ -1271,6 +1273,9 @@ export function App() {
     }));
     select("audio", id);
   }
+  // Padding (s) so a short/zero-span or keyless transform track still shows a
+  // visible, grabbable block rather than an invisible far-left sliver.
+  const TRANSFORM_MIN_WIDTH = 2;
   const extraLanes = [
     ...extraTracks.activationTracks.map((track) => ({
       id: `act:${track.id}`,
@@ -1311,15 +1316,19 @@ export function App() {
     })),
     ...extraTracks.transformTracks.map((track) => {
       const label = [track.position && "P", track.rotation && "R", track.scale && "S"].filter(Boolean).join("/");
-      const times = [...new Set(transformKeyTimes(track))].sort((a, b) => a - b);
+      const block = transformBlock(track, TRANSFORM_MIN_WIDTH);
       return {
         id: `xf:${track.id}`,
-        name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Transform",
+        name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Motion",
         color: "rgba(251, 191, 36, 0.6)",
         icon: <IconTrack size={14} />,
-        // Each keyframe time is a small draggable marker (drag retimes all keys at that
-        // time); the first carries the channel label. Click empty lane to insert a key.
-        clips: times.map((tm, i) => ({ id: `${tm}`, start: tm, end: tm + 0.12, ...(i === 0 && label ? { label } : {}) }))
+        // One block per track: a faint value line per channel plus a diamond marker per
+        // key. Short/zero-span tracks are padded to TRANSFORM_MIN_WIDTH so they stay
+        // visible and grabbable; drag the body to shift all keys. A keyless track draws
+        // a faint placeholder block so the lane reads as an empty, clickable target.
+        clips: block
+          ? [{ id: track.id, start: block.start, end: block.end, ...(label && { label }), series: block.series }]
+          : [{ id: track.id, start: 0, end: TRANSFORM_MIN_WIDTH, label: "no keys — ◆ key pose", series: [{ kind: "markers" as const, points: [0], color: "rgba(255,255,255,0.28)" }] }]
       };
     })
   ];
@@ -1381,26 +1390,26 @@ export function App() {
         )
       }));
     } else if (laneId.startsWith("xf:")) {
-      // Each transform-lane marker is a keyframe time; dragging it retimes every key at
-      // that time (across channels). clipId is the marker's original time.
+      // One block per track; dragging the body shifts every key (across channels) by
+      // the same delta, preserving spacing. clipId is the track id; resize (end change
+      // with start fixed) yields a zero delta, so it's inert. Keys never go below 0.
       const trackId = laneTrackId(laneId);
-      const oldTime = Number(clipId);
-      const newTime = Math.max(0, Math.round(start * 4) / 4);
-      if (newTime === oldTime) return;
-      // Move every key at oldTime to newTime; if a key already sits at newTime, the
-      // moved one overwrites it (drop the collision) so two keys never share a time.
-      const retime = (keys: TransformKey[]): TransformKey[] => {
-        const moved = keys.map((k) => (Math.abs(k.time - oldTime) < 1e-6 ? { ...k, time: newTime } : k));
-        const byTime = new Map(moved.map((k) => [k.time, k]));
-        return [...byTime.values()].sort((a, b) => a.time - b.time);
-      };
       setExtraTracks((prev) => ({
         ...prev,
-        transformTracks: prev.transformTracks.map((t) =>
-          t.id === trackId
-            ? { ...t, ...(t.position && { position: retime(t.position) }), ...(t.rotation && { rotation: retime(t.rotation) }), ...(t.scale && { scale: retime(t.scale) }) }
-            : t
-        )
+        transformTracks: prev.transformTracks.map((t) => {
+          if (t.id !== trackId) return t;
+          const times = transformKeyTimes(t);
+          if (!times.length) return t;
+          const delta = Math.max(snapSeconds(start) - Math.min(...times), -Math.min(...times));
+          if (Math.abs(delta) < 1e-6) return t;
+          const shift = (keys?: TransformKey[]) => keys?.map((k) => ({ ...k, time: k.time + delta }));
+          return {
+            ...t,
+            ...(t.position && { position: shift(t.position)! }),
+            ...(t.rotation && { rotation: shift(t.rotation)! }),
+            ...(t.scale && { scale: shift(t.scale)! })
+          };
+        })
       }));
     }
   };

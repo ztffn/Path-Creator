@@ -50,7 +50,7 @@ export function ObjectInspector({ objectId, objectName, extraTracks, activatable
       <div style={{ fontSize: 12, color: "#94a3b8", marginTop: 4 }}>
         {boundXf.length === 0
           ? "Keyframe position / rotation / scale over time — no baked clip needed."
-          : `${boundXf.length} transform track${boundXf.length === 1 ? "" : "s"} keying ${objectName}.`}
+          : `Animating ${objectName}'s position / rotation / scale (${boundXf.length} track${boundXf.length === 1 ? "" : "s"}).`}
       </div>
       <TransformTracksEditor
         transformTracks={boundXf}
@@ -64,7 +64,7 @@ export function ObjectInspector({ objectId, objectName, extraTracks, activatable
         style={{ justifySelf: "start" }}
         onClick={() => onChange({ transformTracks: [...extraTracks.transformTracks, newTransformTrack(objectId)] })}
       >
-        Add transform track
+        Add Motion track
       </button>
       {clips.length > 0 ? (
         <>

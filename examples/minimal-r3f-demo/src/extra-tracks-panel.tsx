@@ -4,9 +4,9 @@
 // are number-input rows (start/end) like the dolly-runs editor. Controlled — each
 // calls onChange with only the ExtraTracks slice it owns (merged at the App level,
 // so track kinds it doesn't touch survive). The bottom TimelineLanes plays/scrubs it.
-import type { CSSProperties } from "react";
+import { useState, type CSSProperties } from "react";
 import { EASING_PRESETS, type Easing, type EasingCurve } from "@huma/path-creator/core";
-import { EasingEditor } from "@huma/path-creator/timeline-ui";
+import { EasingEditor, KeyframeCurveEditor, type CurveChannelKey } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
 import type { ActivatableInfo } from "./activatables";
 import {
@@ -310,6 +310,14 @@ const CHANNELS: { key: "position" | "rotation" | "scale"; label: string; default
   { key: "scale", label: "scale", defaultValue: [1, 1, 1], step: 0.1 }
 ];
 
+// Per-axis curve colors for the position graph (x = red, y = green, z = blue),
+// matching the timeline block sparkline so the two views read as the same data.
+const POSITION_AXIS_COLORS = ["rgba(248,113,113,0.9)", "rgba(74,222,128,0.9)", "rgba(96,165,250,0.9)"];
+
+/** Coerce the generic curve-editor keys back into the track's [x,y,z] TransformKey shape. */
+const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
+  keys.map((k) => ({ time: k.time, value: [k.value[0] ?? 0, k.value[1] ?? 0, k.value[2] ?? 0] as [number, number, number], ...(k.easing !== undefined && { easing: k.easing }) }));
+
 /** A bound object's live local transform (rotation in Euler degrees), for "key pose". */
 export interface ObjectPose {
   position: [number, number, number];
@@ -330,6 +338,10 @@ export interface TransformEditorProps {
 }
 
 export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead, readObjectPose }: TransformEditorProps) {
+  // Which tracks have their raw per-axis number tables expanded. Default collapsed:
+  // the primary flow is "◆ key pose @ playhead"; the tables are the fine-tune escape hatch.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string): void => setExpanded((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
   const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
   const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
   // Snapshot the gizmo-posed transform at the playhead — into the channels the track
@@ -352,7 +364,10 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      {transformTracks.map((track) => (
+      {transformTracks.map((track) => {
+        const allTimes = [...new Set([...(track.position ?? []), ...(track.rotation ?? []), ...(track.scale ?? [])].map((k) => k.time))].sort((a, b) => a - b);
+        const isExpanded = expanded.has(track.id);
+        return (
         <div key={track.id} style={{ display: "grid", gap: 4 }}>
           <div style={headerRow}>
             <select style={{ flex: 1 }} value={track.objectId} title="Bound object" onChange={(e) => patch(track.id, { objectId: e.target.value })}>
@@ -363,16 +378,37 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 </option>
               ))}
             </select>
-            {readObjectPose && getPlayhead ? (
-              <button style={iconBtn} title="Snapshot the gizmo-posed transform as keys at the playhead" onClick={() => keyPose(track)}>
-                ◆ key pose
-              </button>
-            ) : null}
             <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(transformTracks.filter((t) => t.id !== track.id))}>
               ×
             </button>
           </div>
-          {CHANNELS.map(({ key, label, defaultValue, step }) => {
+          {readObjectPose && getPlayhead ? (
+            <button style={{ justifySelf: "start" }} title="Snapshot the object's current position, rotation and scale as keyframes at the playhead" onClick={() => keyPose(track)}>
+              ◆ Key pose @ playhead
+            </button>
+          ) : null}
+          {track.position && track.position.length > 0 ? (
+            <KeyframeCurveEditor
+              channels={[{
+                id: `${track.id}-pos`,
+                colors: POSITION_AXIS_COLORS,
+                componentLabels: ["x", "y", "z"],
+                keys: track.position,
+                onChange: (next) => setChannel(track, "position", toTransformKeys(next))
+              }]}
+              timeStart={0}
+              timeEnd={Math.max(2, Math.max(...track.position.map((k) => k.time)) + 2, (getPlayhead?.() ?? 0) + 1)}
+              {...(getPlayhead && { playhead: getPlayhead() })}
+              height={150}
+            />
+          ) : null}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.42)", paddingLeft: 10 }}>
+            <span>{allTimes.length ? `keys: ${allTimes.map((t) => `${t.toFixed(1)}s`).join(", ")}` : "no keys yet — use ◆ Key pose (or expand to add manually)"}</span>
+            <button style={{ marginLeft: "auto", ...iconBtn }} title="Show/hide the per-axis keyframe values" onClick={() => toggleExpanded(track.id)}>
+              {isExpanded ? "edit values ▴" : "edit values ▾"}
+            </button>
+          </div>
+          {isExpanded ? CHANNELS.map(({ key, label, defaultValue, step }) => {
             const keys = track[key] ?? [];
             // Seed a new key from the object's CURRENT value for this channel (so it
             // doesn't snap to origin/unit-scale on playback — the group carries the
@@ -423,12 +459,13 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 ))}
               </div>
             );
-          })}
+          }) : null}
         </div>
-      ))}
+        );
+      })}
       {hideAdd ? null : (
         <button disabled={activatables.length === 0} onClick={() => emit([...transformTracks, newTransformTrack(activatables[0]?.id ?? "")])}>
-          Add Transform Track
+          Add Motion Track
         </button>
       )}
     </div>

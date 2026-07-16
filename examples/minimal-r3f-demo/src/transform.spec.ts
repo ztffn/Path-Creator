@@ -3,7 +3,7 @@
 // present-channel-only output, channel-wise merge across tracks, and scrub
 // determinism. Plus the span/bounds helpers used by the timeline lane.
 import { describe, expect, it } from "vitest";
-import { evaluateTransform, transformSpan, maxClipEnd, insertTransformKey, upsertTransformKey, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
+import { evaluateTransform, transformSpan, transformBlock, maxClipEnd, insertTransformKey, upsertTransformKey, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
 
 const track = (over: Partial<TransformTrack> = {}): TransformTrack => ({ type: "transform", id: "t", objectId: "obj", ...over });
 
@@ -69,6 +69,51 @@ describe("transformSpan / maxClipEnd", () => {
   it("maxClipEnd includes transform key times", () => {
     const tracks = { ...EMPTY_EXTRA_TRACKS, transformTracks: [track({ rotation: [{ time: 7, value: [0, 0, 0] }] })] };
     expect(maxClipEnd(tracks)).toBe(7);
+  });
+});
+
+describe("transformBlock (timeline lane block)", () => {
+  it("is null for an empty track", () => {
+    expect(transformBlock(track())).toBeNull();
+  });
+
+  it("spans first→last key and marks the union of key times (normalized 0..1)", () => {
+    const t = track({ position: [{ time: 2, value: [0, 0, 0] }, { time: 6, value: [8, 0, 0] }], scale: [{ time: 4, value: [1, 1, 1] }] });
+    const block = transformBlock(t, 0, 5);
+    expect(block?.start).toBe(2);
+    expect(block?.end).toBe(6);
+    expect(block?.channels).toEqual(["position", "scale"]);
+    const markers = block!.series.at(-1)!;
+    expect(markers.kind).toBe("markers");
+    expect(markers.points).toEqual([0, 0.5, 1]); // times 2,4,6 over span [2,6]
+  });
+
+  it("draws position as three per-axis curves (x/y/z) plus the markers series", () => {
+    const t = track({ position: [{ time: 0, value: [0, 0, 0] }, { time: 4, value: [10, 0, 0] }] });
+    const block = transformBlock(t, 0, 5)!;
+    expect(block.series.map((s) => s.kind)).toEqual(["line", "line", "line", "markers"]);
+    // Shared value range across x/y/z: x moves 0->10 (fills 0..1), y and z are flat.
+    const [x, y, z] = block.series;
+    expect(Math.min(...x!.points)).toBeCloseTo(0, 6);
+    expect(Math.max(...x!.points)).toBeCloseTo(1, 6);
+    expect(y!.points.every((v) => v === 0)).toBe(true); // y constant at shared-range min
+    expect(z!.points.every((v) => v === 0)).toBe(true);
+    expect(new Set([x!.color, y!.color, z!.color]).size).toBe(3); // distinct RGB tints
+  });
+
+  it("draws no curves for a rotation/scale-only track — markers only", () => {
+    const block = transformBlock(track({ scale: [{ time: 3, value: [2, 2, 2] }] }), 2, 4)!;
+    expect(block.start).toBe(3);
+    expect(block.end).toBe(5); // padded 3 -> 3+minWidth
+    expect(block.series.map((s) => s.kind)).toEqual(["markers"]); // scale not curve-drawn
+    expect(block.series.at(-1)!.points).toEqual([0]); // key at start -> left edge, not centered
+  });
+
+  it("pads a short real span up to minWidth and keeps markers aligned to the padded width", () => {
+    const t = track({ position: [{ time: 0, value: [0, 0, 0] }, { time: 1, value: [4, 0, 0] }] });
+    const block = transformBlock(t, 4, 5)!; // real span 1 -> padded to 4
+    expect(block.end).toBe(4);
+    expect(block.series.at(-1)!.points).toEqual([0, 0.25]); // times 0,1 over displayed width 4
   });
 });
 
