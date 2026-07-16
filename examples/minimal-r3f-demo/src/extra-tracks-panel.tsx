@@ -5,7 +5,7 @@
 // calls onChange with only the ExtraTracks slice it owns (merged at the App level,
 // so track kinds it doesn't touch survive). The bottom TimelineLanes plays/scrubs it.
 import { useState, type CSSProperties } from "react";
-import { EASING_PRESETS, type Easing, type EasingCurve } from "@huma/path-creator/core";
+import { EASING_PRESETS, type AxisTangent, type Easing, type EasingCurve } from "@huma/path-creator/core";
 import { EasingEditor, KeyframeCurveEditor, type CurveChannelKey } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
 import type { ActivatableInfo } from "./activatables";
@@ -316,6 +316,9 @@ const CHANNELS: { key: "position" | "rotation" | "scale"; label: string; default
 const AXIS_COLORS = ["rgba(248,113,113,0.9)", "rgba(74,222,128,0.9)", "rgba(96,165,250,0.9)"];
 // Accent per channel for its toggle chip border.
 const CHANNEL_ACCENT: Record<"position" | "rotation" | "scale", string> = { position: "#60a5fa", rotation: "#34d399", scale: "#fbbf24" };
+// Distinct stroke style per channel so curves stay tellable apart when several channels
+// share the on-screen graph (they all reuse the same red/green/blue per-axis colors).
+const CHANNEL_DASH: Record<"position" | "rotation" | "scale", string | undefined> = { position: undefined, rotation: "5 4", scale: "1 4" };
 
 /** Coerce the generic curve-editor keys back into the track's [x,y,z] TransformKey shape. */
 const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
@@ -323,7 +326,7 @@ const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
     time: k.time,
     value: [k.value[0] ?? 0, k.value[1] ?? 0, k.value[2] ?? 0] as [number, number, number],
     ...(k.easing !== undefined && { easing: k.easing }),
-    ...(k.easingAxes && { easingAxes: [k.easingAxes[0] ?? "linear", k.easingAxes[1] ?? "linear", k.easingAxes[2] ?? "linear"] as [Easing, Easing, Easing] })
+    ...(k.tangentsAxes && { tangentsAxes: [k.tangentsAxes[0] ?? {}, k.tangentsAxes[1] ?? {}, k.tangentsAxes[2] ?? {}] as [AxisTangent, AxisTangent, AxisTangent] })
   }));
 
 /** A bound object's live local transform (rotation in Euler degrees), for "key pose". */
@@ -431,8 +434,10 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 <KeyframeCurveEditor
                   channels={shown.map((c) => ({
                     id: `${track.id}-${c.key}`,
+                    label: c.label,
                     colors: AXIS_COLORS,
                     componentLabels: ["x", "y", "z"],
+                    ...(CHANNEL_DASH[c.key] ? { dash: CHANNEL_DASH[c.key] as string } : {}),
                     keys: track[c.key] ?? [],
                     onChange: (next) => setChannel(track, c.key, toTransformKeys(next)),
                     // Rotation slerps with one shared easing, so per-axis tangents don't apply.
@@ -440,6 +445,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                   }))}
                   timeStart={0}
                   timeEnd={end}
+                  snap={0.25}
                   {...(getPlayhead && { playhead: getPlayhead() })}
                   height={150}
                 />
@@ -488,14 +494,18 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                           return { ...k, value };
                         }))} />
                     ))}
-                    <select value={typeof keyframe.easing === "string" ? keyframe.easing : "linear"} title="easing into this key" style={{ width: 92 }}
-                      onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, easing: e.target.value as Easing } : k)))}>
-                      {EASING_OPTIONS.map((p) => (
-                        <option key={p as string} value={p as string}>
-                          {p as string}
-                        </option>
-                      ))}
-                    </select>
+                    {key === "rotation" ? (
+                      // Rotation slerps with this shared easing. Position/scale are shaped by the
+                      // graph's bezier tangent handles instead, so no easing dropdown for them.
+                      <select value={typeof keyframe.easing === "string" ? keyframe.easing : "linear"} title="easing into this key" style={{ width: 92 }}
+                        onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, easing: e.target.value as Easing } : k)))}>
+                        {EASING_OPTIONS.map((p) => (
+                          <option key={p as string} value={p as string}>
+                            {p as string}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
                     <button className="pc-danger" style={iconBtn} title="Delete key" onClick={() => setChannel(track, key, keys.filter((_, j) => j !== i))}>
                       ×
                     </button>

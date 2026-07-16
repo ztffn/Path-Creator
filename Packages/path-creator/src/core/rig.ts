@@ -12,8 +12,9 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 
 // v4: embedded timeline v4 adds portable activation/audio/animation/transform tracks.
 // v5: embedded timeline v5 adds per-axis easing (TransformKey.easingAxes).
+// v6: embedded timeline v6 adds per-axis bezier tangents (TransformKey.tangentsAxes).
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 5;
+export const RIG_SCHEMA_VERSION = 6;
 
 export interface RigPathDefinition {
   id: string;

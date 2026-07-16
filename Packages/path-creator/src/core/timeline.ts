@@ -3,8 +3,9 @@
 // definition overrides such as retargets), cart distance keyframes, and
 // opaque host events. Pure data with no engine dependency; the evaluator
 // and player live in the timeline entry point.
-import { evaluateEasing, normalizeEasing, sampleEasingCurve } from "./easing";
+import { evaluateEasing, normalizeEasing, sampleEasingCurve, solveCubicBezierSegment } from "./easing";
 import type { Easing, EasingCurve } from "./easing";
+import { clamp } from "./vec3";
 import type { VirtualCameraBlendCurve, VirtualCameraDefinition, VirtualCameraLens } from "./virtual-camera";
 
 const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
@@ -13,7 +14,9 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 // (in addition to the named presets); legacy string easing stays valid.
 // v4: portable activation/audio/animation/transform tracks.
 // v5: per-axis easing (TransformKey.easingAxes) for independent position/scale tangents.
-export const TIMELINE_SCHEMA_VERSION = 5;
+// v6: position/scale interpolate as a real cubic bezier in (time, value) space via
+//     per-axis tangent handles (TransformKey.tangentsAxes); easingAxes retired for them.
+export const TIMELINE_SCHEMA_VERSION = 6;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -111,17 +114,25 @@ export interface AnimationClip {
 export interface AnimationTrack {
   type: "animation"; id: string; name?: string; objectId: string; clips: AnimationClip[];
 }
+/**
+ * One side of a per-axis cubic-bezier tangent handle, as an offset (Δtime, Δvalue)
+ * from the key point. `out` shapes the segment to the next key, `in` the segment from
+ * the previous key. Absent => the straight 1/3-chord tangent (a linear segment).
+ */
+export interface AxisTangent { in?: [number, number]; out?: [number, number]; }
+
 export interface TransformKey {
   time: number;
   value: [number, number, number];
-  /** Easing into this key. Shared across axes unless `easingAxes` overrides per axis. */
+  /** Easing into this key. Used for rotation's slerp timing; position/scale use `tangentsAxes`. */
   easing?: Easing;
   /**
-   * Per-axis easing into this key (x, y, z), for independent tangents on position/scale
-   * curves. When absent for an axis, falls back to `easing`. Rotation ignores this (it
-   * slerps with the single `easing` to keep the shortest-arc guarantee). Added in v5.
+   * Per-axis cubic-bezier tangent handles (x, y, z) in real (time, value) space, giving
+   * position/scale a true 2D bezier between keys — curves can bulge and stay C1-smooth
+   * through keys, independent of the endpoint value delta. Absent handles fall back to a
+   * straight tangent. Rotation ignores this (it slerps with the shared `easing`). Added in v6.
    */
-  easingAxes?: [Easing, Easing, Easing];
+  tangentsAxes?: [AxisTangent, AxisTangent, AxisTangent];
 }
 export interface TransformTrack {
   type: "transform"; id: string; name?: string; objectId: string;
@@ -196,8 +207,7 @@ export function normalizeTimelineEasing<T extends Timeline>(timeline: T): T {
     if (track.type === "transform") {
       const normalizeKeys = (keys?: TransformKey[]) => keys?.map((key) => ({
         ...key,
-        ...(key.easing !== undefined && { easing: normalizeEasing(key.easing) }),
-        ...(key.easingAxes && { easingAxes: key.easingAxes.map((e) => normalizeEasing(e)) as [Easing, Easing, Easing] })
+        ...(key.easing !== undefined && { easing: normalizeEasing(key.easing) })
       }));
       return { ...track, ...(track.position && { position: normalizeKeys(track.position)! }), ...(track.rotation && { rotation: normalizeKeys(track.rotation)! }), ...(track.scale && { scale: normalizeKeys(track.scale)! }) };
     }
@@ -303,25 +313,58 @@ function slerpQuat(a: Quat, b: Quat, t: number): Quat {
   const angle=Math.acos(dot), sin=Math.sin(angle), aWeight=Math.sin((1-t)*angle)/sin, bWeight=Math.sin(t*angle)/sin;
   return [a[0]*aWeight+x*bWeight,a[1]*aWeight+y*bWeight,a[2]*aWeight+z*bWeight,a[3]*aWeight+w*bWeight];
 }
-/** Easing into `key` for axis `axis`: the per-axis override if present, else the shared key easing. */
-export const axisEasing = (key: { easing?: Easing; easingAxes?: readonly Easing[] }, axis: number): Easing => key.easingAxes?.[axis] ?? key.easing ?? "linear";
 // Returns the bracketing keys and the RAW (un-eased) segment fraction; callers apply
-// easing (per-axis for position/scale, shared for rotation's slerp).
+// easing (rotation's shared slerp) or the per-axis bezier (position/scale).
 function segment(keys: readonly TransformKey[], t: number): { a: TransformKey; b?: TransformKey; localT: number } {
   if (t <= keys[0]!.time) return { a: keys[0]!, localT: 0 };
   for (let i=0;i<keys.length-1;i+=1) { const a=keys[i]!, b=keys[i+1]!; if (t<=b.time) { const span=b.time-a.time; return { a,b,localT:span>0?(t-a.time)/span:1}; } }
   return { a: keys.at(-1)!, localT: 0 };
 }
-// Position/scale ease each component independently (easingAxes), so x can ease unlike y/z.
+
+/** A key shape the per-component bezier sampler accepts (TransformKey and the editor's key both satisfy it). */
+export interface TransformKeyLike { time: number; value: readonly number[]; tangentsAxes?: readonly (AxisTangent | undefined)[]; }
+
+// One component's value along the cubic bezier between keys `a` and `b`, in real
+// (time, value) space: control points are the keys' tangent handles (default 1/3-chord
+// = straight). Handle time is clamped inside the segment so x stays monotonic for the solver.
+function bezierComponent(a: TransformKeyLike, b: TransformKeyLike, comp: number, t: number): number {
+  const dt = b.time - a.time;
+  const av = a.value[comp] ?? 0;
+  const bv = b.value[comp] ?? 0;
+  if (dt <= 0) return bv;
+  const out = a.tangentsAxes?.[comp]?.out;
+  const inn = b.tangentsAxes?.[comp]?.in;
+  // No authored handles => straight 1/3-chord bezier == a linear lerp; take the cheap
+  // path (no allocations, no solver) for the common untouched-key case on the hot path.
+  if (!out && !inn) return av + (bv - av) * ((t - a.time) / dt);
+  const c1 = { x: clamp(a.time + (out ? out[0] : dt / 3), a.time, b.time), y: av + (out ? out[1] : (bv - av) / 3) };
+  const c2 = { x: clamp(b.time + (inn ? inn[0] : -dt / 3), a.time, b.time), y: bv + (inn ? inn[1] : -(bv - av) / 3) };
+  return solveCubicBezierSegment({ x: a.time, y: av }, c1, c2, { x: b.time, y: bv }, t);
+}
+
+/**
+ * Value of `keys` component `comp` at time `t`: held before first / after last, cubic
+ * bezier between (the same math the transform evaluator plays). Exported so the curve
+ * editor and evaluator share ONE sampler and can never diverge.
+ */
+export function transformComponentAt(keys: readonly TransformKeyLike[], comp: number, t: number): number {
+  if (keys.length === 0) return 0;
+  if (t <= keys[0]!.time) return keys[0]!.value[comp] ?? 0;
+  for (let i = 0; i < keys.length - 1; i += 1) {
+    const a = keys[i]!;
+    const b = keys[i + 1]!;
+    if (t <= b.time) return bezierComponent(a, b, comp, t);
+  }
+  return keys[keys.length - 1]!.value[comp] ?? 0;
+}
+
+// Position/scale interpolate each component as an independent 2D cubic bezier, so a
+// curve can bulge between equal-value keys and stay smooth — unlike an eased lerp.
 function sampleVec(keys: readonly TransformKey[], t: number): [number,number,number] {
   const s = segment(keys, t);
   if (!s.b) return [...s.a.value];
   const a = s.a, b = s.b;
-  return [
-    lerp(a.value[0], b.value[0], evaluateEasing(s.localT, axisEasing(b, 0))),
-    lerp(a.value[1], b.value[1], evaluateEasing(s.localT, axisEasing(b, 1))),
-    lerp(a.value[2], b.value[2], evaluateEasing(s.localT, axisEasing(b, 2)))
-  ];
+  return [bezierComponent(a, b, 0, t), bezierComponent(a, b, 1, t), bezierComponent(a, b, 2, t)];
 }
 export function evaluateTransform(tracks: readonly TransformTrack[], t: number): Map<string, DesiredTransform> {
   const result=new Map<string,DesiredTransform>();

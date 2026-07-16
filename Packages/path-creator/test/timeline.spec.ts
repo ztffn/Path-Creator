@@ -17,6 +17,7 @@ import {
   evaluateAudio,
   evaluateTransform,
   normalizeTimelineEasing,
+  transformComponentAt,
   serializeRigCart,
   serializeRigPath,
   type CartFrame,
@@ -114,6 +115,39 @@ describe("portable object and media tracks", () => {
       { time: 0, value: [0, 0, 0] }, { time: 2, value: [4, 0, 0] }
     ] }], 1).get("fox");
     expect(value?.position).toEqual([2, 0, 0]);
+  });
+
+  it("transformComponentAt: straight-tangent default equals a linear lerp", () => {
+    const keys = [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 4, value: [8, 0, 0] as [number, number, number] }];
+    expect(transformComponentAt(keys, 0, 0)).toBeCloseTo(0, 6);
+    expect(transformComponentAt(keys, 0, 1)).toBeCloseTo(2, 6); // linear
+    expect(transformComponentAt(keys, 0, 3)).toBeCloseTo(6, 6);
+    // held before first / after last
+    expect(transformComponentAt(keys, 0, -1)).toBe(0);
+    expect(transformComponentAt(keys, 0, 9)).toBe(8);
+  });
+
+  it("transformComponentAt: a lifted tangent bulges between equal-value keys", () => {
+    // Both endpoints 0, but the out/in handles lift the curve — the eased-lerp model
+    // (value pinned to [a,b]) could never do this; the bezier can.
+    const keys = [
+      { time: 0, value: [0, 0, 0] as [number, number, number], tangentsAxes: [{ out: [0.7, 3] as [number, number] }, {}, {}] as const },
+      { time: 2, value: [0, 0, 0] as [number, number, number], tangentsAxes: [{ in: [-0.7, 3] as [number, number] }, {}, {}] as const }
+    ];
+    expect(transformComponentAt(keys, 0, 1)).toBeGreaterThan(1); // bulged above the flat endpoints
+    expect(transformComponentAt(keys, 1, 1)).toBeCloseTo(0, 6); // untouched axis stays flat
+  });
+
+  it("transformComponentAt matches evaluateTransform (editor draws what the runtime plays)", () => {
+    const position: [number, number, number][] = [[0, 0, 0], [10, 5, -2]];
+    const keys = [
+      { time: 0, value: position[0]!, tangentsAxes: [{ out: [0.5, 6] as [number, number] }, {}, {}] as const },
+      { time: 3, value: position[1]! }
+    ];
+    for (const t of [0.3, 1.1, 2.4]) {
+      const viaEval = evaluateTransform([{ type: "transform", id: "xf", objectId: "fox", position: keys }], t).get("fox")?.position;
+      for (let c = 0; c < 3; c += 1) expect(transformComponentAt(keys, c, t)).toBeCloseTo(viaEval![c]!, 6);
+    }
   });
 
   it("drops malformed persisted audio gain curves instead of crashing", () => {

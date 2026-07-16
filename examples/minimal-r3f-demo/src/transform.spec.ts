@@ -19,29 +19,43 @@ describe("evaluateTransform", () => {
     expect(evaluateTransform([t], 2).get("obj")?.position).toEqual([4, 2, 0]);
   });
 
-  it("applies the segment easing (easeInOut symmetric at midpoint = 0.5)", () => {
-    const t = track({ scale: [{ time: 0, value: [1, 1, 1] }, { time: 2, value: [3, 3, 3], easing: "easeInOut" }] });
+  it("scale interpolates linearly by default (straight-tangent bezier == lerp)", () => {
+    const t = track({ scale: [{ time: 0, value: [1, 1, 1] }, { time: 2, value: [3, 3, 3] }] });
     const s = evaluateTransform([t], 1).get("obj")?.scale;
-    expect(s?.[0]).toBeCloseTo(2, 5); // easeInOut(0.5)=0.5 -> lerp(1,3,0.5)=2
+    expect(s?.[0]).toBeCloseTo(2, 5); // default 1/3-chord tangents -> straight -> lerp(1,3,0.5)=2
   });
 
-  it("eases position axes independently via easingAxes (x eased, y/z linear fallback)", () => {
+  it("curves a position axis via per-axis bezier tangents (x bulges; y/z stay straight)", () => {
+    // x's out/in handles lift the control points above the chord -> the curve bulges above
+    // the linear 5 at the midpoint. y/z have no tangents -> straight -> 5.
     const t = track({ position: [
-      { time: 0, value: [0, 0, 0] },
-      { time: 2, value: [10, 10, 10], easing: "linear", easingAxes: ["hardIn", "linear", "linear"] }
+      { time: 0, value: [0, 0, 0], tangentsAxes: [{ out: [1, 8] }, {}, {}] },
+      { time: 2, value: [10, 10, 10], tangentsAxes: [{ in: [-1, 0] }, {}, {}] }
     ] });
     const p = evaluateTransform([t], 1).get("obj")?.position; // midpoint
-    expect(p?.[1]).toBeCloseTo(5, 5); // y: linear -> 5
-    expect(p?.[2]).toBeCloseTo(5, 5); // z: linear -> 5
-    expect(p?.[0]).toBeLessThan(4.5); // x: hardIn eases in slowly -> well below 5
+    expect(p?.[1]).toBeCloseTo(5, 5); // y: straight -> 5
+    expect(p?.[2]).toBeCloseTo(5, 5); // z: straight -> 5
+    expect(p?.[0]).toBeGreaterThan(6); // x: lifted tangent bulges above linear
   });
 
-  it("rotation ignores easingAxes and slerps with the shared easing", () => {
+  it("bezier tangents bulge a curve between equal-value keys (impossible with an eased lerp)", () => {
+    // Both endpoints are 1, but lifted tangents make the curve rise above 1 mid-segment —
+    // the capability an eased lerp (value pinned to [a,b]) fundamentally cannot express.
+    const t = track({ scale: [
+      { time: 0, value: [1, 1, 1], tangentsAxes: [{ out: [0.7, 1.5] }, {}, {}] },
+      { time: 2, value: [1, 1, 1], tangentsAxes: [{ in: [-0.7, 1.5] }, {}, {}] }
+    ] });
+    const s = evaluateTransform([t], 1).get("obj")?.scale;
+    expect(s?.[0]).toBeGreaterThan(1.3); // x bulges above the flat endpoints
+    expect(s?.[1]).toBeCloseTo(1, 5); // y: no tangent -> stays flat
+  });
+
+  it("rotation ignores tangentsAxes and slerps with the shared easing", () => {
     const t = track({ rotation: [
       { time: 0, value: [0, 0, 0] },
-      { time: 2, value: [0, 90, 0], easing: "linear", easingAxes: ["hardIn", "hardIn", "hardIn"] }
+      { time: 2, value: [0, 90, 0], easing: "linear", tangentsAxes: [{ out: [1, 50] }, { out: [1, 50] }, { out: [1, 50] }] }
     ] });
-    // If easingAxes were (wrongly) applied, the midpoint would be far from a linear slerp.
+    // If tangentsAxes were (wrongly) applied, the midpoint would be far from a linear slerp.
     const q = evaluateTransform([t], 1).get("obj")?.rotation; // ~45° about Y
     expect(q?.[1]).toBeCloseTo(Math.sin(Math.PI / 8), 4);
   });
