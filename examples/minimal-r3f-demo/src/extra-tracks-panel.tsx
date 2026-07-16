@@ -310,9 +310,12 @@ const CHANNELS: { key: "position" | "rotation" | "scale"; label: string; default
   { key: "scale", label: "scale", defaultValue: [1, 1, 1], step: 0.1 }
 ];
 
-// Per-axis curve colors for the position graph (x = red, y = green, z = blue),
-// matching the timeline block sparkline so the two views read as the same data.
-const POSITION_AXIS_COLORS = ["rgba(248,113,113,0.9)", "rgba(74,222,128,0.9)", "rgba(96,165,250,0.9)"];
+// Per-axis curve colors (x = red, y = green, z = blue), matching the timeline block
+// sparkline so the two views read as the same data. Used for every channel; the
+// channel toggles isolate which of position/rotation/scale is on-screen.
+const AXIS_COLORS = ["rgba(248,113,113,0.9)", "rgba(74,222,128,0.9)", "rgba(96,165,250,0.9)"];
+// Accent per channel for its toggle chip border.
+const CHANNEL_ACCENT: Record<"position" | "rotation" | "scale", string> = { position: "#60a5fa", rotation: "#34d399", scale: "#fbbf24" };
 
 /** Coerce the generic curve-editor keys back into the track's [x,y,z] TransformKey shape. */
 const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
@@ -342,6 +345,16 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
   // the primary flow is "◆ key pose @ playhead"; the tables are the fine-tune escape hatch.
   const [expanded, setExpanded] = useState<Set<string>>(new Set());
   const toggleExpanded = (id: string): void => setExpanded((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  // Which channels are drawn in each track's curve graph. Absent => default to the
+  // first keyed channel (position when present); toggles add/remove the rest.
+  const [shownChannels, setShownChannels] = useState<Record<string, Set<string>>>({});
+  const shownFor = (trackId: string, keyed: string[]): Set<string> => shownChannels[trackId] ?? new Set(keyed.slice(0, 1));
+  const toggleChannel = (trackId: string, key: string, keyed: string[]): void =>
+    setShownChannels((prev) => {
+      const cur = new Set(prev[trackId] ?? shownFor(trackId, keyed));
+      if (cur.has(key)) cur.delete(key); else cur.add(key);
+      return { ...prev, [trackId]: cur };
+    });
   const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
   const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
   // Snapshot the gizmo-posed transform at the playhead — into the channels the track
@@ -387,21 +400,45 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
               ◆ Key pose @ playhead
             </button>
           ) : null}
-          {track.position && track.position.length > 0 ? (
-            <KeyframeCurveEditor
-              channels={[{
-                id: `${track.id}-pos`,
-                colors: POSITION_AXIS_COLORS,
-                componentLabels: ["x", "y", "z"],
-                keys: track.position,
-                onChange: (next) => setChannel(track, "position", toTransformKeys(next))
-              }]}
-              timeStart={0}
-              timeEnd={Math.max(2, Math.max(...track.position.map((k) => k.time)) + 2, (getPlayhead?.() ?? 0) + 1)}
-              {...(getPlayhead && { playhead: getPlayhead() })}
-              height={150}
-            />
-          ) : null}
+          {(() => {
+            const keyed = CHANNELS.filter((c) => (track[c.key]?.length ?? 0) > 0);
+            if (keyed.length === 0) return null;
+            const keyedKeys = keyed.map((c) => c.key);
+            const shownSet = shownFor(track.id, keyedKeys);
+            const shown = keyed.filter((c) => shownSet.has(c.key));
+            const times = keyed.flatMap((c) => (track[c.key] ?? []).map((k) => k.time));
+            const end = Math.max(2, Math.max(0, ...times) + 2, (getPlayhead?.() ?? 0) + 1);
+            return (
+              <>
+                {keyed.length > 1 ? (
+                  <div style={{ display: "flex", gap: 4, paddingLeft: 10 }}>
+                    {keyed.map((c) => {
+                      const on = shownSet.has(c.key);
+                      return (
+                        <button key={c.key} title={`Show/hide ${c.key} curves`} onClick={() => toggleChannel(track.id, c.key, keyedKeys)}
+                          style={{ fontSize: 10, padding: "1px 7px", opacity: on ? 1 : 0.4, border: `1px solid ${CHANNEL_ACCENT[c.key]}`, borderRadius: 4, background: "transparent", color: "inherit", cursor: "pointer" }}>
+                          {c.key}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <KeyframeCurveEditor
+                  channels={shown.map((c) => ({
+                    id: `${track.id}-${c.key}`,
+                    colors: AXIS_COLORS,
+                    componentLabels: ["x", "y", "z"],
+                    keys: track[c.key] ?? [],
+                    onChange: (next) => setChannel(track, c.key, toTransformKeys(next))
+                  }))}
+                  timeStart={0}
+                  timeEnd={end}
+                  {...(getPlayhead && { playhead: getPlayhead() })}
+                  height={150}
+                />
+              </>
+            );
+          })()}
           <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.42)", paddingLeft: 10 }}>
             <span>{allTimes.length ? `keys: ${allTimes.map((t) => `${t.toFixed(1)}s`).join(", ")}` : "no keys yet — use ◆ Key pose (or expand to add manually)"}</span>
             <button style={{ marginLeft: "auto", ...iconBtn }} title="Show/hide the per-axis keyframe values" onClick={() => toggleExpanded(track.id)}>

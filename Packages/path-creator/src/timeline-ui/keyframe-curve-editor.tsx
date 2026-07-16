@@ -54,16 +54,14 @@ function sampleComponent(keys: CurveChannelKey[], comp: number, t: number): numb
   return keys[keys.length - 1]!.value[comp] ?? 0;
 }
 
-/** Auto-fit value range across every component of every channel, padded so curves don't touch the edges. */
-function fitValueAxis(channels: CurveChannel[]): Axis {
+/** Auto-fit value range across one channel's components, padded so curves don't touch the edges. */
+function fitChannelAxis(channel: CurveChannel): Axis {
   let min = Infinity;
   let max = -Infinity;
-  for (const channel of channels) {
-    for (const key of channel.keys) {
-      for (const v of key.value) {
-        if (v < min) min = v;
-        if (v > max) max = v;
-      }
+  for (const key of channel.keys) {
+    for (const v of key.value) {
+      if (v < min) min = v;
+      if (v > max) max = v;
     }
   }
   if (!Number.isFinite(min) || !Number.isFinite(max)) return { min: -1, max: 1 };
@@ -106,34 +104,35 @@ export function KeyframeCurveEditor({
   }, []);
 
   const xAxis: Axis = { min: timeStart, max: timeEnd || timeStart + 1 };
-  // Freeze the value range during a drag so the graph doesn't rescale under the cursor.
-  const yAxis = drag ? drag.yAxis : fitValueAxis(channels);
   const sx = makeScale(xAxis, width);
-  const sy = makeScale(yAxis, height);
   const px = (time: number): number => sx.toPx(time);
-  const py = (value: number): number => height - sy.toPx(value);
+  // Each channel normalizes to its OWN value range — position (metres), rotation
+  // (degrees) and scale (factors) share no meaningful axis. A drag freezes the dragged
+  // channel's range so its curves don't rescale under the cursor.
+  const axisFor = (ci: number): Axis => (drag && drag.channel === ci ? drag.yAxis : fitChannelAxis(channels[ci]!));
+  const pyFor = (ci: number, value: number): number => height - makeScale(axisFor(ci), height).toPx(value);
 
-  function pointerToDomain(event: { clientX: number; clientY: number }): { time: number; value: number } {
+  function pointerTime(event: { clientX: number }): number {
+    return sx.toValue(event.clientX - svgRef.current!.getBoundingClientRect().left);
+  }
+  function pointerValue(event: { clientY: number }, ci: number): number {
     const rect = svgRef.current!.getBoundingClientRect();
-    return {
-      time: sx.toValue(event.clientX - rect.left),
-      value: sy.toValue(rect.height - (event.clientY - rect.top))
-    };
+    return makeScale(axisFor(ci), height).toValue(rect.height - (event.clientY - rect.top));
   }
 
   function onPointerMove(event: ReactPointerEvent<SVGSVGElement>): void {
     if (!drag || !svgRef.current) return;
     const channel = channels[drag.channel];
     if (!channel) return;
-    const p = pointerToDomain(event);
     const keys = channel.keys;
     const loT = drag.keyIndex > 0 ? keys[drag.keyIndex - 1]!.time + ANCHOR_EPSILON : timeStart;
     const hiT = drag.keyIndex < keys.length - 1 ? keys[drag.keyIndex + 1]!.time - ANCHOR_EPSILON : timeEnd;
-    const nextTime = clamp(p.time, loT, hiT);
+    const nextTime = clamp(pointerTime(event), loT, hiT);
+    const nextValue = pointerValue(event, drag.channel);
     const next = keys.map((k, i) => {
       if (i !== drag.keyIndex) return k;
       const value = [...k.value];
-      value[drag.component] = p.value;
+      value[drag.component] = nextValue;
       return { ...k, time: nextTime, value };
     });
     channel.onChange(next);
@@ -141,14 +140,13 @@ export function KeyframeCurveEditor({
 
   function startDrag(target: { channel: number; keyIndex: number; component: number }, event: ReactPointerEvent<SVGElement>): void {
     event.currentTarget.setPointerCapture?.(event.pointerId);
-    setDrag({ ...target, yAxis: fitValueAxis(channels) });
+    setDrag({ ...target, yAxis: fitChannelAxis(channels[target.channel]!) });
   }
 
   function addKeyAt(channelIndex: number, event: ReactMouseEvent<SVGSVGElement>): void {
     const channel = channels[channelIndex];
     if (!channel) return;
-    const p = pointerToDomain(event);
-    const time = clamp(p.time, timeStart, timeEnd);
+    const time = clamp(pointerTime(event), timeStart, timeEnd);
     const componentCount = channel.keys[0]?.value.length ?? channel.colors.length;
     // Seed the new key from the current curve at this time, so adding never jumps the motion.
     const value = Array.from({ length: componentCount }, (_c, comp) => sampleComponent(channel.keys, comp, time));
@@ -177,20 +175,18 @@ export function KeyframeCurveEditor({
         onDoubleClick={(e) => addKeyAt(0, e)}
       >
         {gridV.map((g) => (
-          <g key={g} stroke={t.grid} strokeWidth={1} vectorEffect="non-scaling-stroke">
-            <line x1={px(lerp(xAxis.min, xAxis.max, g))} y1={0} x2={px(lerp(xAxis.min, xAxis.max, g))} y2={height} />
-            <line x1={0} y1={py(lerp(yAxis.min, yAxis.max, g))} x2={width} y2={py(lerp(yAxis.min, yAxis.max, g))} />
-          </g>
+          <line key={g} x1={px(lerp(xAxis.min, xAxis.max, g))} y1={0} x2={px(lerp(xAxis.min, xAxis.max, g))} y2={height} stroke={t.grid} strokeWidth={1} vectorEffect="non-scaling-stroke" />
         ))}
+        <line x1={0} y1={height / 2} x2={width} y2={height / 2} stroke={t.grid} strokeWidth={1} vectorEffect="non-scaling-stroke" />
         {playhead !== undefined && playhead >= xAxis.min && playhead <= xAxis.max ? (
           <line x1={px(playhead)} y1={0} x2={px(playhead)} y2={height} stroke={t.playhead} strokeWidth={1.5} vectorEffect="non-scaling-stroke" />
         ) : null}
-        {channels.map((channel) =>
+        {channels.map((channel, ci) =>
           channel.colors.map((color, comp) => {
             const path: string[] = [];
             for (let i = 0; i <= SAMPLES; i += 1) {
               const time = lerp(xAxis.min, xAxis.max, i / SAMPLES);
-              path.push(`${i === 0 ? "M" : "L"}${px(time).toFixed(2)},${py(sampleComponent(channel.keys, comp, time)).toFixed(2)}`);
+              path.push(`${i === 0 ? "M" : "L"}${px(time).toFixed(2)},${pyFor(ci, sampleComponent(channel.keys, comp, time)).toFixed(2)}`);
             }
             return <path key={`${channel.id}-${comp}`} d={path.join("")} fill="none" stroke={color} strokeWidth={1.75} vectorEffect="non-scaling-stroke" />;
           })
@@ -201,7 +197,7 @@ export function KeyframeCurveEditor({
               <circle
                 key={`${channel.id}-${ki}-${comp}`}
                 cx={px(key.time)}
-                cy={py(key.value[comp] ?? 0)}
+                cy={pyFor(ci, key.value[comp] ?? 0)}
                 r={4}
                 fill={color}
                 stroke={t.anchor}
