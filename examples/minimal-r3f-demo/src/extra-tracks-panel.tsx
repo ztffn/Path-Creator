@@ -319,7 +319,12 @@ const CHANNEL_ACCENT: Record<"position" | "rotation" | "scale", string> = { posi
 
 /** Coerce the generic curve-editor keys back into the track's [x,y,z] TransformKey shape. */
 const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
-  keys.map((k) => ({ time: k.time, value: [k.value[0] ?? 0, k.value[1] ?? 0, k.value[2] ?? 0] as [number, number, number], ...(k.easing !== undefined && { easing: k.easing }) }));
+  keys.map((k) => ({
+    time: k.time,
+    value: [k.value[0] ?? 0, k.value[1] ?? 0, k.value[2] ?? 0] as [number, number, number],
+    ...(k.easing !== undefined && { easing: k.easing }),
+    ...(k.easingAxes && { easingAxes: [k.easingAxes[0] ?? "linear", k.easingAxes[1] ?? "linear", k.easingAxes[2] ?? "linear"] as [Easing, Easing, Easing] })
+  }));
 
 /** A bound object's live local transform (rotation in Euler degrees), for "key pose". */
 export interface ObjectPose {

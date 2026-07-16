@@ -12,7 +12,8 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 // v2: CartKey.easing / TimelineBlendIn.curve accept a custom cubic-bezier object
 // (in addition to the named presets); legacy string easing stays valid.
 // v4: portable activation/audio/animation/transform tracks.
-export const TIMELINE_SCHEMA_VERSION = 4;
+// v5: per-axis easing (TransformKey.easingAxes) for independent position/scale tangents.
+export const TIMELINE_SCHEMA_VERSION = 5;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -110,7 +111,18 @@ export interface AnimationClip {
 export interface AnimationTrack {
   type: "animation"; id: string; name?: string; objectId: string; clips: AnimationClip[];
 }
-export interface TransformKey { time: number; value: [number, number, number]; easing?: Easing; }
+export interface TransformKey {
+  time: number;
+  value: [number, number, number];
+  /** Easing into this key. Shared across axes unless `easingAxes` overrides per axis. */
+  easing?: Easing;
+  /**
+   * Per-axis easing into this key (x, y, z), for independent tangents on position/scale
+   * curves. When absent for an axis, falls back to `easing`. Rotation ignores this (it
+   * slerps with the single `easing` to keep the shortest-arc guarantee). Added in v5.
+   */
+  easingAxes?: [Easing, Easing, Easing];
+}
 export interface TransformTrack {
   type: "transform"; id: string; name?: string; objectId: string;
   position?: TransformKey[]; rotation?: TransformKey[]; scale?: TransformKey[];
@@ -182,7 +194,11 @@ export function normalizeTimelineEasing<T extends Timeline>(timeline: T): T {
       };
     }
     if (track.type === "transform") {
-      const normalizeKeys = (keys?: TransformKey[]) => keys?.map((key) => key.easing === undefined ? key : { ...key, easing: normalizeEasing(key.easing) });
+      const normalizeKeys = (keys?: TransformKey[]) => keys?.map((key) => ({
+        ...key,
+        ...(key.easing !== undefined && { easing: normalizeEasing(key.easing) }),
+        ...(key.easingAxes && { easingAxes: key.easingAxes.map((e) => normalizeEasing(e)) as [Easing, Easing, Easing] })
+      }));
       return { ...track, ...(track.position && { position: normalizeKeys(track.position)! }), ...(track.rotation && { rotation: normalizeKeys(track.rotation)! }), ...(track.scale && { scale: normalizeKeys(track.scale)! }) };
     }
     return track;
@@ -287,15 +303,25 @@ function slerpQuat(a: Quat, b: Quat, t: number): Quat {
   const angle=Math.acos(dot), sin=Math.sin(angle), aWeight=Math.sin((1-t)*angle)/sin, bWeight=Math.sin(t*angle)/sin;
   return [a[0]*aWeight+x*bWeight,a[1]*aWeight+y*bWeight,a[2]*aWeight+z*bWeight,a[3]*aWeight+w*bWeight];
 }
-function segment(keys: readonly TransformKey[], t: number): { a: TransformKey; b?: TransformKey; amount: number } {
-  if (t <= keys[0]!.time) return { a: keys[0]!, amount: 0 };
-  for (let i=0;i<keys.length-1;i+=1) { const a=keys[i]!, b=keys[i+1]!; if (t<=b.time) { const span=b.time-a.time; return { a,b,amount:span>0?evaluateEasing((t-a.time)/span,b.easing??"linear"):1}; } }
-  return { a: keys.at(-1)!, amount: 0 };
+/** Easing into `key` for axis `axis`: the per-axis override if present, else the shared key easing. */
+const axisEasing = (key: TransformKey, axis: number): Easing => key.easingAxes?.[axis] ?? key.easing ?? "linear";
+// Returns the bracketing keys and the RAW (un-eased) segment fraction; callers apply
+// easing (per-axis for position/scale, shared for rotation's slerp).
+function segment(keys: readonly TransformKey[], t: number): { a: TransformKey; b?: TransformKey; localT: number } {
+  if (t <= keys[0]!.time) return { a: keys[0]!, localT: 0 };
+  for (let i=0;i<keys.length-1;i+=1) { const a=keys[i]!, b=keys[i+1]!; if (t<=b.time) { const span=b.time-a.time; return { a,b,localT:span>0?(t-a.time)/span:1}; } }
+  return { a: keys.at(-1)!, localT: 0 };
 }
-function sampleVec(keys: readonly TransformKey[], t: number): [number,number,number] { const s=segment(keys,t); return s.b ? [lerp(s.a.value[0],s.b.value[0],s.amount),lerp(s.a.value[1],s.b.value[1],s.amount),lerp(s.a.value[2],s.b.value[2],s.amount)] : [...s.a.value]; }
+// Position/scale ease each component independently (easingAxes), so x can ease unlike y/z.
+function sampleVec(keys: readonly TransformKey[], t: number): [number,number,number] {
+  const s = segment(keys, t);
+  if (!s.b) return [...s.a.value];
+  const a = s.a, b = s.b;
+  return [0,1,2].map((i) => lerp(a.value[i]!, b.value[i]!, evaluateEasing(s.localT, axisEasing(b, i)))) as [number,number,number];
+}
 export function evaluateTransform(tracks: readonly TransformTrack[], t: number): Map<string, DesiredTransform> {
   const result=new Map<string,DesiredTransform>();
-  for (const track of tracks) { const value=result.get(track.objectId)??{}; if(track.position?.length)value.position=sampleVec(track.position,t); if(track.scale?.length)value.scale=sampleVec(track.scale,t); if(track.rotation?.length){const s=segment(track.rotation,t);value.rotation=s.b?slerpQuat(eulerDegToQuat(s.a.value),eulerDegToQuat(s.b.value),s.amount):eulerDegToQuat(s.a.value);} if(value.position||value.rotation||value.scale)result.set(track.objectId,value); }
+  for (const track of tracks) { const value=result.get(track.objectId)??{}; if(track.position?.length)value.position=sampleVec(track.position,t); if(track.scale?.length)value.scale=sampleVec(track.scale,t); if(track.rotation?.length){const s=segment(track.rotation,t);value.rotation=s.b?slerpQuat(eulerDegToQuat(s.a.value),eulerDegToQuat(s.b.value),evaluateEasing(s.localT,s.b.easing??"linear")):eulerDegToQuat(s.a.value);} if(value.position||value.rotation||value.scale)result.set(track.objectId,value); }
   return result;
 }
 export const transformKeyTimes = (track: TransformTrack): number[] => [...(track.position??[]),...(track.rotation??[]),...(track.scale??[])].map((key)=>key.time);

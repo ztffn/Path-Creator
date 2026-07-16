@@ -11,8 +11,9 @@ import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
 
 // v4: embedded timeline v4 adds portable activation/audio/animation/transform tracks.
-// Older documents migrate by version stamp because the new union members are additive.
-export const RIG_SCHEMA_VERSION = 4;
+// v5: embedded timeline v5 adds per-axis easing (TransformKey.easingAxes).
+// Older documents migrate by version stamp because the new fields are additive/optional.
+export const RIG_SCHEMA_VERSION = 5;
 
 export interface RigPathDefinition {
   id: string;

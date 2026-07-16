@@ -25,6 +25,27 @@ describe("evaluateTransform", () => {
     expect(s?.[0]).toBeCloseTo(2, 5); // easeInOut(0.5)=0.5 -> lerp(1,3,0.5)=2
   });
 
+  it("eases position axes independently via easingAxes (x eased, y/z linear fallback)", () => {
+    const t = track({ position: [
+      { time: 0, value: [0, 0, 0] },
+      { time: 2, value: [10, 10, 10], easing: "linear", easingAxes: ["hardIn", "linear", "linear"] }
+    ] });
+    const p = evaluateTransform([t], 1).get("obj")?.position; // midpoint
+    expect(p?.[1]).toBeCloseTo(5, 5); // y: linear -> 5
+    expect(p?.[2]).toBeCloseTo(5, 5); // z: linear -> 5
+    expect(p?.[0]).toBeLessThan(4.5); // x: hardIn eases in slowly -> well below 5
+  });
+
+  it("rotation ignores easingAxes and slerps with the shared easing", () => {
+    const t = track({ rotation: [
+      { time: 0, value: [0, 0, 0] },
+      { time: 2, value: [0, 90, 0], easing: "linear", easingAxes: ["hardIn", "hardIn", "hardIn"] }
+    ] });
+    // If easingAxes were (wrongly) applied, the midpoint would be far from a linear slerp.
+    const q = evaluateTransform([t], 1).get("obj")?.rotation; // ~45° about Y
+    expect(q?.[1]).toBeCloseTo(Math.sin(Math.PI / 8), 4);
+  });
+
   it("emits only the channels that have keys; rotation as a quaternion", () => {
     const t = track({ rotation: [{ time: 0, value: [0, 90, 0] }] });
     const got = evaluateTransform([t], 0).get("obj");
