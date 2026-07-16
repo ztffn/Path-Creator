@@ -23,6 +23,7 @@ import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 import { BlockSeries, type BlockSeriesData } from "./block-series";
 export { BlockSeries, type BlockSeriesData, type BlockSeriesKind } from "./block-series";
 export { EasingEditor, type EasingEditorTheme } from "./easing-editor";
+export { KeyframeCurveEditor, type CurveChannel, type CurveChannelKey, type KeyframeCurveEditorTheme } from "./keyframe-curve-editor";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },
@@ -31,9 +32,12 @@ const SHOT_EFFECTS = {
 };
 const SNAP_SECONDS = 0.25;
 // Cap the visible lane area so a tall show doesn't eat the editing viewport;
-// beyond this the lane block scrolls vertically. 48px time ruler + N×36 lanes.
+// beyond this the lane block scrolls vertically. RULER_HEIGHT must match where the
+// embedded editor actually starts its first lane row (its time ruler + internal gap),
+// so the left icon rail — pinned flex-end to the same total height — lines up row for
+// row with the blocks. Measured against @xzdarcy/react-timeline-editor@1.0.0.
 const MAX_VISIBLE_LANES = 3;
-const RULER_HEIGHT = 48;
+const RULER_HEIGHT = 42;
 const LANE_HEIGHT = 36;
 
 /** A clip block on a generic extra lane (activation, audio, …). */
