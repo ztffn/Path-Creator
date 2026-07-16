@@ -1,10 +1,11 @@
 // Multi-curve keyframe editor: plots one or more channels of keyframes (each key a
-// time + component vector, e.g. position x/y/z) as real-unit curves over a shared
+// time + component vector, e.g. position x/y/z) as real-unit curves over a per-channel
 // value axis, with a synced playhead. Direct manipulation: drag a key (time + that
-// component's value), double-click to add, double-click a point to delete. Controlled
-// and host-agnostic; shares the curve-canvas coordinate/edit core with EasingEditor.
+// component's value), double-click to add, double-click a point to delete, drag tangent
+// handles to shape per-axis easing. Controlled and host-agnostic; shares curve-canvas's
+// coordinate/scaling primitives (its time/value key shape needs its own edit reducers).
 import { useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
-import { clamp, easingToCurve, evaluateEasing, lerp, type Easing } from "../core";
+import { axisEasing, clamp, easingToCurve, evaluateEasing, lerp, type Easing } from "../core";
 import { ANCHOR_EPSILON, makeScale, type Axis } from "./curve-canvas";
 
 /** One keyframe: a time plus a component vector (e.g. [x, y, z]), a shared easing into it, and optional per-component easing. */
@@ -13,9 +14,6 @@ export interface CurveChannelKey { time: number; value: number[]; easing?: Easin
 const DEFAULT_OUT = { x: 1 / 3, y: 1 / 3 };
 const DEFAULT_IN = { x: 2 / 3, y: 2 / 3 };
 type Point = { x: number; y: number };
-
-/** Easing into `key` for component `c`: per-component override, else the shared key easing. */
-const keyAxisEasing = (key: CurveChannelKey, c: number): Easing => key.easingAxes?.[c] ?? key.easing ?? "linear";
 
 /** The out (first-anchor) and in (last-anchor) bezier control points of an easing, in its 0..1 space. */
 function easingControls(e: Easing): { out: Point; in: Point } {
@@ -77,7 +75,7 @@ function sampleComponent(keys: CurveChannelKey[], comp: number, t: number): numb
     const b = keys[i + 1]!;
     if (t <= b.time) {
       const span = b.time - a.time;
-      const amount = span > 0 ? evaluateEasing((t - a.time) / span, keyAxisEasing(b, comp)) : 1;
+      const amount = span > 0 ? evaluateEasing((t - a.time) / span, axisEasing(b, comp)) : 1;
       return lerp(a.value[comp] ?? 0, b.value[comp] ?? 0, amount);
     }
   }
@@ -144,14 +142,17 @@ export function KeyframeCurveEditor({
   // (degrees) and scale (factors) share no meaningful axis. A drag freezes the dragged
   // channel's range so its curves don't rescale under the cursor.
   const axisFor = (ci: number): Axis => (drag && drag.channel === ci ? drag.yAxis : fitChannelAxis(channels[ci]!));
-  const pyFor = (ci: number, value: number): number => height - makeScale(axisFor(ci), height).toPx(value);
+  // One value scale per channel, computed once per render and reused across every
+  // sampled curve point, anchor and pointer mapping (avoids per-point re-fitting).
+  const valueScales = channels.map((_, ci) => makeScale(axisFor(ci), height));
+  const pyFor = (ci: number, value: number): number => height - valueScales[ci]!.toPx(value);
 
   function pointerTime(event: { clientX: number }): number {
     return sx.toValue(event.clientX - svgRef.current!.getBoundingClientRect().left);
   }
   function pointerValue(event: { clientY: number }, ci: number): number {
     const rect = svgRef.current!.getBoundingClientRect();
-    return makeScale(axisFor(ci), height).toValue(rect.height - (event.clientY - rect.top));
+    return valueScales[ci]!.toValue(rect.height - (event.clientY - rect.top));
   }
 
   function onPointerMove(event: ReactPointerEvent<SVGSVGElement>): void {
@@ -191,11 +192,11 @@ export function KeyframeCurveEditor({
     const targetIndex = leftIndex + 1; // segment easing lives on the later key
     const dt = b.time - a.time;
     const dv = (b.value[c] ?? 0) - (a.value[c] ?? 0);
-    const cur = easingControls(keyAxisEasing(b, c));
+    const cur = easingControls(axisEasing(b, c));
     const cpx = dt > 0 ? clamp((pointerTime(event) - a.time) / dt, 0, 1) : (hd.side === "out" ? cur.out.x : cur.in.x);
     const baseY = hd.side === "out" ? cur.out.y : cur.in.y;
     const cpy = Math.abs(dv) > 1e-9 ? (pointerValue(event, hd.channel) - (a.value[c] ?? 0)) / dv : baseY;
-    const nextEasing = withControl(keyAxisEasing(b, c), hd.side, { x: cpx, y: cpy });
+    const nextEasing = withControl(axisEasing(b, c), hd.side, { x: cpx, y: cpy });
     const componentCount = keys[0]?.value.length ?? channel.colors.length;
     channel.onChange(keys.map((k, i) => (i === targetIndex ? setKeyAxisEasing(b, c, nextEasing, componentCount) : k)));
   }
@@ -292,12 +293,12 @@ export function KeyframeCurveEditor({
           const handles: { side: "in" | "out"; x: number; y: number }[] = [];
           if (selected.keyIndex < ch.keys.length - 1) {
             const b = ch.keys[selected.keyIndex + 1]!;
-            const ctrl = easingControls(keyAxisEasing(b, c)).out;
+            const ctrl = easingControls(axisEasing(b, c)).out;
             handles.push({ side: "out", x: px(lerp(key.time, b.time, ctrl.x)), y: pyFor(ci, lerp(key.value[c] ?? 0, b.value[c] ?? 0, ctrl.y)) });
           }
           if (selected.keyIndex > 0) {
             const a = ch.keys[selected.keyIndex - 1]!;
-            const ctrl = easingControls(keyAxisEasing(key, c)).in;
+            const ctrl = easingControls(axisEasing(key, c)).in;
             handles.push({ side: "in", x: px(lerp(a.time, key.time, ctrl.x)), y: pyFor(ci, lerp(a.value[c] ?? 0, key.value[c] ?? 0, ctrl.y)) });
           }
           const ax = px(key.time);

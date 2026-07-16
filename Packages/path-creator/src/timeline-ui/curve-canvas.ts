@@ -1,9 +1,10 @@
-// Shared, coordinate-agnostic curve-interaction core for the timeline-ui curve
-// editors. Pure geometry + edit reducers over an ordered anchor list (the
-// EasingCurveKey shape: x/y plus optional in/out bezier handles): domain<->pixel
-// scaling, anchor + handle dragging with neighbor clamping and tangent relinking,
-// and add/remove. EasingEditor (0..1, one curve) and KeyframeCurveEditor (real
-// units, N curves) both drive their SVG from these — one interaction codebase.
+// Shared, coordinate-agnostic curve primitives for the timeline-ui curve editors.
+// Pure geometry + edit reducers over an ordered anchor list (the EasingCurveKey
+// shape: x/y plus optional in/out bezier handles): domain<->pixel scaling, anchor +
+// handle dragging with neighbor clamping and tangent relinking, and add/remove.
+// EasingEditor (0..1, one curve, EasingCurveKey) drives its whole edit surface from
+// the reducers here; KeyframeCurveEditor shares the coordinate/scaling primitives
+// (makeScale, ANCHOR_EPSILON) but keeps its own reducers for its time/value key shape.
 import { clamp, lerp, tangentHandles, type EasingCurveKey, type EasingPoint, type TangentMode } from "../core";
 
 /** Inclusive value range for one axis (domain units; may be negative). */

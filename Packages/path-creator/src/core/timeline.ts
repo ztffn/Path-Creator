@@ -304,7 +304,7 @@ function slerpQuat(a: Quat, b: Quat, t: number): Quat {
   return [a[0]*aWeight+x*bWeight,a[1]*aWeight+y*bWeight,a[2]*aWeight+z*bWeight,a[3]*aWeight+w*bWeight];
 }
 /** Easing into `key` for axis `axis`: the per-axis override if present, else the shared key easing. */
-const axisEasing = (key: TransformKey, axis: number): Easing => key.easingAxes?.[axis] ?? key.easing ?? "linear";
+export const axisEasing = (key: { easing?: Easing; easingAxes?: readonly Easing[] }, axis: number): Easing => key.easingAxes?.[axis] ?? key.easing ?? "linear";
 // Returns the bracketing keys and the RAW (un-eased) segment fraction; callers apply
 // easing (per-axis for position/scale, shared for rotation's slerp).
 function segment(keys: readonly TransformKey[], t: number): { a: TransformKey; b?: TransformKey; localT: number } {
@@ -317,7 +317,11 @@ function sampleVec(keys: readonly TransformKey[], t: number): [number,number,num
   const s = segment(keys, t);
   if (!s.b) return [...s.a.value];
   const a = s.a, b = s.b;
-  return [0,1,2].map((i) => lerp(a.value[i]!, b.value[i]!, evaluateEasing(s.localT, axisEasing(b, i)))) as [number,number,number];
+  return [
+    lerp(a.value[0], b.value[0], evaluateEasing(s.localT, axisEasing(b, 0))),
+    lerp(a.value[1], b.value[1], evaluateEasing(s.localT, axisEasing(b, 1))),
+    lerp(a.value[2], b.value[2], evaluateEasing(s.localT, axisEasing(b, 2)))
+  ];
 }
 export function evaluateTransform(tracks: readonly TransformTrack[], t: number): Map<string, DesiredTransform> {
   const result=new Map<string,DesiredTransform>();

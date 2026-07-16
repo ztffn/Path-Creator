@@ -73,12 +73,16 @@ function Markers({ points, paint }: { points: number[]; paint: string }) {
 }
 
 export function BlockSeries({ data, color }: { data: BlockSeriesData; color: string }) {
-  const { d, width } = useMemo(
-    () => (data.kind === "envelope" ? envelopePath(data.points) : data.kind === "line" ? linePath(data.points) : { d: "", width: 1 }),
-    [data]
-  );
   const paint = data.color ?? color;
   if (data.kind === "markers") return data.points.length ? <Markers points={data.points} paint={paint} /> : null;
+  return <BlockPath data={data} paint={paint} />;
+}
+
+function BlockPath({ data, paint }: { data: BlockSeriesData; paint: string }) {
+  const { d, width } = useMemo(
+    () => (data.kind === "envelope" ? envelopePath(data.points) : linePath(data.points)),
+    [data]
+  );
   if (!d) return null;
   return (
     <svg viewBox={`0 0 ${width} 100`} preserveAspectRatio="none" style={FILL_STYLE}>
