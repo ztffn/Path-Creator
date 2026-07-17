@@ -61,7 +61,9 @@ import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
   contentFromScene,
+  deserializeStory,
   sceneFromStory,
+  serializeStory,
   EMPTY_INTERACTIONS,
   EMPTY_SCENE_CONTENT,
   type DemoInteractions,
@@ -454,6 +456,10 @@ export function App() {
   }
 
   function selectPointTarget(id: string | null): void {
+    if (playMode && id) {
+      triggerClicksRef.current.push(id);
+      return;
+    }
     select("target", id);
   }
 
@@ -665,7 +671,7 @@ export function App() {
     () => loadedStory?.entrySceneId ?? loadedStory?.scenes[0]?.id ?? "show"
   );
   // A queued live scene invocation for the drive loop (activation-request style).
-  const [playSceneRequest, setPlaySceneRequest] = useState<{ key: number; sceneId: string } | null>(null);
+  const [playSceneRequest, setPlaySceneRequest] = useState<{ key: number; sceneId: string; blend?: { durationSeconds?: number; curve?: VirtualCameraBlendCurve } } | null>(null);
   // The scene the runtime is playing right now (reported by the drive loop); ref
   // mirror keeps the DEV oracle closure fresh.
   const [liveSceneId, setLiveSceneId] = useState<string | null>(null);
@@ -675,8 +681,16 @@ export function App() {
     setLiveSceneId(sceneId);
   };
   function requestPlayScene(sceneId: string): void {
-    setPlaySceneRequest({ key: Date.now(), sceneId });
+    // The Scene settings' Blend controls govern the handoff, like activations.
+    setPlaySceneRequest({
+      key: Date.now(),
+      sceneId,
+      blend: { durationSeconds: virtualCameraBlendCurve === "cut" ? 0 : virtualCameraBlendDuration, curve: virtualCameraBlendCurve }
+    });
   }
+  // Present-mode taps (objects from the viewport, targets from PointTargets)
+  // buffered for the trigger runtime; drained by the drive loop each frame.
+  const triggerClicksRef = useRef<string[]>([]);
   const [stopSceneRequest, setStopSceneRequest] = useState<{ key: number } | null>(null);
   function requestStopScene(): void {
     setStopSceneRequest({ key: Date.now() });
@@ -738,6 +752,32 @@ export function App() {
     interactions
   }), [currentScene, sceneContents, activeSceneId, entrySceneId, paths, activePathId, dollies, vcamDefs, editorVcams, pointTargets, interactions]);
   useStoryAutosave(SCENE_STORAGE_KEY, currentStory);
+  // Linear undo over story snapshots (Ctrl/Cmd+Z; no redo). Text inputs keep
+  // their native undo — the shortcut is ignored while one has focus.
+  const undoHistoryRef = useRef<string[]>([]);
+  useEffect(() => {
+    const history = undoHistoryRef.current;
+    const snapshot = serializeStory(currentStory);
+    if (history[history.length - 1] !== snapshot) {
+      history.push(snapshot);
+      if (history.length > 60) history.shift();
+    }
+  }, [currentStory]);
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => {
+      if (!(event.key === "z" || event.key === "Z") || !(event.metaKey || event.ctrlKey) || event.shiftKey) return;
+      const el = document.activeElement;
+      if (el instanceof HTMLInputElement || el instanceof HTMLTextAreaElement) return;
+      const history = undoHistoryRef.current;
+      if (history.length < 2) return;
+      event.preventDefault();
+      history.pop();
+      applyStory(deserializeStory(history[history.length - 1]!));
+    };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, []);
 
   // Replaces the whole editing state from a loaded/parsed story (opens its entry scene).
   function applyStory(story: DemoStory): void {
@@ -894,7 +934,63 @@ export function App() {
         bindings: prev.bindings.filter((binding) => binding.triggerId !== triggerId)
       };
     });
+    // A dedicated zone target dies with its trigger (a shared entity does not).
+    const zone = interactions.triggers.find((trigger) => trigger.id === triggerId)?.source;
+    if (zone?.type === "proximity" && zone.targetId.startsWith("target-trig-")) {
+      setPointTargets((current) => current.filter((target) => target.id !== zone.targetId));
+    }
     if (isSelected(selection, "trigger", triggerId)) setSelection(null);
+  }
+
+  // Open = switch to it AND select it (so its inspector shows).
+  function openScene(sceneId: string): void {
+    switchScene(sceneId);
+    select("storyScene", sceneId);
+  }
+
+  function renameScene(sceneId: string, name: string): void {
+    setSceneContents((prev) => prev.map((content) => (content.id === sceneId ? { ...content, name } : content)));
+  }
+
+  /** Deletes a scene and everything referencing it: embed clips in every other
+   *  scene (and the live working state) and trigger units playing it. */
+  function deleteScene(sceneId: string): void {
+    if (sceneContents.length <= 1) return;
+    const remaining = sceneContents
+      .map((content) => (content.id === activeSceneId ? contentFromScene(currentScene, content.id, content.name) : content))
+      .filter((content) => content.id !== sceneId)
+      .map((content) => ({ ...content, sceneClips: content.sceneClips.filter((clip) => clip.sceneId !== sceneId) }));
+    const nextEntry = entrySceneId === sceneId ? remaining[0]?.id ?? null : entrySceneId;
+    setSceneContents(remaining);
+    setEntrySceneId(nextEntry);
+    const deadBindings = interactions.bindings.filter((binding) => {
+      const action = interactions.actions.find((candidate) => candidate.id === binding.actionId);
+      return action?.type === "playScene" && action.sceneId === sceneId;
+    });
+    if (deadBindings.length > 0) {
+      const deadTriggerIds = new Set(deadBindings.map((binding) => binding.triggerId));
+      const deadActionIds = new Set(deadBindings.map((binding) => binding.actionId));
+      setInteractions((prev) => ({
+        triggers: prev.triggers.filter((trigger) => !deadTriggerIds.has(trigger.id)),
+        actions: prev.actions.filter((action) => !deadActionIds.has(action.id)),
+        bindings: prev.bindings.filter((binding) => !deadTriggerIds.has(binding.triggerId))
+      }));
+    }
+    if (sceneId === activeSceneId) {
+      const target = remaining.find((content) => content.id === nextEntry) ?? remaining[0]!;
+      setShotTiming(target.shotTiming);
+      setDollyRuns(target.dollyRuns);
+      setFovAnimations(target.fovAnimations);
+      setExtraTracks(target.extraTracks);
+      setSceneClips(target.sceneClips);
+      setMarkers(target.markers);
+      setActiveSceneId(target.id);
+      timelinePlayerRef.current.playing = false;
+      seekTimelinePlayer(timelinePlayerRef.current, 0);
+    } else {
+      setSceneClips((prev) => prev.filter((clip) => clip.sceneId !== sceneId));
+    }
+    setSelection(null);
   }
 
   function exportScene(): void {
@@ -1804,6 +1900,7 @@ export function App() {
   const selectedObject = activatables.find((object) => object.id === selectedIdOf(selection, "object")) ?? null;
   const selectedAudioTrack = extraTracks.audioTracks.find((track) => track.id === selectedIdOf(selection, "audio")) ?? null;
   const selectedTrigger = interactions.triggers.find((trigger) => trigger.id === selectedIdOf(selection, "trigger")) ?? null;
+  const selectedStoryScene = sceneContents.find((content) => content.id === selectedIdOf(selection, "storyScene")) ?? null;
   const selectedTriggerBinding = selectedTrigger
     ? interactions.bindings.find((binding) => binding.triggerId === selectedTrigger.id) ?? null
     : null;
@@ -1820,7 +1917,8 @@ export function App() {
         target: selectedTargetEntity?.name,
         object: selectedObject?.name,
         audio: selectedAudioTrack?.name,
-        trigger: selectedTrigger?.name
+        trigger: selectedTrigger?.name,
+        storyScene: selectedStoryScene?.name
       }[selection.kind] ?? null;
 
   return (
@@ -1837,7 +1935,7 @@ export function App() {
           activeSceneId={activeSceneId}
           entrySceneId={entrySceneId}
           liveSceneId={liveSceneId}
-          onSelectScene={switchScene}
+          onSelectScene={openScene}
           onAddScene={addScene}
           onPlayScene={requestPlayScene}
           onStopScene={requestStopScene}
@@ -1915,10 +2013,17 @@ export function App() {
             onRelease: releaseVirtualCamera,
             embeds: sceneClips.map((clip) => ({
               id: clip.id,
-              sceneName: sceneNameOf(clip.sceneId),
+              sceneId: clip.sceneId,
               start: clip.start,
-              end: clip.end
+              end: clip.end,
+              offset: clip.offset ?? 0,
+              blendSeconds: clip.blendSeconds ?? 0
             })),
+            embedScenes: sceneContents
+              .filter((content) => content.id !== activeSceneId)
+              .map((content) => ({ id: content.id, name: content.name ?? content.id })),
+            onUpdateEmbed: (clipId, patch) =>
+              setSceneClips((prev) => prev.map((clip) => (clip.id === clipId ? { ...clip, ...patch } : clip))),
             onDeleteEmbed: (clipId) => setSceneClips((prev) => prev.filter((clip) => clip.id !== clipId)),
             markers,
             onUpdateMarkerKind: (markerId, kind) =>
@@ -2002,6 +2107,20 @@ export function App() {
                   onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })),
                   onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
                   peaksFor: (clip) => clipPeaks(clip.src, clip.offset ?? 0, clip.duration, () => setPeaksTick((t) => t + 1))
+                }
+              : null
+          }
+          storyScene={
+            selectedStoryScene
+              ? {
+                  name: selectedStoryScene.name ?? selectedStoryScene.id,
+                  isEntry: selectedStoryScene.id === entrySceneId,
+                  duration: storyScenes.get(selectedStoryScene.id)?.duration ?? 0,
+                  canDelete: sceneContents.length > 1,
+                  onRename: (name) => renameScene(selectedStoryScene.id, name),
+                  onSetEntry: () => setEntrySceneId(selectedStoryScene.id),
+                  onPlay: () => requestPlayScene(selectedStoryScene.id),
+                  onDelete: () => deleteScene(selectedStoryScene.id)
                 }
               : null
           }
@@ -2141,6 +2260,7 @@ export function App() {
           activeEditingSceneId={activeSceneId}
           playSceneRequest={playSceneRequest}
           stopSceneRequest={stopSceneRequest}
+          triggerClicksRef={triggerClicksRef}
           onActiveSceneChange={onActiveSceneChange}
           interactions={interactions}
           simulateTriggerRequest={simulateTriggerRequest}

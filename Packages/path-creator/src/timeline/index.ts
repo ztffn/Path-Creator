@@ -188,7 +188,21 @@ export function evaluateTimeline(
           if (frame) cartFrames.set(subTrack.cartId, frame);
         }
         if (sub.camera) {
-          camera = sub.camera;
+          // Boundary blend: ease between the underlying camera and the embedded
+          // scene's over blendSeconds at each window edge (0 = hard cut). Pure
+          // in t, so scrubbing across the edge stays exact.
+          const blend = layer.clip.blendSeconds ?? 0;
+          let pose = sub.camera;
+          if (blend > 0 && camera) {
+            const factor = Math.max(
+              0,
+              Math.min(1, (t - layer.clip.start) / blend, (layer.clip.end - t) / blend)
+            );
+            if (factor < 1) {
+              pose = blendVirtualCameraSnapshots(camera, sub.camera, factor, { curve: "easeInOut" });
+            }
+          }
+          camera = pose;
           activeBlock = sub.activeBlock;
           blendProgress = sub.blendProgress;
         }
@@ -761,6 +775,9 @@ export interface TriggerWorldSnapshot {
    *  marker events in (from, to] fire. Report ONLY real playback steps —
    *  never scrubs or seeks. */
   playback?: readonly { sceneId?: string; timeline: Timeline; from: number; to: number }[];
+  /** Freeze proximity state this frame (no edges, no re-arms) — set while a
+   *  runtime takeover drives the camera, so its motion can't churn triggers. */
+  holdProximity?: boolean;
 }
 
 export interface TriggerCommand {
@@ -828,7 +845,7 @@ export function stepTriggers(
     let exited = false;
 
     if (source.type === "proximity") {
-      const target = snapshot.resolvePosition(source.targetId);
+      const target = snapshot.holdProximity ? null : snapshot.resolvePosition(source.targetId);
       const subject = snapshot.cameraPosition;
       if (target && subject) {
         const previous = state.proximity.get(trigger.id) ?? { inside: false };

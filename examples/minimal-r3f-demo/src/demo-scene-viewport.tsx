@@ -400,6 +400,7 @@ export function DemoSceneViewport({
   activeEditingSceneId,
   playSceneRequest,
   stopSceneRequest,
+  triggerClicksRef,
   onActiveSceneChange,
   interactions,
   simulateTriggerRequest,
@@ -470,9 +471,12 @@ export function DemoSceneViewport({
    *  timeline panel's playhead so the lanes follow the invocation. */
   activeEditingSceneId: string;
   /** Queued live scene invocation (activation-request style; key dedupes). */
-  playSceneRequest: { key: number; sceneId: string } | null;
+  playSceneRequest: { key: number; sceneId: string; blend?: { durationSeconds?: number; curve?: VirtualCameraBlendCurve } } | null;
   /** Queued stop of the live scene (blends back; no-op when none is live). */
   stopSceneRequest: { key: number } | null;
+  /** Present-mode taps on objects/targets, drained into the trigger snapshot
+   *  once per frame (App pushes target taps; this component pushes object taps). */
+  triggerClicksRef: { current: string[] };
   /** Reports the scene the runtime is playing (null when control returned). */
   onActiveSceneChange: (sceneId: string | null) => void;
   /** Authored triggers/actions/bindings the reactive runtime steps per frame. */
@@ -581,8 +585,6 @@ export function DemoSceneViewport({
   const prevClocksRef = useRef({ master: 0, branchScene: null as string | null, branchTime: 0 });
   const triggerCamPos = useMemo(() => new Vector3(), []);
   const triggerObjPos = useMemo(() => new Vector3(), []);
-  // Object taps collected for the trigger snapshot, drained once per frame.
-  const pendingClicksRef = useRef<string[]>([]);
   // A proximity target/entity's live world position (also drawn by the gizmos).
   const resolveTriggerPosition = (id: string): Vec3 | null => {
     const declared = targetRegistry.resolve(id);
@@ -595,7 +597,7 @@ export function DemoSceneViewport({
   // In Play (present) mode an object tap is trigger input, not an editor
   // selection; Edit mode keeps the normal selection behavior.
   const reportEntityInteraction = (kind: EntityKind, id: string): void => {
-    if (playMode && kind === "object") pendingClicksRef.current.push(id);
+    if (playMode && kind === "object") triggerClicksRef.current.push(id);
     else onSelectEntity(kind, id);
   };
   // DEV-only oracle: lets headless verification read the driven camera's live pose
@@ -698,7 +700,10 @@ export function DemoSceneViewport({
     // advances and the camera take/blend/release handoff runs over the brain.
     if (playSceneRequest && playSceneRequest.key !== lastPlaySceneKeyRef.current) {
       lastPlaySceneKeyRef.current = playSceneRequest.key;
-      playScene(sceneRuntimeRef.current, { sceneId: playSceneRequest.sceneId });
+      playScene(sceneRuntimeRef.current, {
+        sceneId: playSceneRequest.sceneId,
+        ...(playSceneRequest.blend && { blend: playSceneRequest.blend })
+      });
     }
     if (stopSceneRequest && stopSceneRequest.key !== lastStopSceneKeyRef.current) {
       lastStopSceneKeyRef.current = stopSceneRequest.key;
@@ -840,18 +845,21 @@ export function DemoSceneViewport({
     }
     // Marker windows: only clocks that really PLAYED forward this frame.
     const playbackWindows: { sceneId?: string; timeline: Timeline; from: number; to: number }[] = [];
+    // Also expand a playing clock into its embedded scenes' LOCAL windows, so
+    // markers inside embeds fire too (depth-1, matching evaluation).
+    const pushWindow = (timeline: Timeline, from: number, to: number, sceneId?: string): void => {
+      playbackWindows.push({ ...(sceneId !== undefined && { sceneId }), timeline, from, to });
+      for (const layer of evaluateSceneLayers(timeline.tracks, getSceneById, to)) {
+        playbackWindows.push({ sceneId: layer.sceneId, timeline: layer.timeline, from: layer.time - (to - from), to: layer.time });
+      }
+    };
     const prevClocks = prevClocksRef.current;
     if (scenePlayback) {
       if (prevClocks.branchScene === scenePlayback.sceneId && scenePlayback.time > prevClocks.branchTime) {
-        playbackWindows.push({
-          sceneId: scenePlayback.sceneId,
-          timeline: scenePlayback.timeline,
-          from: prevClocks.branchTime,
-          to: scenePlayback.time
-        });
+        pushWindow(scenePlayback.timeline, prevClocks.branchTime, scenePlayback.time, scenePlayback.sceneId);
       }
     } else if (activeTimeline && masterWasPlaying && player.time > prevMasterTime) {
-      playbackWindows.push({ timeline: activeTimeline, from: prevMasterTime, to: player.time });
+      pushWindow(activeTimeline, prevMasterTime, player.time);
     }
     prevClocksRef.current = {
       master: player.time,
@@ -868,11 +876,13 @@ export function DemoSceneViewport({
         cameraPosition: { x: triggerCamPos.x, y: triggerCamPos.y, z: triggerCamPos.z },
         resolvePosition: resolveTriggerPosition,
         playback: playbackWindows,
-        clicks: pendingClicksRef.current
+        clicks: triggerClicksRef.current,
+        // A takeover's camera motion must not churn proximity state.
+        holdProximity: Boolean(scenePlayback)
       },
       delta
     );
-    if (pendingClicksRef.current.length > 0) pendingClicksRef.current = [];
+    if (triggerClicksRef.current.length > 0) triggerClicksRef.current = [];
     if (triggerCommands.length > 0) dispatchTriggerCommands(triggerCommands);
 
     // Composer overlay: project the driven vcam's tracked target (and its

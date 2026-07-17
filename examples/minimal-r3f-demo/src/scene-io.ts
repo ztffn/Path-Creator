@@ -209,7 +209,10 @@ export function buildShowTimeline(
     .reduce((max, run) => Math.max(max, run.end), 0);
   const embedEnd = sceneClips.reduce((max, clip) => Math.max(max, clip.end), 0);
   const markerEnd = markers.reduce((max, event) => Math.max(max, event.time), 0);
-  const duration = Math.max(cartEnd, embedEnd, markerEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
+  const contentEnd = Math.max(cartEnd, embedEnd, markerEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
+  // An empty scene still needs a playable length: without one, playScene ends
+  // the same frame it starts and looks broken rather than merely empty.
+  const duration = contentEnd > 0 ? contentEnd : 5;
   return {
     id: sceneMeta.id ?? SHOW_TIMELINE_ID,
     name: sceneMeta.name ?? "Show",

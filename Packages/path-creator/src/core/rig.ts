@@ -18,8 +18,9 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 //     scene; legacy single-timeline documents migrate as scene[0] = entry.
 // v8: embedded timeline v7 adds scene tracks (deterministic master-embed of scenes).
 // v9: document-level triggers/actions/bindings (reactive interaction layer).
+// v10: embedded timeline v8 adds SceneClip.blendSeconds (embed boundary blends).
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 9;
+export const RIG_SCHEMA_VERSION = 10;
 
 export interface RigPathDefinition {
   id: string;

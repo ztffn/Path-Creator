@@ -18,7 +18,8 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 //     per-axis tangent handles (TransformKey.tangentsAxes); easingAxes retired for them.
 // v7: scene tracks — clips that embed another Story scene into a master-time window
 //     (deterministic master-embed; evaluation maps master t to scene-local t).
-export const TIMELINE_SCHEMA_VERSION = 7;
+// v8: SceneClip.blendSeconds — eased camera blend at the embed window's edges.
+export const TIMELINE_SCHEMA_VERSION = 8;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -155,6 +156,9 @@ export interface SceneClip {
   end: number;
   /** Scene-local time at the window's start (default 0). */
   offset?: number;
+  /** Eased camera blend into/out of the window over this many seconds at each
+   *  edge (default 0 = hard cut). */
+  blendSeconds?: number;
 }
 export interface SceneTrack {
   type: "scene"; id: string; name?: string; clips: SceneClip[];
@@ -162,8 +166,9 @@ export interface SceneTrack {
 
 export type TimelineTrack = CameraTrack | CartTrack | EventTrack | ActivationTrack | AudioTrack | AnimationTrack | TransformTrack | SceneTrack;
 
-/** One embedded scene active at a master time: evaluate `timeline` at `time`. */
-export interface SceneLayer { sceneId: string; timeline: Timeline; time: number; }
+/** One embedded scene active at a master time: evaluate `timeline` at `time`.
+ *  `clip` carries the window (start/end/blendSeconds) for boundary blending. */
+export interface SceneLayer { sceneId: string; timeline: Timeline; time: number; clip: SceneClip; }
 
 /**
  * The embedded-scene layers active at master time t, in override order (later
@@ -182,7 +187,7 @@ export function evaluateSceneLayers(
     for (const clip of track.clips) {
       if (!covers(clip.start, clip.end, t)) continue;
       const timeline = getScene(clip.sceneId);
-      if (timeline) layers.push({ sceneId: clip.sceneId, timeline, time: t - clip.start + (clip.offset ?? 0) });
+      if (timeline) layers.push({ sceneId: clip.sceneId, timeline, time: t - clip.start + (clip.offset ?? 0), clip });
     }
   }
   return layers;

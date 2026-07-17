@@ -195,6 +195,14 @@ export function TriggerInspector(props: TriggerInspectorProps) {
               ))}
             </select>
           </label>
+          <NumberField
+            label="Blend (s)"
+            value={action.blend?.durationSeconds ?? 1}
+            min={0}
+            onChange={(durationSeconds) =>
+              props.onUpdateAction({ ...action, blend: { durationSeconds: Math.max(0, durationSeconds) } })
+            }
+          />
           <label style={row}>
             <span>Skippable</span>
             <input
