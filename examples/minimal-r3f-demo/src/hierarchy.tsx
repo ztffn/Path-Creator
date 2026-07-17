@@ -32,6 +32,7 @@ export interface HierarchyProps {
   onSelectScene: (id: string) => void;
   onAddScene: () => void;
   onPlayScene: (id: string) => void;
+  onStopScene: () => void;
   triggers: Entity[];
   onAddTrigger: () => void;
   paths: Entity[];
@@ -140,11 +141,17 @@ export function Hierarchy(props: HierarchyProps) {
                 />
               </div>
               <button
-                title="Play this scene live (blends the camera in and back)"
-                onClick={() => props.onPlayScene(scene.id)}
+                title={
+                  scene.id === props.liveSceneId
+                    ? "Stop this scene (blends the camera back)"
+                    : "Play this scene live (blends the camera in and back)"
+                }
+                onClick={() =>
+                  scene.id === props.liveSceneId ? props.onStopScene() : props.onPlayScene(scene.id)
+                }
                 style={{ ...addBtnStyle, flex: "0 0 auto" }}
               >
-                ▶
+                {scene.id === props.liveSceneId ? "■" : "▶"}
               </button>
             </div>
           ))}

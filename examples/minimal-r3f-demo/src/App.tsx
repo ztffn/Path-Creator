@@ -674,6 +674,10 @@ export function App() {
   function requestPlayScene(sceneId: string): void {
     setPlaySceneRequest({ key: Date.now(), sceneId });
   }
+  const [stopSceneRequest, setStopSceneRequest] = useState<{ key: number } | null>(null);
+  function requestStopScene(): void {
+    setStopSceneRequest({ key: Date.now() });
+  }
   // The reactive interaction layer (document-level): triggers + actions +
   // bindings, edited as 1:1 units, persisted in the schema's n:m shape.
   const [interactions, setInteractions] = useState<DemoInteractions>(
@@ -1790,6 +1794,7 @@ export function App() {
           onSelectScene={switchScene}
           onAddScene={addScene}
           onPlayScene={requestPlayScene}
+          onStopScene={requestStopScene}
           triggers={interactions.triggers.map((trigger) => ({ id: trigger.id, name: trigger.name ?? trigger.id }))}
           onAddTrigger={addTrigger}
           paths={paths.map((path) => ({ id: path.id, name: path.name ?? path.id }))}
@@ -2026,10 +2031,15 @@ export function App() {
           onCreateDollyRun={(cartId, time) => addDollyRun(cartId, Math.max(0, Math.round(time * 4) / 4))}
           onSelectShot={selectVirtualCamera}
           onSeek={(time) => {
+            // Grabbing the playhead takes control back: stop any live scene branch.
+            if (liveSceneRef.current) requestStopScene();
             seekTimelinePlayer(timelinePlayerRef.current, time);
             setPipDriver("timeline");
           }}
-          onTransport={() => setPipDriver("timeline")}
+          onTransport={() => {
+            if (liveSceneRef.current) requestStopScene();
+            setPipDriver("timeline");
+          }}
           onCreateShot={(kind, time) => {
             const snapped = Math.max(0, Math.round(time * 4) / 4);
             if (kind === "cart") {
@@ -2080,6 +2090,7 @@ export function App() {
           storyScenes={storyScenes}
           activeEditingSceneId={activeSceneId}
           playSceneRequest={playSceneRequest}
+          stopSceneRequest={stopSceneRequest}
           onActiveSceneChange={onActiveSceneChange}
           interactions={interactions}
           simulateTriggerRequest={simulateTriggerRequest}

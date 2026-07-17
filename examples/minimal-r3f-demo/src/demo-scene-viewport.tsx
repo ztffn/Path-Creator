@@ -17,6 +17,7 @@ import {
   type RigCartDefinition,
   type RigPathDefinition,
   type SerializedBezierPath,
+  type TriggerDefinition,
   type Vec3
 } from "@huma/path-creator/core";
 import {
@@ -59,6 +60,7 @@ import {
   resolveTriggerCommands,
   seekTimelinePlayer,
   stepTriggers,
+  stopScene,
   type Timeline,
   type TimelinePlayer,
   type TimelineRigContext,
@@ -239,6 +241,55 @@ function SpinningTargetProbe({
   );
 }
 
+/**
+ * Edit-mode gizmo for a proximity trigger: a clickable marker at the trigger's
+ * target plus wireframe enter-radius (and, when selected, exit-hysteresis)
+ * spheres — constant geometry, radius via scale (WebGPU-safe). Clicking selects
+ * the trigger; the zone follows its target entity, so moving the entity moves
+ * the trigger. Radius/hysteresis are edited in the trigger inspector.
+ */
+function ProximityTriggerGizmo({
+  trigger,
+  selected,
+  onSelect,
+  resolvePosition
+}: {
+  trigger: TriggerDefinition;
+  selected: boolean;
+  onSelect: () => void;
+  resolvePosition: (id: string) => Vec3 | null;
+}) {
+  const groupRef = useRef<Group>(null);
+  const source = trigger.source;
+  useFrame(() => {
+    const group = groupRef.current;
+    if (!group || source.type !== "proximity") return;
+    const position = resolvePosition(source.targetId);
+    group.visible = Boolean(position);
+    if (position) group.position.set(position.x, position.y, position.z);
+  });
+  if (source.type !== "proximity") return null;
+  const hysteresis = source.hysteresis ?? 0;
+  return (
+    <group ref={groupRef}>
+      <mesh onPointerDown={(event) => { event.stopPropagation(); onSelect(); }}>
+        <sphereGeometry args={[0.16, 12, 12]} />
+        <meshBasicMaterial color={selected ? "#f97316" : "#f59e0b"} />
+      </mesh>
+      <mesh scale={Math.max(0.01, source.radius)}>
+        <sphereGeometry args={[1, 24, 16]} />
+        <meshBasicMaterial wireframe transparent opacity={selected ? 0.3 : 0.12} color="#f97316" depthWrite={false} />
+      </mesh>
+      {selected && hysteresis > 0 ? (
+        <mesh scale={Math.max(0.01, source.radius + hysteresis)}>
+          <sphereGeometry args={[1, 24, 16]} />
+          <meshBasicMaterial wireframe transparent opacity={0.08} color="#f97316" depthWrite={false} />
+        </mesh>
+      ) : null}
+    </group>
+  );
+}
+
 // A few bindable demo props so an Activation track has something obvious to
 // show/hide (the demo's stand-in for "GameObjects you drag onto the track").
 const DEMO_PROP_DEFS: { id: string; name: string; position: [number, number, number]; color: string }[] = [
@@ -322,6 +373,7 @@ export function DemoSceneViewport({
   storyScenes,
   activeEditingSceneId,
   playSceneRequest,
+  stopSceneRequest,
   onActiveSceneChange,
   interactions,
   simulateTriggerRequest,
@@ -391,6 +443,8 @@ export function DemoSceneViewport({
   activeEditingSceneId: string;
   /** Queued live scene invocation (activation-request style; key dedupes). */
   playSceneRequest: { key: number; sceneId: string } | null;
+  /** Queued stop of the live scene (blends back; no-op when none is live). */
+  stopSceneRequest: { key: number } | null;
   /** Reports the scene the runtime is playing (null when control returned). */
   onActiveSceneChange: (sceneId: string | null) => void;
   /** Authored triggers/actions/bindings the reactive runtime steps per frame. */
@@ -487,6 +541,7 @@ export function DemoSceneViewport({
   // live scene id fires only on change.
   const sceneRuntimeRef = useRef(createSceneRuntimeState());
   const lastPlaySceneKeyRef = useRef<number | null>(null);
+  const lastStopSceneKeyRef = useRef<number | null>(null);
   const lastActiveSceneRef = useRef<string | null>(null);
   // Reactive trigger runtime: per-trigger proximity/arm state (present-mode only),
   // stepped after the drive so marker windows reflect this frame's clock advance.
@@ -497,6 +552,15 @@ export function DemoSceneViewport({
   const triggerObjPos = useMemo(() => new Vector3(), []);
   // Object taps collected for the trigger snapshot, drained once per frame.
   const pendingClicksRef = useRef<string[]>([]);
+  // A proximity target/entity's live world position (also drawn by the gizmos).
+  const resolveTriggerPosition = (id: string): Vec3 | null => {
+    const declared = targetRegistry.resolve(id);
+    if (declared) return declared;
+    const bound = activatablesRegistry.resolve(id);
+    if (!bound) return null;
+    bound.getWorldPosition(triggerObjPos);
+    return { x: triggerObjPos.x, y: triggerObjPos.y, z: triggerObjPos.z };
+  };
   // In Play (present) mode an object tap is trigger input, not an editor
   // selection; Edit mode keeps the normal selection behavior.
   const reportEntityInteraction = (kind: EntityKind, id: string): void => {
@@ -604,6 +668,10 @@ export function DemoSceneViewport({
     if (playSceneRequest && playSceneRequest.key !== lastPlaySceneKeyRef.current) {
       lastPlaySceneKeyRef.current = playSceneRequest.key;
       playScene(sceneRuntimeRef.current, { sceneId: playSceneRequest.sceneId });
+    }
+    if (stopSceneRequest && stopSceneRequest.key !== lastStopSceneKeyRef.current) {
+      lastStopSceneKeyRef.current = stopSceneRequest.key;
+      stopScene(sceneRuntimeRef.current);
     }
     const result = driveRigWithScenes(sceneRuntimeRef.current, rigDrive.state.current, {
       camera: brainCamera,
@@ -767,14 +835,7 @@ export function DemoSceneViewport({
         // Present mode = Play view; edit-mode scrubbing can never fire anything.
         present: playMode,
         cameraPosition: { x: triggerCamPos.x, y: triggerCamPos.y, z: triggerCamPos.z },
-        resolvePosition: (id) => {
-          const declared = targetRegistry.resolve(id);
-          if (declared) return declared;
-          const bound = activatablesRegistry.resolve(id);
-          if (!bound) return null;
-          bound.getWorldPosition(triggerObjPos);
-          return { x: triggerObjPos.x, y: triggerObjPos.y, z: triggerObjPos.z };
-        },
+        resolvePosition: resolveTriggerPosition,
         playback: playbackWindows,
         clicks: pendingClicksRef.current
       },
@@ -880,6 +941,20 @@ export function DemoSceneViewport({
         gizmoEnabled={objectGizmoEnabled}
         onTransformingChange={onTransformingChange}
       />
+      {/* Proximity trigger zones: authoring gizmos, hidden while presenting. */}
+      {!playMode
+        ? interactions.triggers.map((trigger) =>
+            trigger.source.type === "proximity" ? (
+              <ProximityTriggerGizmo
+                key={trigger.id}
+                trigger={trigger}
+                selected={isSelected(selection, "trigger", trigger.id)}
+                onSelect={() => onSelectEntity("trigger", trigger.id)}
+                resolvePosition={resolveTriggerPosition}
+              />
+            ) : null
+          )
+        : null}
       {/* Animated GLB (CC0 Khronos Fox): baked clips Survey/Walk/Run driven by an
           Animation track. Suspense-gated so the loading model doesn't block the scene. */}
       <Suspense fallback={null}>
