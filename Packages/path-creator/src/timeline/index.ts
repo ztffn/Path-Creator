@@ -6,12 +6,20 @@
 // with both shots resolved live, mirroring the brain's behavior.
 import {
   TIMELINE_SCHEMA_VERSION,
+  createArmState,
   evaluateEasing,
   evaluateSceneLayers,
   evaluateVirtualCameraBlendCurve,
   inverseLerp,
   lerp,
   sampleCartFrame,
+  stepArmPolicy,
+  stepProximity,
+  type ActionDefinition,
+  type ArmState,
+  type ProximityState,
+  type TriggerBinding,
+  type TriggerDefinition,
   type CameraBlock,
   type CameraTrack,
   type CartFrame,
@@ -730,6 +738,132 @@ export function driveRigWithScenes(
     activeScene: scenes.active ? activeScene : { ...activeScene, playing: false },
     handoffProgress
   };
+}
+
+// --- Reactive trigger runtime ---------------------------------------------------
+// The stateful bridge between live world state and the pure trigger predicates:
+// consumes a per-frame snapshot (camera position, entity resolver, forward-
+// playback windows, clicks), steps each trigger's proximity/arm state through
+// the /core reducers, and emits the bound action commands for the host (and the
+// scene runtime) to execute. Present-mode only; inert (and reset) otherwise.
+
+export interface TriggerWorldSnapshot {
+  /** Present-mode gate: while false (authoring, scrubbing) every trigger is
+   *  inert and volatile state resets, so scrubs can never fire anything. */
+  present: boolean;
+  /** The live camera's world position — the proximity subject. */
+  cameraPosition: Vec3 | null;
+  /** Live world position of a proximity target (target/entity id). */
+  resolvePosition: (id: string) => Vec3 | null;
+  /** Object ids clicked this frame (present-mode pointer). */
+  clicks?: readonly string[];
+  /** Forward-playback windows advanced this frame, one per playing clock:
+   *  marker events in (from, to] fire. Report ONLY real playback steps —
+   *  never scrubs or seeks. */
+  playback?: readonly { sceneId?: string; timeline: Timeline; from: number; to: number }[];
+}
+
+export interface TriggerCommand {
+  triggerId: string;
+  bindingId: string;
+  action: ActionDefinition;
+  priority: number;
+}
+
+export interface TriggerRuntimeState {
+  proximity: Map<string, ProximityState>;
+  arm: Map<string, ArmState>;
+}
+
+export function createTriggerRuntimeState(): TriggerRuntimeState {
+  return { proximity: new Map(), arm: new Map() };
+}
+
+export interface TriggerRuntimeInput {
+  triggers: readonly TriggerDefinition[];
+  actions: readonly ActionDefinition[];
+  bindings: readonly TriggerBinding[];
+}
+
+/** The commands bound to one trigger (also the simulate affordance's path). */
+export function resolveTriggerCommands(defs: TriggerRuntimeInput, triggerId: string): TriggerCommand[] {
+  const commands: TriggerCommand[] = [];
+  for (const binding of defs.bindings) {
+    if (binding.triggerId !== triggerId) continue;
+    const action = defs.actions.find((candidate) => candidate.id === binding.actionId);
+    if (action) {
+      commands.push({ triggerId, bindingId: binding.id, action, priority: binding.priority ?? 0 });
+    }
+  }
+  return commands;
+}
+
+/**
+ * One trigger-runtime step. Deterministic in (state, defs, snapshot, dt):
+ * proximity edges via the hysteresis predicate, marker crossings via
+ * collectTimelineEvents over the reported playback windows (forward-only by
+ * construction), clicks by id — each gated through its trigger's arm-policy
+ * reducer. Conflict rule: at most one playScene command per step (highest
+ * binding priority wins, first authored breaks ties); other verbs all pass.
+ */
+export function stepTriggers(
+  state: TriggerRuntimeState,
+  defs: TriggerRuntimeInput,
+  snapshot: TriggerWorldSnapshot,
+  deltaSeconds: number
+): TriggerCommand[] {
+  if (!snapshot.present) {
+    // Leave present mode ⇒ full reset: a stale "inside" or spent "once" from a
+    // previous run must not leak into the next presentation.
+    state.proximity.clear();
+    state.arm.clear();
+    return [];
+  }
+
+  const commands: TriggerCommand[] = [];
+  for (const trigger of defs.triggers) {
+    if (trigger.enabled === false) continue;
+    const source = trigger.source;
+    let conditionFired = false;
+    let exited = false;
+
+    if (source.type === "proximity") {
+      const target = snapshot.resolvePosition(source.targetId);
+      const subject = snapshot.cameraPosition;
+      if (target && subject) {
+        const previous = state.proximity.get(trigger.id) ?? { inside: false };
+        const edge = stepProximity(previous, subject, target, source.radius, source.hysteresis);
+        state.proximity.set(trigger.id, { inside: edge.inside });
+        conditionFired = edge.entered;
+        exited = edge.exited;
+      }
+    } else if (source.type === "marker") {
+      for (const window of snapshot.playback ?? []) {
+        if (source.sceneId !== undefined && window.sceneId !== source.sceneId) continue;
+        conditionFired ||= collectTimelineEvents(window.timeline, window.from, window.to).some(
+          (event) =>
+            (source.eventId === undefined || event.id === source.eventId) &&
+            (source.eventKind === undefined || event.kind === source.eventKind)
+        );
+      }
+    } else {
+      conditionFired = (snapshot.clicks ?? []).includes(source.objectId);
+    }
+
+    const previousArm = state.arm.get(trigger.id) ?? createArmState();
+    const { state: nextArm, fire } = stepArmPolicy(previousArm, trigger.arm, { conditionFired, exited }, deltaSeconds);
+    state.arm.set(trigger.id, nextArm);
+    if (fire) commands.push(...resolveTriggerCommands(defs, trigger.id));
+  }
+
+  const playSceneCommands = commands.filter((command) => command.action.type === "playScene");
+  if (playSceneCommands.length > 1) {
+    const winner = playSceneCommands.reduce((best, command) =>
+      command.priority > best.priority ? command : best
+    );
+    return commands.filter((command) => command.action.type !== "playScene" || command === winner);
+  }
+  return commands;
 }
 
 function evaluateCameraTrack(

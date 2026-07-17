@@ -6,6 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { RIG_SCHEMA_VERSION, parseRigDocument, sceneOwnsCamera, getScene } from "@huma/path-creator/core";
 import {
+  EMPTY_INTERACTIONS,
   EMPTY_SCENE_CONTENT,
   serializeStory,
   deserializeStory,
@@ -33,7 +34,8 @@ const story: DemoStory = {
     { id: "show", name: "Show", ...EMPTY_SCENE_CONTENT, shotTiming: { "vcam-1": { start: 0, end: 5 } }, extraTracks },
     { id: "detail", name: "Detail", ...EMPTY_SCENE_CONTENT }
   ],
-  entrySceneId: "show"
+  entrySceneId: "show",
+  interactions: EMPTY_INTERACTIONS
 };
 
 describe("story persistence", () => {
@@ -80,6 +82,21 @@ describe("story persistence", () => {
     expect(restored.scenes[0]?.sceneClips).toEqual([{ id: "e1", sceneId: "detail", start: 2, end: 6, offset: 0.5 }]);
     const document = parseRigDocument(serializeStory(withEmbed));
     expect(getScene(document, "show")?.tracks.some((track) => track.type === "scene")).toBe(true);
+  });
+
+  it("round-trips the interaction layer (trigger + action + binding)", () => {
+    const withTriggers: DemoStory = {
+      ...story,
+      interactions: {
+        triggers: [{ id: "t1", name: "Near crate", source: { type: "proximity", targetId: "crate", radius: 3, hysteresis: 1 }, arm: { type: "rearm-on-exit" } }],
+        actions: [{ id: "a1", type: "playScene", sceneId: "detail", skippable: true }],
+        bindings: [{ id: "b1", triggerId: "t1", actionId: "a1", priority: 2 }]
+      }
+    };
+    const restored = deserializeStory(serializeStory(withTriggers));
+    expect(restored.interactions).toEqual(withTriggers.interactions);
+    // A legacy document without the fields loads as empty interactions.
+    expect(deserializeStory(serializeStory(story)).interactions).toEqual(EMPTY_INTERACTIONS);
   });
 
   it("imports legacy x-demo-tracks sidecars onto the entry scene", () => {

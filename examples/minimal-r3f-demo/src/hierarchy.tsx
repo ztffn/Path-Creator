@@ -32,6 +32,8 @@ export interface HierarchyProps {
   onSelectScene: (id: string) => void;
   onAddScene: () => void;
   onPlayScene: (id: string) => void;
+  triggers: Entity[];
+  onAddTrigger: () => void;
   paths: Entity[];
   dollies: Entity[];
   cameras: CameraEntity[];
@@ -202,6 +204,18 @@ export function Hierarchy(props: HierarchyProps) {
           {props.objects.length === 0 ? <EmptyHint>No bindable objects.</EmptyHint> : null}
           {props.objects.map((object) => (
             <Row key={object.id} selected={isSelected(selection, "object", object.id)} onSelect={() => onSelect("object", object.id)} label={object.name} />
+          ))}
+        </Group>
+
+        <Group title="Triggers" onAdd={props.onAddTrigger}>
+          {props.triggers.length === 0 ? <EmptyHint>No triggers. Add one to react to proximity, markers, or clicks.</EmptyHint> : null}
+          {props.triggers.map((trigger) => (
+            <Row
+              key={trigger.id}
+              selected={isSelected(selection, "trigger", trigger.id)}
+              onSelect={() => onSelect("trigger", trigger.id)}
+              label={trigger.name}
+            />
           ))}
         </Group>
 

@@ -19,6 +19,9 @@ import {
   type RigTimelineDefinition,
   type SceneClip,
   type Timeline,
+  type ActionDefinition,
+  type TriggerBinding,
+  type TriggerDefinition,
   type VirtualCameraDefinition
 } from "@huma/path-creator/core";
 import { EMPTY_EXTRA_TRACKS, maxClipEnd, normalizeExtraTracks, type ExtraTracks } from "./extra-tracks";
@@ -73,6 +76,16 @@ export interface DemoSceneContent {
   sceneClips: SceneClip[];
 }
 
+/** The reactive interaction layer, edited as 1:1 trigger+action+binding units
+ *  in the demo but persisted in the schema's general n:m shape. */
+export interface DemoInteractions {
+  triggers: TriggerDefinition[];
+  actions: ActionDefinition[];
+  bindings: TriggerBinding[];
+}
+
+export const EMPTY_INTERACTIONS: DemoInteractions = { triggers: [], actions: [], bindings: [] };
+
 /** The full authored story: shared pools + every scene, entry marked. */
 export interface DemoStory {
   paths: RigPathDefinition[];
@@ -83,6 +96,7 @@ export interface DemoStory {
   targets: SceneTarget[];
   scenes: DemoSceneContent[];
   entrySceneId: string | null;
+  interactions: DemoInteractions;
 }
 
 export const EMPTY_SCENE_CONTENT: Omit<DemoSceneContent, "id" | "name"> = {
@@ -305,7 +319,10 @@ export function assembleDocument(story: DemoStory): RigDocument {
         { id: scene.id, ...(scene.name !== undefined && { name: scene.name }) }
       )
     ),
-    ...(story.entrySceneId !== null && { entrySceneId: story.entrySceneId })
+    ...(story.entrySceneId !== null && { entrySceneId: story.entrySceneId }),
+    ...(story.interactions.triggers.length > 0 && { triggers: story.interactions.triggers }),
+    ...(story.interactions.actions.length > 0 && { actions: story.interactions.actions }),
+    ...(story.interactions.bindings.length > 0 && { triggerBindings: story.interactions.bindings })
   });
 }
 
@@ -357,7 +374,12 @@ export function hydrateStory(document: RigDocument): DemoStory {
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
     ),
     scenes,
-    entrySceneId: document.entrySceneId ?? scenes[0]?.id ?? null
+    entrySceneId: document.entrySceneId ?? scenes[0]?.id ?? null,
+    interactions: {
+      triggers: document.triggers ?? [],
+      actions: document.actions ?? [],
+      bindings: document.triggerBindings ?? []
+    }
   };
 }
 

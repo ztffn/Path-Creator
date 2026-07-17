@@ -4,7 +4,7 @@
 // it — replacing the old per-type selectedXxxId state. Path-anchor sub-selection
 // (selectedHandleIndex/Midpoint) stays separate, scoped to the active path.
 
-export type EntityKind = "scene" | "path" | "dolly" | "camera" | "target" | "object" | "audio";
+export type EntityKind = "scene" | "path" | "dolly" | "camera" | "target" | "object" | "audio" | "trigger";
 
 export interface SelectionRef {
   kind: EntityKind;

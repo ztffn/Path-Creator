@@ -26,13 +26,22 @@ import {
 import { createRigDriveState, driveActivation } from "../src/three";
 import {
   RIG_SCHEMA_VERSION,
+  createArmState,
   getEntryScene,
   getScene,
   listScenes,
   parseRigDocument,
   sceneOwnsCamera,
-  serializeRigDocument
+  serializeRigDocument,
+  stepArmPolicy,
+  stepProximity
 } from "../src/core";
+import {
+  createTriggerRuntimeState,
+  resolveTriggerCommands,
+  stepTriggers,
+  type TriggerWorldSnapshot
+} from "../src/timeline";
 import {
   collectTimelineEvents,
   createSceneRuntimeState,
@@ -1004,5 +1013,161 @@ describe("scene tracks (deterministic master-embed)", () => {
       ]
     });
     expect(() => buildRigRuntime(document)).toThrow(/unknown scene "missing"/);
+  });
+});
+
+describe("trigger predicates and arm policies (pure)", () => {
+  it("proximity enters at radius and only exits past the hysteresis band", () => {
+    const target = { x: 0, y: 0, z: 0 };
+    const at = (x: number) => ({ x, y: 0, z: 0 });
+    let state = { inside: false };
+    const step = (x: number) => {
+      const edge = stepProximity(state, at(x), target, 3, 1);
+      state = { inside: edge.inside };
+      return edge;
+    };
+    expect(step(5).entered).toBe(false);
+    expect(step(2.9).entered).toBe(true);
+    // Boundary hover inside the band [3, 4]: no chatter in either direction.
+    expect(step(3.5)).toEqual({ inside: true, entered: false, exited: false });
+    expect(step(2.8)).toEqual({ inside: true, entered: false, exited: false });
+    expect(step(3.9)).toEqual({ inside: true, entered: false, exited: false });
+    // Past radius + hysteresis: exit fires once.
+    expect(step(4.2).exited).toBe(true);
+    expect(step(4.5)).toEqual({ inside: false, entered: false, exited: false });
+    // Re-entry requires crossing the inner radius again.
+    expect(step(3.5).entered).toBe(false);
+    expect(step(2.5).entered).toBe(true);
+  });
+
+  it("arm policies gate re-firing (once / rearm-on-exit / every-time / cooldown)", () => {
+    const fire = { conditionFired: true };
+    const idle = { conditionFired: false };
+
+    let once = createArmState();
+    let r = stepArmPolicy(once, { type: "once" }, fire, 0.1);
+    expect(r.fire).toBe(true);
+    once = r.state;
+    expect(stepArmPolicy(once, { type: "once" }, fire, 0.1).fire).toBe(false);
+
+    let onExit = createArmState();
+    r = stepArmPolicy(onExit, { type: "rearm-on-exit" }, fire, 0.1);
+    expect(r.fire).toBe(true);
+    onExit = r.state;
+    r = stepArmPolicy(onExit, { type: "rearm-on-exit" }, fire, 0.1);
+    expect(r.fire).toBe(false);
+    onExit = r.state;
+    r = stepArmPolicy(onExit, { type: "rearm-on-exit" }, { conditionFired: false, exited: true }, 0.1);
+    onExit = r.state;
+    expect(stepArmPolicy(onExit, { type: "rearm-on-exit" }, fire, 0.1).fire).toBe(true);
+
+    let every = createArmState();
+    r = stepArmPolicy(every, { type: "every-time" }, fire, 0.1);
+    expect(r.fire).toBe(true);
+    expect(stepArmPolicy(r.state, { type: "every-time" }, fire, 0.1).fire).toBe(true);
+
+    let cool = createArmState();
+    r = stepArmPolicy(cool, { type: "cooldown", seconds: 1 }, fire, 0.1);
+    expect(r.fire).toBe(true);
+    cool = r.state;
+    r = stepArmPolicy(cool, { type: "cooldown", seconds: 1 }, fire, 0.5);
+    expect(r.fire).toBe(false);
+    cool = r.state;
+    r = stepArmPolicy(cool, { type: "cooldown", seconds: 1 }, idle, 0.6);
+    cool = r.state;
+    expect(stepArmPolicy(cool, { type: "cooldown", seconds: 1 }, fire, 0.1).fire).toBe(true);
+  });
+});
+
+describe("trigger runtime (stepTriggers)", () => {
+  const markerScene = createTimeline({
+    duration: 10,
+    tracks: [
+      { type: "event", id: "ev", events: [
+        { id: "m1", time: 3, kind: "chapter" },
+        { id: "m2", time: 5, kind: "sfx" }
+      ] }
+    ]
+  });
+
+  const defs = {
+    triggers: [
+      { id: "t-prox", source: { type: "proximity" as const, targetId: "crate", radius: 3, hysteresis: 1 }, arm: { type: "rearm-on-exit" as const } },
+      { id: "t-marker", source: { type: "marker" as const, eventKind: "chapter" }, arm: { type: "every-time" as const } },
+      { id: "t-click", source: { type: "click" as const, objectId: "crate" }, arm: { type: "once" as const } }
+    ],
+    actions: [
+      { id: "a-play", type: "playScene" as const, sceneId: "detail" },
+      { id: "a-pause", type: "transport" as const, op: "pause" as const }
+    ],
+    bindings: [
+      { id: "b1", triggerId: "t-prox", actionId: "a-play" },
+      { id: "b2", triggerId: "t-marker", actionId: "a-pause" },
+      { id: "b3", triggerId: "t-click", actionId: "a-play", priority: 5 }
+    ]
+  };
+
+  const snapshotAt = (x: number, extra: Partial<TriggerWorldSnapshot> = {}): TriggerWorldSnapshot => ({
+    present: true,
+    cameraPosition: { x, y: 0, z: 0 },
+    resolvePosition: (id) => (id === "crate" ? { x: 0, y: 0, z: 0 } : null),
+    ...extra
+  });
+
+  it("fires a proximity trigger once on entry and re-arms on exit", () => {
+    const state = createTriggerRuntimeState();
+    expect(stepTriggers(state, defs, snapshotAt(10), 0.1)).toHaveLength(0);
+    const fired = stepTriggers(state, defs, snapshotAt(2), 0.1);
+    expect(fired).toHaveLength(1);
+    expect(fired[0]?.action.type).toBe("playScene");
+    // Still inside: no re-fire.
+    expect(stepTriggers(state, defs, snapshotAt(2.5), 0.1)).toHaveLength(0);
+    // Hover in the band: still armed=false, nothing fires.
+    expect(stepTriggers(state, defs, snapshotAt(3.5), 0.1)).toHaveLength(0);
+    // Exit past the band, re-enter: fires again.
+    expect(stepTriggers(state, defs, snapshotAt(6), 0.1)).toHaveLength(0);
+    expect(stepTriggers(state, defs, snapshotAt(1), 0.1)).toHaveLength(1);
+  });
+
+  it("markers fire on forward playback windows only (a scrub reports none)", () => {
+    const state = createTriggerRuntimeState();
+    // A playback step crossing t=3 fires the chapter marker.
+    const fired = stepTriggers(state, defs, snapshotAt(10, {
+      playback: [{ timeline: markerScene, from: 2.9, to: 3.1 }]
+    }), 0.1);
+    expect(fired.some((command) => command.action.type === "transport")).toBe(true);
+    // The sfx marker (kind mismatch) does not match this trigger.
+    expect(stepTriggers(state, defs, snapshotAt(10, {
+      playback: [{ timeline: markerScene, from: 4.9, to: 5.1 }]
+    }), 0.1)).toHaveLength(0);
+    // A scrub is simply not reported as a playback window => nothing fires,
+    // even when it jumps across every marker.
+    expect(stepTriggers(state, defs, snapshotAt(10), 0.1)).toHaveLength(0);
+  });
+
+  it("stays inert and resets outside present mode", () => {
+    const state = createTriggerRuntimeState();
+    stepTriggers(state, defs, snapshotAt(2, { clicks: ["crate"] }), 0.1); // prox + once-click fire
+    expect(state.arm.get("t-click")?.armed).toBe(false);
+    // Leaving present resets everything (a spent "once" runs again next time).
+    expect(stepTriggers(state, defs, { ...snapshotAt(2), present: false }, 0.1)).toHaveLength(0);
+    expect(state.arm.size).toBe(0);
+    const again = stepTriggers(state, defs, snapshotAt(2, { clicks: ["crate"] }), 0.1);
+    expect(again.filter((command) => command.action.type === "playScene").length).toBeGreaterThan(0);
+  });
+
+  it("resolves playScene conflicts by binding priority (one per step)", () => {
+    const state = createTriggerRuntimeState();
+    // Proximity entry AND the click fire in the same frame; both bind playScene.
+    const fired = stepTriggers(state, defs, snapshotAt(2, { clicks: ["crate"] }), 0.1);
+    const plays = fired.filter((command) => command.action.type === "playScene");
+    expect(plays).toHaveLength(1);
+    expect(plays[0]?.bindingId).toBe("b3"); // priority 5 beats default 0
+  });
+
+  it("simulate path resolves a trigger's bound commands directly", () => {
+    const commands = resolveTriggerCommands(defs, "t-prox");
+    expect(commands).toHaveLength(1);
+    expect(commands[0]?.action).toEqual({ id: "a-play", type: "playScene", sceneId: "detail" });
   });
 });

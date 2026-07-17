@@ -6,6 +6,7 @@
 import { BezierPath, type SerializedBezierPath } from "./bezier-path";
 import { deserializePathCart, serializePathCart, type PathCart, type SerializedPathCart } from "./cart";
 import type { TrackingTargetDefinition } from "./targets";
+import type { ActionDefinition, TriggerBinding, TriggerDefinition } from "./triggers";
 import { normalizeTimelineEasing, sortTimelineTracks, TIMELINE_SCHEMA_VERSION, type Timeline } from "./timeline";
 import { VertexPath, type VertexPathFromBezierOptions } from "./vertex-path";
 import type { VirtualCameraDefinition } from "./virtual-camera";
@@ -16,8 +17,9 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 // v7: `timelines` is a Story of Scenes — `entrySceneId` designates the entry/master
 //     scene; legacy single-timeline documents migrate as scene[0] = entry.
 // v8: embedded timeline v7 adds scene tracks (deterministic master-embed of scenes).
+// v9: document-level triggers/actions/bindings (reactive interaction layer).
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 8;
+export const RIG_SCHEMA_VERSION = 9;
 
 export interface RigPathDefinition {
   id: string;
@@ -50,6 +52,12 @@ export interface RigDocument {
   /** v7: the Story's entry/master scene (an id in `timelines`). Omitted on
    *  pre-Story documents; resolution falls back to the first timeline. */
   entrySceneId?: string;
+  /** v9: reactive interaction layer — triggers (source + arm policy), actions
+   *  (verbs), and the bindings joining them. Present-mode only; the pure
+   *  evaluators never see these. */
+  triggers?: TriggerDefinition[];
+  actions?: ActionDefinition[];
+  triggerBindings?: TriggerBinding[];
 }
 
 /** Runtime instances built from a rig document, keyed by id. */
@@ -73,7 +81,10 @@ export function createRigDocument(
     ...(init.vcams && { vcams: init.vcams }),
     ...(init.targets && { targets: init.targets }),
     ...(init.timelines && { timelines: init.timelines }),
-    ...(init.entrySceneId !== undefined && { entrySceneId: init.entrySceneId })
+    ...(init.entrySceneId !== undefined && { entrySceneId: init.entrySceneId }),
+    ...(init.triggers && { triggers: init.triggers }),
+    ...(init.actions && { actions: init.actions }),
+    ...(init.triggerBindings && { triggerBindings: init.triggerBindings })
   };
 }
 

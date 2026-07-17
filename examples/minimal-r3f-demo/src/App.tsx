@@ -14,10 +14,13 @@ import {
   type ComposerSettings,
   type Easing,
   type EasingCurve,
+  type ActionDefinition,
   type RigCartDefinition,
   type RigPathDefinition,
   type SceneClip,
   type SerializedBezierPath,
+  type TriggerBinding,
+  type TriggerDefinition,
   type Vec3
 } from "@huma/path-creator/core";
 import {
@@ -58,7 +61,9 @@ import {
   buildShowTimeline,
   contentFromScene,
   sceneFromStory,
+  EMPTY_INTERACTIONS,
   EMPTY_SCENE_CONTENT,
+  type DemoInteractions,
   type DemoScene,
   type DemoSceneContent,
   type DemoStory
@@ -363,6 +368,7 @@ export function App() {
       leaveTimeline: () => setPipDriver("shots"),
       playScene: (id: string) => setPlaySceneRequest({ key: Date.now(), sceneId: id }),
       activeSceneId: () => liveSceneRef.current,
+      simulateTrigger: (id: string) => setSimulateTriggerRequest({ key: Date.now(), triggerId: id }),
       selectObject: (id: string) => select("object", id),
       clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
       readPose: (id: string) => readObjectPose(id),
@@ -668,6 +674,23 @@ export function App() {
   function requestPlayScene(sceneId: string): void {
     setPlaySceneRequest({ key: Date.now(), sceneId });
   }
+  // The reactive interaction layer (document-level): triggers + actions +
+  // bindings, edited as 1:1 units, persisted in the schema's n:m shape.
+  const [interactions, setInteractions] = useState<DemoInteractions>(
+    () => loadedStory?.interactions ?? EMPTY_INTERACTIONS
+  );
+  const [simulateTriggerRequest, setSimulateTriggerRequest] = useState<{ key: number; triggerId: string } | null>(null);
+  function simulateTrigger(triggerId: string): void {
+    setSimulateTriggerRequest({ key: Date.now(), triggerId });
+  }
+  // Transport verbs a fired trigger requests; play routes the PiP to the timeline.
+  function handleTransportTrigger(op: "play" | "pause" | "seek", time?: number): void {
+    if (op === "seek") seekTimelinePlayer(timelinePlayerRef.current, time ?? 0);
+    else if (op === "play") {
+      setPipDriver("timeline");
+      timelinePlayerRef.current.playing = true;
+    } else timelinePlayerRef.current.playing = false;
+  }
   // The UI-facing view is a pure projection of the authoritative model.
   const virtualCameras = useMemo<DemoVirtualCamera[]>(
     () =>
@@ -703,8 +726,9 @@ export function App() {
     scenes: sceneContents.map((content) =>
       content.id === activeSceneId ? contentFromScene(currentScene, content.id, content.name) : content
     ),
-    entrySceneId
-  }), [currentScene, sceneContents, activeSceneId, entrySceneId, paths, activePathId, dollies, vcamDefs, editorVcams, pointTargets]);
+    entrySceneId,
+    interactions
+  }), [currentScene, sceneContents, activeSceneId, entrySceneId, paths, activePathId, dollies, vcamDefs, editorVcams, pointTargets, interactions]);
   useStoryAutosave(SCENE_STORAGE_KEY, currentStory);
 
   // Replaces the whole editing state from a loaded/parsed story (opens its entry scene).
@@ -729,6 +753,7 @@ export function App() {
     setSceneContents(story.scenes.length > 0 ? story.scenes : [{ id: entryId, name: "Show", ...EMPTY_SCENE_CONTENT }]);
     setActiveSceneId(scene ? entryId : story.scenes[0]?.id ?? entryId);
     setEntrySceneId(entryId);
+    setInteractions(story.interactions);
     setSelection(null);
     setSelectedMidpointIndex(null);
     setSelectedHandleIndex(active ? 0 : null);
@@ -780,6 +805,80 @@ export function App() {
     seekTimelinePlayer(timelinePlayerRef.current, 0);
   }
 
+  // Trigger authoring: 1:1 trigger+action+binding units over the n:m schema.
+  function addTrigger(): void {
+    const suffix = Date.now().toString(36);
+    const entityId = activatables[0]?.id ?? pointTargets[0]?.id ?? "";
+    const sceneId = sceneContents.find((content) => content.id !== activeSceneId)?.id ?? activeSceneId;
+    const trigger: TriggerDefinition = {
+      id: `trig-${suffix}`,
+      name: `Trigger ${interactions.triggers.length + 1}`,
+      source: { type: "proximity", targetId: entityId, radius: 3, hysteresis: 1 },
+      arm: { type: "rearm-on-exit" }
+    };
+    const action: ActionDefinition = { id: `act-${suffix}`, type: "playScene", sceneId, skippable: true };
+    const binding: TriggerBinding = { id: `bind-${suffix}`, triggerId: trigger.id, actionId: action.id };
+    setInteractions((prev) => ({
+      triggers: [...prev.triggers, trigger],
+      actions: [...prev.actions, action],
+      bindings: [...prev.bindings, binding]
+    }));
+    select("trigger", trigger.id);
+  }
+
+  function updateTrigger(triggerId: string, patch: Partial<Omit<TriggerDefinition, "id">>): void {
+    setInteractions((prev) => ({
+      ...prev,
+      triggers: prev.triggers.map((trigger) => (trigger.id === triggerId ? { ...trigger, ...patch } : trigger))
+    }));
+  }
+
+  // Replaces (or creates) the action bound to this trigger, keeping the binding.
+  function updateTriggerAction(triggerId: string, action: ActionDefinition): void {
+    setInteractions((prev) => {
+      const binding = prev.bindings.find((candidate) => candidate.triggerId === triggerId);
+      if (!binding) {
+        return {
+          ...prev,
+          actions: [...prev.actions, action],
+          bindings: [...prev.bindings, { id: `bind-${triggerId}`, triggerId, actionId: action.id }]
+        };
+      }
+      return {
+        ...prev,
+        actions: prev.actions.some((candidate) => candidate.id === binding.actionId)
+          ? prev.actions.map((candidate) => (candidate.id === binding.actionId ? { ...action, id: binding.actionId } : candidate))
+          : [...prev.actions, { ...action, id: binding.actionId }]
+      };
+    });
+  }
+
+  function setTriggerPriority(triggerId: string, priority: number): void {
+    setInteractions((prev) => ({
+      ...prev,
+      bindings: prev.bindings.map((binding) =>
+        binding.triggerId === triggerId ? { ...binding, priority } : binding
+      )
+    }));
+  }
+
+  function deleteTrigger(triggerId: string): void {
+    setInteractions((prev) => {
+      const boundActionIds = new Set(
+        prev.bindings.filter((binding) => binding.triggerId === triggerId).map((binding) => binding.actionId)
+      );
+      const stillBound = new Set(
+        prev.bindings.filter((binding) => binding.triggerId !== triggerId).map((binding) => binding.actionId)
+      );
+      return {
+        triggers: prev.triggers.filter((trigger) => trigger.id !== triggerId),
+        actions: prev.actions.filter((action) => !boundActionIds.has(action.id) || stillBound.has(action.id)),
+        bindings: prev.bindings.filter((binding) => binding.triggerId !== triggerId)
+      };
+    });
+    if (isSelected(selection, "trigger", triggerId)) setSelection(null);
+  }
+
   function exportScene(): void {
     downloadStory(currentStory);
   }
@@ -804,7 +903,8 @@ export function App() {
       editorVcams: {},
       targets: [],
       scenes: [{ id: "show", name: "Show", ...EMPTY_SCENE_CONTENT }],
-      entrySceneId: "show"
+      entrySceneId: "show",
+      interactions: EMPTY_INTERACTIONS
     });
   }
 
@@ -1653,6 +1753,13 @@ export function App() {
   const selectedPathDef = paths.find((path) => path.id === selectedIdOf(selection, "path")) ?? null;
   const selectedObject = activatables.find((object) => object.id === selectedIdOf(selection, "object")) ?? null;
   const selectedAudioTrack = extraTracks.audioTracks.find((track) => track.id === selectedIdOf(selection, "audio")) ?? null;
+  const selectedTrigger = interactions.triggers.find((trigger) => trigger.id === selectedIdOf(selection, "trigger")) ?? null;
+  const selectedTriggerBinding = selectedTrigger
+    ? interactions.bindings.find((binding) => binding.triggerId === selectedTrigger.id) ?? null
+    : null;
+  const selectedTriggerAction = selectedTriggerBinding
+    ? interactions.actions.find((action) => action.id === selectedTriggerBinding.actionId) ?? null
+    : null;
   const selectionName: string | null = !selection
     ? null
     : {
@@ -1662,7 +1769,8 @@ export function App() {
         camera: selectedVirtualCamera?.name,
         target: selectedTargetEntity?.name,
         object: selectedObject?.name,
-        audio: selectedAudioTrack?.name
+        audio: selectedAudioTrack?.name,
+        trigger: selectedTrigger?.name
       }[selection.kind] ?? null;
 
   return (
@@ -1682,6 +1790,8 @@ export function App() {
           onSelectScene={switchScene}
           onAddScene={addScene}
           onPlayScene={requestPlayScene}
+          triggers={interactions.triggers.map((trigger) => ({ id: trigger.id, name: trigger.name ?? trigger.id }))}
+          onAddTrigger={addTrigger}
           paths={paths.map((path) => ({ id: path.id, name: path.name ?? path.id }))}
           dollies={dollies.map((dolly) => ({ id: dolly.id, name: dolly.name ?? dolly.id }))}
           cameras={virtualCameras.map((camera) => ({
@@ -1833,6 +1943,25 @@ export function App() {
                 }
               : null
           }
+          trigger={
+            selectedTrigger
+              ? {
+                  trigger: selectedTrigger,
+                  action: selectedTriggerAction,
+                  priority: selectedTriggerBinding?.priority ?? 0,
+                  entities: [
+                    ...activatables.map((object) => ({ id: object.id, name: object.name })),
+                    ...pointTargets.map((target) => ({ id: target.id, name: target.name ?? target.id }))
+                  ],
+                  scenes: sceneContents.map((content) => ({ id: content.id, name: content.name ?? content.id })),
+                  onUpdateTrigger: (patch) => updateTrigger(selectedTrigger.id, patch),
+                  onUpdateAction: (action) => updateTriggerAction(selectedTrigger.id, action),
+                  onSetPriority: (priority) => setTriggerPriority(selectedTrigger.id, priority),
+                  onSimulate: () => simulateTrigger(selectedTrigger.id),
+                  onDelete: () => deleteTrigger(selectedTrigger.id)
+                }
+              : null
+          }
         />
       </div>
       <div
@@ -1945,6 +2074,9 @@ export function App() {
           activeEditingSceneId={activeSceneId}
           playSceneRequest={playSceneRequest}
           onActiveSceneChange={onActiveSceneChange}
+          interactions={interactions}
+          simulateTriggerRequest={simulateTriggerRequest}
+          onTransportTrigger={handleTransportTrigger}
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           animationTracks={extraTracks.animationTracks}

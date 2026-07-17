@@ -52,14 +52,19 @@ import {
 import {
   createSceneRuntimeState,
   createTimelinePlayer,
+  createTriggerRuntimeState,
   driveRigWithScenes,
   evaluateSceneLayers,
   playScene,
+  resolveTriggerCommands,
   seekTimelinePlayer,
+  stepTriggers,
   type Timeline,
   type TimelinePlayer,
-  type TimelineRigContext
+  type TimelineRigContext,
+  type TriggerCommand
 } from "@huma/path-creator/timeline";
+import type { DemoInteractions } from "./scene-io";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
@@ -318,6 +323,9 @@ export function DemoSceneViewport({
   activeEditingSceneId,
   playSceneRequest,
   onActiveSceneChange,
+  interactions,
+  simulateTriggerRequest,
+  onTransportTrigger,
   activationTracks,
   audioTracks,
   animationTracks,
@@ -385,6 +393,12 @@ export function DemoSceneViewport({
   playSceneRequest: { key: number; sceneId: string } | null;
   /** Reports the scene the runtime is playing (null when control returned). */
   onActiveSceneChange: (sceneId: string | null) => void;
+  /** Authored triggers/actions/bindings the reactive runtime steps per frame. */
+  interactions: DemoInteractions;
+  /** Fire a trigger's bound actions manually (authoring preview; key dedupes). */
+  simulateTriggerRequest: { key: number; triggerId: string } | null;
+  /** Transport verbs a fired trigger requests (host owns the pip driver). */
+  onTransportTrigger: (op: "play" | "pause" | "seek", time?: number) => void;
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   animationTracks: AnimationTrack[];
@@ -473,6 +487,13 @@ export function DemoSceneViewport({
   const sceneRuntimeRef = useRef(createSceneRuntimeState());
   const lastPlaySceneKeyRef = useRef<number | null>(null);
   const lastActiveSceneRef = useRef<string | null>(null);
+  // Reactive trigger runtime: per-trigger proximity/arm state (present-mode only),
+  // stepped after the drive so marker windows reflect this frame's clock advance.
+  const triggerRuntimeRef = useRef(createTriggerRuntimeState());
+  const lastSimulateKeyRef = useRef<number | null>(null);
+  const prevClocksRef = useRef({ master: 0, branchScene: null as string | null, branchTime: 0 });
+  const triggerCamPos = useMemo(() => new Vector3(), []);
+  const triggerObjPos = useMemo(() => new Vector3(), []);
   // DEV-only oracle: lets headless verification read the driven camera's live pose
   // (take/release blends move it) without scraping pixels. Stripped in production.
   useEffect(() => {
@@ -564,6 +585,10 @@ export function DemoSceneViewport({
       intent = { mode: "idle" };
     }
 
+    // Master clock state BEFORE the drive: trigger marker windows are the real
+    // forward playback advance of this frame (scrubs/seeks report nothing).
+    const prevMasterTime = timelinePlayerRef.current.time;
+    const masterWasPlaying = timelinePlayerRef.current.playing;
     // Queue any new invocation, then drive through the scene runtime: with no
     // active scene this is exactly the base intent; with one, the scene's clock
     // advances and the camera take/blend/release handoff runs over the brain.
@@ -677,6 +702,75 @@ export function DemoSceneViewport({
     // object's base pose when the timeline is left.
     transformDirector.sync(activatablesRegistry, xfLayers, timelineDriving);
 
+    // --- Reactive triggers: snapshot the live world, step, dispatch commands.
+    const triggerInput = {
+      triggers: interactions.triggers,
+      actions: interactions.actions,
+      bindings: interactions.bindings
+    };
+    const dispatchTriggerCommands = (commands: TriggerCommand[]): void => {
+      for (const command of commands) {
+        const action = command.action;
+        if (action.type === "playScene") {
+          playScene(sceneRuntimeRef.current, {
+            sceneId: action.sceneId,
+            ...(action.skippable !== undefined && { skippable: action.skippable }),
+            ...(action.blend && { blend: action.blend })
+          });
+        } else if (action.type === "transport") {
+          onTransportTrigger(action.op, action.time);
+        } else {
+          const bound = activatablesRegistry.resolve(action.objectId);
+          if (bound) bound.visible = action.active;
+        }
+      }
+    };
+    // Simulate affordance: fire a trigger's bound actions directly, in any mode.
+    if (simulateTriggerRequest && simulateTriggerRequest.key !== lastSimulateKeyRef.current) {
+      lastSimulateKeyRef.current = simulateTriggerRequest.key;
+      dispatchTriggerCommands(resolveTriggerCommands(triggerInput, simulateTriggerRequest.triggerId));
+    }
+    // Marker windows: only clocks that really PLAYED forward this frame.
+    const playbackWindows: { sceneId?: string; timeline: Timeline; from: number; to: number }[] = [];
+    const prevClocks = prevClocksRef.current;
+    if (scenePlayback) {
+      if (prevClocks.branchScene === scenePlayback.sceneId && scenePlayback.time > prevClocks.branchTime) {
+        playbackWindows.push({
+          sceneId: scenePlayback.sceneId,
+          timeline: scenePlayback.timeline,
+          from: prevClocks.branchTime,
+          to: scenePlayback.time
+        });
+      }
+    } else if (activeTimeline && masterWasPlaying && player.time > prevMasterTime) {
+      playbackWindows.push({ timeline: activeTimeline, from: prevMasterTime, to: player.time });
+    }
+    prevClocksRef.current = {
+      master: player.time,
+      branchScene: scenePlayback?.sceneId ?? null,
+      branchTime: scenePlayback?.time ?? 0
+    };
+    camera.getWorldPosition(triggerCamPos);
+    const triggerCommands = stepTriggers(
+      triggerRuntimeRef.current,
+      triggerInput,
+      {
+        // Present mode = Play view; edit-mode scrubbing can never fire anything.
+        present: playMode,
+        cameraPosition: { x: triggerCamPos.x, y: triggerCamPos.y, z: triggerCamPos.z },
+        resolvePosition: (id) => {
+          const declared = targetRegistry.resolve(id);
+          if (declared) return declared;
+          const bound = activatablesRegistry.resolve(id);
+          if (!bound) return null;
+          bound.getWorldPosition(triggerObjPos);
+          return { x: triggerObjPos.x, y: triggerObjPos.y, z: triggerObjPos.z };
+        },
+        playback: playbackWindows
+      },
+      delta
+    );
+    if (triggerCommands.length > 0) dispatchTriggerCommands(triggerCommands);
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.
