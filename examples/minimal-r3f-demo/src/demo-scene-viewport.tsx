@@ -28,6 +28,7 @@ import {
   OrbitVcamGlyphRig,
   PathEditor,
   PointTargets,
+  TransformGizmo,
   VirtualCameraGlyph,
   getSuggestedNextAnchor,
   normalizeAnchorScales,
@@ -251,12 +252,19 @@ function SpinningTargetProbe({
 function ProximityTriggerGizmo({
   trigger,
   selected,
+  movable,
   onSelect,
+  onMove,
+  onTransformingChange,
   resolvePosition
 }: {
   trigger: TriggerDefinition;
   selected: boolean;
+  /** The bound target is a point target the drag gizmo may move. */
+  movable: boolean;
   onSelect: () => void;
+  onMove: (targetId: string, position: Vec3) => void;
+  onTransformingChange?: (transforming: boolean) => void;
   resolvePosition: (id: string) => Vec3 | null;
 }) {
   const groupRef = useRef<Group>(null);
@@ -270,7 +278,9 @@ function ProximityTriggerGizmo({
   });
   if (source.type !== "proximity") return null;
   const hysteresis = source.hysteresis ?? 0;
+  const anchor = resolvePosition(source.targetId);
   return (
+    <>
     <group ref={groupRef}>
       <mesh onPointerDown={(event) => { event.stopPropagation(); onSelect(); }}>
         <sphereGeometry args={[0.16, 12, 12]} />
@@ -287,6 +297,22 @@ function ProximityTriggerGizmo({
         </mesh>
       ) : null}
     </group>
+    {/* Translate-only drag handles: moving the zone moves its point target. */}
+    {selected && movable && anchor ? (
+      <TransformGizmo
+        matrix={new Matrix4().makeTranslation(anchor.x, anchor.y, anchor.z)}
+        disableRotations
+        disableScaling
+        onDrag={(local) => {
+          const position = new Vector3();
+          local.decompose(position, new Quaternion(), new Vector3());
+          onMove(source.targetId, { x: position.x, y: position.y, z: position.z });
+        }}
+        onDragStart={() => onTransformingChange?.(true)}
+        onDragEnd={() => onTransformingChange?.(false)}
+      />
+    ) : null}
+    </>
   );
 }
 
@@ -378,6 +404,8 @@ export function DemoSceneViewport({
   interactions,
   simulateTriggerRequest,
   onTransportTrigger,
+  movableTriggerTargets,
+  onMoveTriggerTarget,
   activationTracks,
   audioTracks,
   animationTracks,
@@ -453,6 +481,9 @@ export function DemoSceneViewport({
   simulateTriggerRequest: { key: number; triggerId: string } | null;
   /** Transport verbs a fired trigger requests (host owns the pip driver). */
   onTransportTrigger: (op: "play" | "pause" | "seek", time?: number) => void;
+  /** Trigger zone targets a gizmo drag may move (the demo's point targets). */
+  movableTriggerTargets: ReadonlySet<string>;
+  onMoveTriggerTarget: (targetId: string, position: Vec3) => void;
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   animationTracks: AnimationTrack[];
@@ -949,7 +980,10 @@ export function DemoSceneViewport({
                 key={trigger.id}
                 trigger={trigger}
                 selected={isSelected(selection, "trigger", trigger.id)}
+                movable={trigger.source.type === "proximity" && movableTriggerTargets.has(trigger.source.targetId)}
                 onSelect={() => onSelectEntity("trigger", trigger.id)}
+                onMove={onMoveTriggerTarget}
+                onTransformingChange={onTransformingChange}
                 resolvePosition={resolveTriggerPosition}
               />
             ) : null

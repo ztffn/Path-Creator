@@ -28,6 +28,11 @@ export interface SceneInspectorProps {
    *  the lane creates/moves them, delete lives here (side-panel convention). */
   embeds: { id: string; sceneName: string; start: number; end: number }[];
   onDeleteEmbed: (clipId: string) => void;
+  /** The ACTIVE scene's timeline markers (the lane creates/moves them); kind
+   *  is what marker triggers filter on. */
+  markers: { id: string; time: number; kind: string }[];
+  onUpdateMarkerKind: (markerId: string, kind: string) => void;
+  onDeleteMarker: (markerId: string) => void;
 }
 
 export function SceneInspector({
@@ -47,7 +52,10 @@ export function SceneInspector({
   liveCameraName,
   onRelease,
   embeds,
-  onDeleteEmbed
+  onDeleteEmbed,
+  markers,
+  onUpdateMarkerKind,
+  onDeleteMarker
 }: SceneInspectorProps) {
   return (
     <>
@@ -95,6 +103,30 @@ export function SceneInspector({
           ))}
           <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
             Scenes embedded in this scene's timeline (the "Scenes" lane creates and times them).
+          </div>
+        </SettingsSection>
+      ) : null}
+
+      {markers.length > 0 ? (
+        <SettingsSection title="Markers">
+          {markers.map((marker) => (
+            <div key={marker.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+              <span style={{ color: "rgba(232, 238, 245, 0.55)", fontSize: 11, flex: "0 0 auto", width: 42 }}>
+                {marker.time.toFixed(2)}s
+              </span>
+              <input
+                type="text"
+                value={marker.kind}
+                aria-label="Marker kind"
+                title="Marker kind — marker triggers can filter on it"
+                onChange={(event) => onUpdateMarkerKind(marker.id, event.target.value)}
+                style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+              />
+              <button className="pc-danger" title="Remove this marker" onClick={() => onDeleteMarker(marker.id)}>×</button>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
+            Markers fire marker triggers when playback crosses them (never on scrub). The Markers lane creates and moves them.
           </div>
         </SettingsSection>
       ) : null}

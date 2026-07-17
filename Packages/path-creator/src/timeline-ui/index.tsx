@@ -40,6 +40,32 @@ const MAX_VISIBLE_LANES = 3;
 const RULER_HEIGHT = 42;
 const LANE_HEIGHT = 36;
 
+/** One row of the left rail for a host-defined lane (pinned or below). */
+function extraLaneIcon(
+  lane: ExtraLane,
+  selectedLaneId: string | null,
+  onSelectLane?: (laneId: string) => void
+): ReactNode {
+  return (
+    <div
+      key={lane.id}
+      onClick={onSelectLane ? () => onSelectLane(lane.id) : undefined}
+      style={{
+        height: 36,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: onSelectLane ? "pointer" : "default",
+        background: lane.id === selectedLaneId ? "rgba(249, 115, 22, 0.18)" : "transparent",
+        boxShadow: lane.id === selectedLaneId ? "inset 2px 0 0 #f97316" : "none"
+      }}
+      title={lane.name}
+    >
+      {lane.icon ?? "▮"}
+    </div>
+  );
+}
+
 /** A clip block on a generic extra lane (activation, audio, …). */
 export interface ExtraLaneClip {
   id: string;
@@ -62,6 +88,8 @@ export interface ExtraLane {
   icon?: ReactNode;
   /** Render overlapping adjacent clips as interlocking crossfade wedges. */
   crossfade?: boolean;
+  /** Render this lane ABOVE the shot/dolly lanes instead of below them. */
+  pinned?: boolean;
   clips: ExtraLaneClip[];
 }
 
@@ -274,33 +302,13 @@ export function TimelineLanes({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [timingKey]
   );
+  // Pinned extra lanes render above the shot/dolly lanes (e.g. a Scenes lane
+  // that structures the whole show); the rest sit below as before.
+  const pinnedLanes = extraLanes.filter((lane) => lane.pinned);
+  const unpinnedLanes = extraLanes.filter((lane) => !lane.pinned);
   const editorData = useMemo<TimelineRow[]>(
-    () => [
-      {
-        id: "shot-track",
-        actions: shots.map((shot) => ({
-          id: shot.id,
-          start: shot.start,
-          end: shot.end,
-          effectId: "shot",
-          movable: true,
-          flexible: true
-        }))
-      },
-      // Dolly lanes visualize the per-shot rail moves; they are owned by
-      // their shots, so the lane blocks are read-only.
-      ...dollyLanes.map(([dollyId, lane]) => ({
-        id: `dolly-${dollyId}`,
-        actions: lane.moves.map((move) => ({
-          id: `move-${move.shotId}`,
-          start: move.start,
-          end: move.end,
-          effectId: "move",
-          movable: true,
-          flexible: true
-        }))
-      })),
-      ...extraLanes.map((lane) => ({
+    () => {
+      const extraRow = (lane: ExtraLane): TimelineRow => ({
         id: EXTRA_ROW(lane.id),
         actions: lane.clips.map((clip) => ({
           id: EXTRA_ID(lane.id, clip.id),
@@ -310,8 +318,36 @@ export function TimelineLanes({
           movable: true,
           flexible: true
         }))
-      }))
-    ],
+      });
+      return [
+        ...pinnedLanes.map(extraRow),
+        {
+          id: "shot-track",
+          actions: shots.map((shot) => ({
+            id: shot.id,
+            start: shot.start,
+            end: shot.end,
+            effectId: "shot",
+            movable: true,
+            flexible: true
+          }))
+        },
+        // Dolly lanes visualize the per-shot rail moves; they are owned by
+        // their shots, so the lane blocks are read-only.
+        ...dollyLanes.map(([dollyId, lane]) => ({
+          id: `dolly-${dollyId}`,
+          actions: lane.moves.map((move) => ({
+            id: `move-${move.shotId}`,
+            start: move.start,
+            end: move.end,
+            effectId: "move",
+            movable: true,
+            flexible: true
+          }))
+        })),
+        ...unpinnedLanes.map(extraRow)
+      ];
+    },
     // timingKey covers everything this memo reads except names, which render
     // via the shots prop directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -494,6 +530,7 @@ export function TimelineLanes({
                 textAlign: "center"
               }}
             >
+              {pinnedLanes.map((lane) => extraLaneIcon(lane, selectedLaneId, onSelectLane))}
               <div style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }} title="Shot track">
                 {shotIcon}
               </div>
@@ -506,24 +543,7 @@ export function TimelineLanes({
                   {dollyIcon}
                 </div>
               ))}
-              {extraLanes.map((lane) => (
-                <div
-                  key={lane.id}
-                  onClick={onSelectLane ? () => onSelectLane(lane.id) : undefined}
-                  style={{
-                    height: 36,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: onSelectLane ? "pointer" : "default",
-                    background: lane.id === selectedLaneId ? "rgba(249, 115, 22, 0.18)" : "transparent",
-                    boxShadow: lane.id === selectedLaneId ? "inset 2px 0 0 #f97316" : "none"
-                  }}
-                  title={lane.name}
-                >
-                  {lane.icon ?? "▮"}
-                </div>
-              ))}
+              {unpinnedLanes.map((lane) => extraLaneIcon(lane, selectedLaneId, onSelectLane))}
             </div>
             <div style={{ flex: 1, minWidth: 0, borderRadius: 6, overflow: "hidden" }}>
               <TimelineLaneEditor

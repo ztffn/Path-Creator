@@ -19,6 +19,7 @@ import {
   type RigTimelineDefinition,
   type SceneClip,
   type Timeline,
+  type TimelineEvent,
   type ActionDefinition,
   type TriggerBinding,
   type TriggerDefinition,
@@ -62,6 +63,8 @@ export interface DemoScene {
   /** Deterministic embeds: other scenes played inside this scene's time windows
    *  (one implicit scene track). */
   sceneClips: SceneClip[];
+  /** Timeline markers (one implicit event track); marker triggers fire on them. */
+  markers: TimelineEvent[];
 }
 
 /** One scene's timeline-derived content. A vcam participates in a scene iff it
@@ -74,6 +77,7 @@ export interface DemoSceneContent {
   fovAnimations: Record<string, FovAnimation>;
   extraTracks: ExtraTracks;
   sceneClips: SceneClip[];
+  markers: TimelineEvent[];
 }
 
 /** The reactive interaction layer, edited as 1:1 trigger+action+binding units
@@ -104,7 +108,8 @@ export const EMPTY_SCENE_CONTENT: Omit<DemoSceneContent, "id" | "name"> = {
   dollyRuns: {},
   fovAnimations: {},
   extraTracks: EMPTY_EXTRA_TRACKS,
-  sceneClips: []
+  sceneClips: [],
+  markers: []
 };
 
 /** The working set's scene-content half, stamped with the scene's identity. */
@@ -116,7 +121,8 @@ export function contentFromScene(scene: DemoScene, id: string, name?: string): D
     dollyRuns: scene.dollyRuns,
     fovAnimations: scene.fovAnimations,
     extraTracks: scene.extraTracks,
-    sceneClips: scene.sceneClips
+    sceneClips: scene.sceneClips,
+    markers: scene.markers
   };
 }
 
@@ -135,7 +141,8 @@ export function sceneFromStory(story: DemoStory, sceneId: string): DemoScene | n
     dollyRuns: content.dollyRuns,
     fovAnimations: content.fovAnimations,
     extraTracks: content.extraTracks,
-    sceneClips: content.sceneClips
+    sceneClips: content.sceneClips,
+    markers: content.markers
   };
 }
 
@@ -156,6 +163,7 @@ export function buildShowTimeline(
   fovAnimations: Record<string, FovAnimation> = {},
   extraTracks: ExtraTracks = EMPTY_EXTRA_TRACKS,
   sceneClips: SceneClip[] = [],
+  markers: TimelineEvent[] = [],
   sceneMeta: { id?: string; name?: string } = {}
 ): RigTimelineDefinition {
   const shots = vcamDefs
@@ -200,7 +208,8 @@ export function buildShowTimeline(
     .flat()
     .reduce((max, run) => Math.max(max, run.end), 0);
   const embedEnd = sceneClips.reduce((max, clip) => Math.max(max, clip.end), 0);
-  const duration = Math.max(cartEnd, embedEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
+  const markerEnd = markers.reduce((max, event) => Math.max(max, event.time), 0);
+  const duration = Math.max(cartEnd, embedEnd, markerEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
   return {
     id: sceneMeta.id ?? SHOW_TIMELINE_ID,
     name: sceneMeta.name ?? "Show",
@@ -212,7 +221,8 @@ export function buildShowTimeline(
       ...extraTracks.audioTracks,
       ...extraTracks.animationTracks,
       ...extraTracks.transformTracks,
-      ...(sceneClips.length > 0 ? [{ type: "scene" as const, id: "embeds", clips: sceneClips }] : [])
+      ...(sceneClips.length > 0 ? [{ type: "scene" as const, id: "embeds", clips: sceneClips }] : []),
+      ...(markers.length > 0 ? [{ type: "event" as const, id: "markers", events: markers }] : [])
     ] })
   };
 }
@@ -316,6 +326,7 @@ export function assembleDocument(story: DemoStory): RigDocument {
         scene.fovAnimations,
         scene.extraTracks,
         scene.sceneClips,
+        scene.markers,
         { id: scene.id, ...(scene.name !== undefined && { name: scene.name }) }
       )
     ),
@@ -344,7 +355,8 @@ function contentFromTimeline(
       animationTracks: timeline.tracks.filter((track) => track.type === "animation"),
       transformTracks: timeline.tracks.filter((track) => track.type === "transform")
     },
-    sceneClips: timeline.tracks.filter((track) => track.type === "scene").flatMap((track) => track.clips)
+    sceneClips: timeline.tracks.filter((track) => track.type === "scene").flatMap((track) => track.clips),
+    markers: timeline.tracks.filter((track) => track.type === "event").flatMap((track) => track.events)
   };
 }
 

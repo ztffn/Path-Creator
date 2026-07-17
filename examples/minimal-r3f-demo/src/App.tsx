@@ -19,6 +19,7 @@ import {
   type RigPathDefinition,
   type SceneClip,
   type SerializedBezierPath,
+  type TimelineEvent,
   type TriggerBinding,
   type TriggerDefinition,
   type Vec3
@@ -649,6 +650,8 @@ export function App() {
   const [dollyRuns, setDollyRuns] = useState<Record<string, DollyRun[]>>(() => loadedScene?.dollyRuns ?? {});
   // Deterministic embeds: other scenes played inside this scene's time windows.
   const [sceneClips, setSceneClips] = useState<SceneClip[]>(() => loadedScene?.sceneClips ?? []);
+  // Timeline markers (the implicit event track); marker triggers fire on them.
+  const [markers, setMarkers] = useState<TimelineEvent[]>(() => loadedScene?.markers ?? []);
   // The story's scene list. The ACTIVE scene's authoritative content lives in the
   // five working states (shotTiming/dollyRuns/fovAnimations/extraTracks/sceneClips);
   // its entry here goes stale while editing and is refreshed on switch and in currentStory.
@@ -716,8 +719,9 @@ export function App() {
     fovAnimations,
     targets: pointTargets,
     extraTracks,
-    sceneClips
-  }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks, sceneClips]);
+    sceneClips,
+    markers
+  }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks, sceneClips, markers]);
   // Persist the whole story as a portable RigDocument: every scene's content,
   // with the active scene's list entry refreshed from the live working states.
   const currentStory = useMemo<DemoStory>(() => ({
@@ -754,6 +758,7 @@ export function App() {
     setFovAnimations(scene?.fovAnimations ?? {});
     setExtraTracks(scene?.extraTracks ?? EMPTY_EXTRA_TRACKS);
     setSceneClips(scene?.sceneClips ?? []);
+    setMarkers(scene?.markers ?? []);
     setSceneContents(story.scenes.length > 0 ? story.scenes : [{ id: entryId, name: "Show", ...EMPTY_SCENE_CONTENT }]);
     setActiveSceneId(scene ? entryId : story.scenes[0]?.id ?? entryId);
     setEntrySceneId(entryId);
@@ -781,6 +786,7 @@ export function App() {
     setFovAnimations(target.fovAnimations);
     setExtraTracks(target.extraTracks);
     setSceneClips(target.sceneClips);
+    setMarkers(target.markers);
     setActiveSceneId(sceneId);
     setSelection(null);
     timelinePlayerRef.current.playing = false;
@@ -803,6 +809,7 @@ export function App() {
     setFovAnimations({});
     setExtraTracks(EMPTY_EXTRA_TRACKS);
     setSceneClips([]);
+    setMarkers([]);
     setActiveSceneId(id);
     setSelection(null);
     timelinePlayerRef.current.playing = false;
@@ -812,12 +819,19 @@ export function App() {
   // Trigger authoring: 1:1 trigger+action+binding units over the n:m schema.
   function addTrigger(): void {
     const suffix = Date.now().toString(36);
-    const entityId = activatables[0]?.id ?? pointTargets[0]?.id ?? "";
+    const name = `Trigger ${interactions.triggers.length + 1}`;
+    // Each new trigger gets its OWN zone target, so it is independently movable
+    // (drag its gizmo); retarget to any entity from the inspector's Near field.
+    const zoneTargetId = `target-trig-${suffix}`;
+    setPointTargets((current) => [
+      ...current,
+      { id: zoneTargetId, name: `${name} zone`, type: "point", position: { x: 2.5, y: 1, z: 0 }, visibleInRender: false }
+    ]);
     const sceneId = sceneContents.find((content) => content.id !== activeSceneId)?.id ?? activeSceneId;
     const trigger: TriggerDefinition = {
       id: `trig-${suffix}`,
-      name: `Trigger ${interactions.triggers.length + 1}`,
-      source: { type: "proximity", targetId: entityId, radius: 3, hysteresis: 1 },
+      name,
+      source: { type: "proximity", targetId: zoneTargetId, radius: 3, hysteresis: 1 },
       arm: { type: "rearm-on-exit" }
     };
     const action: ActionDefinition = { id: `act-${suffix}`, type: "playScene", sceneId, skippable: true };
@@ -1054,6 +1068,7 @@ export function App() {
     vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0 ||
     sceneClips.length > 0;
   const sceneClipsKey = JSON.stringify(sceneClips);
+  const markersKey = JSON.stringify(markers);
   const demoTimeline = useMemo(() => {
     if (!hasTimelineContent) return null;
     const base = buildShowTimeline(
@@ -1066,12 +1081,13 @@ export function App() {
       },
       fovAnimations,
       EMPTY_EXTRA_TRACKS,
-      sceneClips
+      sceneClips,
+      markers
     );
     // Extend the live clock to cover media/object clips that outlast camera/cart content.
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration, sceneClipsKey]);
+  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration, sceneClipsKey, markersKey]);
   // Every scene as a playable runtime timeline (extra tracks embedded), for the
   // active-scene runtime's playScene branch. The active scene reads the live
   // working states; the rest read their stored content.
@@ -1084,21 +1100,27 @@ export function App() {
     for (const content of sceneContents) {
       const live =
         content.id === activeSceneId
-          ? { shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips }
+          ? { shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips, markers }
           : content;
       map.set(
         content.id,
-        buildShowTimeline(vcamDefs, live.shotTiming, live.dollyRuns, cartLength, live.fovAnimations, live.extraTracks, live.sceneClips, {
+        buildShowTimeline(vcamDefs, live.shotTiming, live.dollyRuns, cartLength, live.fovAnimations, live.extraTracks, live.sceneClips, live.markers, {
           id: content.id,
           ...(content.name !== undefined && { name: content.name })
         })
       );
     }
     return map;
-  }, [sceneContents, activeSceneId, shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips, vcamDefs, dollies, vertexPaths]);
+  }, [sceneContents, activeSceneId, shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips, markers, vcamDefs, dollies, vertexPaths]);
   const liveSceneName = liveSceneId
     ? sceneContents.find((content) => content.id === liveSceneId)?.name ?? liveSceneId
     : null;
+  // Point targets are the trigger zones a gizmo drag can move (objects/carts move
+  // through their own flows).
+  const movableTriggerTargets = useMemo(
+    () => new Set(pointTargets.filter((target) => target.type === "point").map((target) => target.id)),
+    [pointTargets]
+  );
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
@@ -1538,6 +1560,7 @@ export function App() {
           id: "scn:embeds",
           name: "Scenes",
           color: "rgba(249, 115, 22, 0.6)",
+          pinned: true,
           icon: <IconVideo size={14} />,
           clips: sceneClips.map((clip) => ({
             id: clip.id,
@@ -1547,6 +1570,21 @@ export function App() {
           }))
         }]
       : []),
+    // Timeline markers: click to drop one; marker triggers fire when playback
+    // crosses it. Pinned with the Scenes lane so show structure sits on top.
+    {
+      id: "evt:markers",
+      name: "Markers",
+      color: "rgba(56, 189, 248, 0.75)",
+      pinned: true,
+      icon: <span style={{ fontSize: 11 }}>◆</span>,
+      clips: markers.map((event) => ({
+        id: event.id,
+        start: event.time,
+        end: event.time + 0.25,
+        label: event.kind
+      }))
+    },
     ...extraTracks.activationTracks.map((track) => ({
       id: `act:${track.id}`,
       name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Activation",
@@ -1635,7 +1673,11 @@ export function App() {
           })()
         : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
-    if (laneId.startsWith("scn:")) {
+    if (laneId.startsWith("evt:")) {
+      // Markers are points in time: dragging moves them; width is display-only.
+      const time = Math.max(0, snapSeconds(start));
+      setMarkers((prev) => prev.map((event) => (event.id === clipId ? { ...event, time } : event)));
+    } else if (laneId.startsWith("scn:")) {
       setSceneClips((prev) => prev.map((clip) => (clip.id === clipId ? { ...clip, start, end } : clip)));
     } else if (laneId.startsWith("act:")) {
       const trackId = laneTrackId(laneId);
@@ -1687,6 +1729,10 @@ export function App() {
   };
   const addExtraClip = (laneId: string, time: number): void => {
     const start = Math.max(0, Math.round(time * 4) / 4);
+    if (laneId.startsWith("evt:")) {
+      setMarkers((prev) => [...prev, { id: newClipId(), time: start, kind: "marker" }].sort((a, b) => a.time - b.time));
+      return;
+    }
     if (laneId.startsWith("scn:")) {
       // Cycle through the OTHER scenes; the window defaults to the target's
       // duration (min 1s) so a fresh embed plays the whole scene.
@@ -1873,7 +1919,11 @@ export function App() {
               start: clip.start,
               end: clip.end
             })),
-            onDeleteEmbed: (clipId) => setSceneClips((prev) => prev.filter((clip) => clip.id !== clipId))
+            onDeleteEmbed: (clipId) => setSceneClips((prev) => prev.filter((clip) => clip.id !== clipId)),
+            markers,
+            onUpdateMarkerKind: (markerId, kind) =>
+              setMarkers((prev) => prev.map((event) => (event.id === markerId ? { ...event, kind } : event))),
+            onDeleteMarker: (markerId) => setMarkers((prev) => prev.filter((event) => event.id !== markerId))
           }}
           path={
             selectedPathDef
@@ -2095,6 +2145,8 @@ export function App() {
           interactions={interactions}
           simulateTriggerRequest={simulateTriggerRequest}
           onTransportTrigger={handleTransportTrigger}
+          movableTriggerTargets={movableTriggerTargets}
+          onMoveTriggerTarget={movePointTarget}
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           animationTracks={extraTracks.animationTracks}
