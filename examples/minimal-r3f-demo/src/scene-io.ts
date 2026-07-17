@@ -17,6 +17,7 @@ import {
   type RigDocument,
   type RigPathDefinition,
   type RigTimelineDefinition,
+  type SceneClip,
   type Timeline,
   type VirtualCameraDefinition
 } from "@huma/path-creator/core";
@@ -55,6 +56,9 @@ export interface DemoScene {
   targets: SceneTarget[];
   /** Portable activation/audio/animation/transform tracks embedded in the show timeline. */
   extraTracks: ExtraTracks;
+  /** Deterministic embeds: other scenes played inside this scene's time windows
+   *  (one implicit scene track). */
+  sceneClips: SceneClip[];
 }
 
 /** One scene's timeline-derived content. A vcam participates in a scene iff it
@@ -66,6 +70,7 @@ export interface DemoSceneContent {
   dollyRuns: Record<string, DollyRun[]>;
   fovAnimations: Record<string, FovAnimation>;
   extraTracks: ExtraTracks;
+  sceneClips: SceneClip[];
 }
 
 /** The full authored story: shared pools + every scene, entry marked. */
@@ -84,7 +89,8 @@ export const EMPTY_SCENE_CONTENT: Omit<DemoSceneContent, "id" | "name"> = {
   shotTiming: {},
   dollyRuns: {},
   fovAnimations: {},
-  extraTracks: EMPTY_EXTRA_TRACKS
+  extraTracks: EMPTY_EXTRA_TRACKS,
+  sceneClips: []
 };
 
 /** The working set's scene-content half, stamped with the scene's identity. */
@@ -95,7 +101,8 @@ export function contentFromScene(scene: DemoScene, id: string, name?: string): D
     shotTiming: scene.shotTiming,
     dollyRuns: scene.dollyRuns,
     fovAnimations: scene.fovAnimations,
-    extraTracks: scene.extraTracks
+    extraTracks: scene.extraTracks,
+    sceneClips: scene.sceneClips
   };
 }
 
@@ -113,7 +120,8 @@ export function sceneFromStory(story: DemoStory, sceneId: string): DemoScene | n
     shotTiming: content.shotTiming,
     dollyRuns: content.dollyRuns,
     fovAnimations: content.fovAnimations,
-    extraTracks: content.extraTracks
+    extraTracks: content.extraTracks,
+    sceneClips: content.sceneClips
   };
 }
 
@@ -133,6 +141,7 @@ export function buildShowTimeline(
   // Per-vcam FOV push/pull, emitted as the block's CameraBlock.lensAnimation.
   fovAnimations: Record<string, FovAnimation> = {},
   extraTracks: ExtraTracks = EMPTY_EXTRA_TRACKS,
+  sceneClips: SceneClip[] = [],
   sceneMeta: { id?: string; name?: string } = {}
 ): RigTimelineDefinition {
   const shots = vcamDefs
@@ -176,7 +185,8 @@ export function buildShowTimeline(
   const cartEnd = Object.values(dollyRuns)
     .flat()
     .reduce((max, run) => Math.max(max, run.end), 0);
-  const duration = Math.max(cartEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
+  const embedEnd = sceneClips.reduce((max, clip) => Math.max(max, clip.end), 0);
+  const duration = Math.max(cartEnd, embedEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
   return {
     id: sceneMeta.id ?? SHOW_TIMELINE_ID,
     name: sceneMeta.name ?? "Show",
@@ -187,7 +197,8 @@ export function buildShowTimeline(
       ...extraTracks.activationTracks,
       ...extraTracks.audioTracks,
       ...extraTracks.animationTracks,
-      ...extraTracks.transformTracks
+      ...extraTracks.transformTracks,
+      ...(sceneClips.length > 0 ? [{ type: "scene" as const, id: "embeds", clips: sceneClips }] : [])
     ] })
   };
 }
@@ -290,6 +301,7 @@ export function assembleDocument(story: DemoStory): RigDocument {
         cartLength,
         scene.fovAnimations,
         scene.extraTracks,
+        scene.sceneClips,
         { id: scene.id, ...(scene.name !== undefined && { name: scene.name }) }
       )
     ),
@@ -314,7 +326,8 @@ function contentFromTimeline(
       audioTracks: timeline.tracks.filter((track) => track.type === "audio"),
       animationTracks: timeline.tracks.filter((track) => track.type === "animation"),
       transformTracks: timeline.tracks.filter((track) => track.type === "transform")
-    }
+    },
+    sceneClips: timeline.tracks.filter((track) => track.type === "scene").flatMap((track) => track.clips)
   };
 }
 

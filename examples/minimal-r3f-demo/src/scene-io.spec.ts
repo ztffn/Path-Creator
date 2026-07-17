@@ -4,7 +4,7 @@
 // x-demo-tracks sidecars still load onto the entry scene; a scene without camera
 // timing entries persists with no camera track (composition = ownership).
 import { describe, expect, it } from "vitest";
-import { parseRigDocument, sceneOwnsCamera, getScene } from "@huma/path-creator/core";
+import { RIG_SCHEMA_VERSION, parseRigDocument, sceneOwnsCamera, getScene } from "@huma/path-creator/core";
 import {
   EMPTY_SCENE_CONTENT,
   serializeStory,
@@ -47,10 +47,10 @@ describe("story persistence", () => {
     expect(restored.scenes[1]?.extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
   });
 
-  it("persists a valid v7 document; a scene without shots has no camera track", () => {
+  it("persists a valid current-schema document; a scene without shots has no camera track", () => {
     const json = serializeStory(story);
     const document = parseRigDocument(json);
-    expect(document.schemaVersion).toBe(7);
+    expect(document.schemaVersion).toBe(RIG_SCHEMA_VERSION);
     expect(document.entrySceneId).toBe("show");
     expect(sceneOwnsCamera(getScene(document, "show")!)).toBe(true);
     expect(sceneOwnsCamera(getScene(document, "detail")!)).toBe(false);
@@ -66,6 +66,20 @@ describe("story persistence", () => {
     const restored = deserializeStory(JSON.stringify(legacy));
     expect(restored.scenes).toHaveLength(1);
     expect(restored.entrySceneId).toBe("show");
+  });
+
+  it("round-trips scene embeds (sceneClips) as a scene track", () => {
+    const withEmbed: DemoStory = {
+      ...story,
+      scenes: [
+        { ...story.scenes[0]!, sceneClips: [{ id: "e1", sceneId: "detail", start: 2, end: 6, offset: 0.5 }] },
+        story.scenes[1]!
+      ]
+    };
+    const restored = deserializeStory(serializeStory(withEmbed));
+    expect(restored.scenes[0]?.sceneClips).toEqual([{ id: "e1", sceneId: "detail", start: 2, end: 6, offset: 0.5 }]);
+    const document = parseRigDocument(serializeStory(withEmbed));
+    expect(getScene(document, "show")?.tracks.some((track) => track.type === "scene")).toBe(true);
   });
 
   it("imports legacy x-demo-tracks sidecars onto the entry scene", () => {

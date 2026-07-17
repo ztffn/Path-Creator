@@ -15,8 +15,9 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 // v6: embedded timeline v6 adds per-axis bezier tangents (TransformKey.tangentsAxes).
 // v7: `timelines` is a Story of Scenes — `entrySceneId` designates the entry/master
 //     scene; legacy single-timeline documents migrate as scene[0] = entry.
+// v8: embedded timeline v7 adds scene tracks (deterministic master-embed of scenes).
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 7;
+export const RIG_SCHEMA_VERSION = 8;
 
 export interface RigPathDefinition {
   id: string;
@@ -228,6 +229,7 @@ export function buildRigRuntime(document: RigDocument): RigRuntime {
   }
 
   const timelines = new Map<string, RigTimelineDefinition>();
+  const sceneIds = new Set((document.timelines ?? []).map((timeline) => timeline.id));
   for (const timeline of document.timelines ?? []) {
     for (const track of timeline.tracks) {
       if (track.type === "camera") {
@@ -242,6 +244,14 @@ export function buildRigRuntime(document: RigDocument): RigRuntime {
         throw new Error(
           `Timeline "${timeline.id}" cart track "${track.id}" references unknown cart "${track.cartId}"`
         );
+      } else if (track.type === "scene") {
+        for (const clip of track.clips) {
+          if (!sceneIds.has(clip.sceneId)) {
+            throw new Error(
+              `Timeline "${timeline.id}" scene clip "${clip.id}" references unknown scene "${clip.sceneId}"`
+            );
+          }
+        }
       }
     }
     // Establishes the sorted-tracks invariant the evaluator relies on, since

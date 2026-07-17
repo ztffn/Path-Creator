@@ -25,6 +25,7 @@ import {
 } from "../src/core";
 import { createRigDriveState, driveActivation } from "../src/three";
 import {
+  RIG_SCHEMA_VERSION,
   getEntryScene,
   getScene,
   listScenes,
@@ -38,6 +39,7 @@ import {
   createTimelinePlayer,
   driveRigWithScenes,
   driveTimeline,
+  evaluateSceneLayers,
   evaluateTimeline,
   playScene,
   seekTimelinePlayer,
@@ -720,7 +722,7 @@ describe("story schema (v7) migration and scene resolution", () => {
 
   it("migrates a legacy single-timeline document to a Story with scene[0] as entry", () => {
     const migrated = parseRigDocument(JSON.stringify(legacyDoc));
-    expect(migrated.schemaVersion).toBe(7);
+    expect(migrated.schemaVersion).toBe(RIG_SCHEMA_VERSION);
     expect(migrated.entrySceneId).toBe("show");
     expect(listScenes(migrated)).toHaveLength(1);
     expect(getEntryScene(migrated)?.id).toBe("show");
@@ -911,5 +913,96 @@ describe("active-scene runtime (playScene)", () => {
     playScene(runtime, { sceneId: "camera-scene", fromTime: 3, blend: { durationSeconds: 0 } });
     const result = driveRigWithScenes(runtime, rig, params, 0.25);
     expect(result.activeScene?.time).toBeCloseTo(3.25);
+  });
+});
+
+describe("scene tracks (deterministic master-embed)", () => {
+  const baseContext = buildContext();
+
+  // Sub-scene: its own static shot + a cart track parking "dolly" at 42.
+  const subScene = createTimeline({
+    duration: 4,
+    tracks: [
+      { type: "camera", id: "cam", blocks: [{ id: "sb", vcamId: "wide", start: 0, end: 4 }] },
+      { type: "cart", id: "ct", cartId: "dolly", keys: [{ time: 0, distance: 42 }, { time: 4, distance: 42 }] }
+    ]
+  });
+  // A sub-scene that itself embeds another (must stay inert: depth-1).
+  const nestingScene = createTimeline({
+    duration: 4,
+    tracks: [{ type: "scene", id: "inner", clips: [{ id: "n", sceneId: "sub", start: 0, end: 4 }] }]
+  });
+  const scenes = new Map([
+    ["sub", subScene],
+    ["nesting", nestingScene]
+  ]);
+  const context = { ...baseContext, getScene: (id: string) => scenes.get(id) ?? null };
+
+  const master = createTimeline({
+    duration: 20,
+    tracks: [
+      { type: "camera", id: "cam", blocks: [{ id: "mb", vcamId: "rail-cam", start: 0, end: 20 }] },
+      // Embed at 10..14, entering the sub-scene at local 1 (offset).
+      { type: "scene", id: "embeds", clips: [{ id: "e", sceneId: "sub", start: 10, end: 14, offset: 1 }] }
+    ]
+  });
+
+  it("plays the embedded scene's camera inside the window and the master's outside", () => {
+    const outside = evaluateTimeline(master, context, 5);
+    expect(outside.activeBlock?.block.vcamId).toBe("rail-cam");
+    const inside = evaluateTimeline(master, context, 11);
+    expect(inside.activeBlock?.block.vcamId).toBe("wide");
+    expect(inside.camera?.position.y).toBeCloseTo(5);
+    const after = evaluateTimeline(master, context, 15);
+    expect(after.activeBlock?.block.vcamId).toBe("rail-cam");
+  });
+
+  it("merges only carts the embedded scene tracks, at the mapped local time", () => {
+    // Inside the window the sub-scene's cart track parks the dolly at 42.
+    const inside = evaluateTimeline(master, context, 11);
+    expect(inside.cartFrames.get("dolly")?.distance).toBeCloseTo(42);
+    // Outside, the master's free-running cart (speed 10) is untouched.
+    const outside = evaluateTimeline(master, context, 5);
+    expect(outside.cartFrames.get("dolly")?.distance).toBeCloseTo(50);
+  });
+
+  it("keeps nesting depth-1: an embedded scene's own scene tracks are inert", () => {
+    const nestingMaster = createTimeline({
+      duration: 10,
+      tracks: [{ type: "scene", id: "embeds", clips: [{ id: "e", sceneId: "nesting", start: 0, end: 10 }] }]
+    });
+    const sample = evaluateTimeline(nestingMaster, context, 2);
+    expect(sample.camera).toBeNull();
+  });
+
+  it("stays inert without a getScene resolver and stays pure with one", () => {
+    const withoutResolver = evaluateTimeline(master, baseContext, 11);
+    expect(withoutResolver.activeBlock?.block.vcamId).toBe("rail-cam");
+    const a = evaluateTimeline(master, context, 11);
+    const b = evaluateTimeline(master, context, 11);
+    expect(a).toEqual(b);
+  });
+
+  it("evaluateSceneLayers maps master time to scene-local time", () => {
+    const layers = evaluateSceneLayers(master.tracks, (id) => scenes.get(id) ?? null, 12.5);
+    expect(layers).toHaveLength(1);
+    expect(layers[0]?.sceneId).toBe("sub");
+    expect(layers[0]?.time).toBeCloseTo(3.5); // 12.5 - 10 + offset 1
+    expect(evaluateSceneLayers(master.tracks, (id) => scenes.get(id) ?? null, 9)).toHaveLength(0);
+  });
+
+  it("buildRigRuntime rejects a scene clip referencing an unknown scene", () => {
+    const document = createRigDocument({
+      timelines: [
+        {
+          id: "show",
+          ...createTimeline({
+            duration: 5,
+            tracks: [{ type: "scene", id: "embeds", clips: [{ id: "x", sceneId: "missing", start: 0, end: 2 }] }]
+          })
+        }
+      ]
+    });
+    expect(() => buildRigRuntime(document)).toThrow(/unknown scene "missing"/);
   });
 });

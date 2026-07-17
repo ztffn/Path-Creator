@@ -1481,14 +1481,14 @@ describe("portable object track directors", () => {
       resetToRest: () => { restored += 1; }
     });
     const director = new AnimationTrackDirector();
-    director.sync(registry, [{
+    director.sync(registry, [{ tracks: [{
       type: "animation",
       id: "track",
       objectId: "fox",
       clips: [{ id: "clip", clipName: "Walk", start: 0, end: 2 }]
-    }], true, 1);
+    }], time: 1 }], true);
     expect(action.isRunning()).toBe(true);
-    director.sync(registry, [], true, 1);
+    director.sync(registry, [], true);
     expect(action.isRunning()).toBe(false);
     expect(restored).toBe(1);
   });
@@ -1503,7 +1503,7 @@ describe("portable object track directors", () => {
     const director = new AnimationTrackDirector();
     // Window 0..8 is longer than the 2s clip, so at t=5 the native local time (5)
     // runs past the clip; a looping action must keep cycling, not clamp to the end.
-    director.sync(registry, [{ type: "animation", id: "track", objectId: "fox", clips: [{ id: "clip", clipName: "Run", start: 0, end: 8 }] }], true, 5);
+    director.sync(registry, [{ tracks: [{ type: "animation", id: "track", objectId: "fox", clips: [{ id: "clip", clipName: "Run", start: 0, end: 8 }] }], time: 5 }], true);
     expect(action.isRunning()).toBe(true);
     expect(action.time).toBeCloseTo(1, 6); // 5 % 2
   });
@@ -1520,9 +1520,9 @@ describe("portable object track directors", () => {
       objectId: "prop",
       position: [{ time: 0, value: [1, 2, 3] as [number, number, number] }]
     }];
-    director.sync(registry, tracks, true, 0);
+    director.sync(registry, [{ tracks, time: 0 }], true);
     expect(object.position.toArray()).toEqual([1, 2, 3]);
-    director.sync(registry, tracks, false, 0);
+    director.sync(registry, [{ tracks, time: 0 }], false);
     expect(object.position.toArray()).toEqual([4, 5, 6]);
   });
 
@@ -1532,16 +1532,37 @@ describe("portable object track directors", () => {
     const registry = new ObjectBindingRegistry();
     registry.register("prop", object);
     const director = new ActivationTrackDirector();
-    const tracks = [{
+    const layers = [{ tracks: [{
       type: "activation" as const,
       id: "track",
       objectId: "prop",
       clips: [{ id: "clip", start: 0, end: 2 }],
       postPlaybackState: "revert" as const
-    }];
-    director.sync(registry, tracks, true, 2, 1, true);
+    }], time: 1 }];
+    director.sync(registry, layers, true, 2, 1, true);
     expect(object.visible).toBe(true);
-    director.sync(registry, tracks, false, 2, 1, false);
+    director.sync(registry, layers, false, 2, 1, false);
+    expect(object.visible).toBe(false);
+  });
+
+  it("merges layered activation with later layers overriding per object", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const track = (id: string, start: number, end: number) => ({
+      type: "activation" as const, id, objectId: "prop",
+      clips: [{ id: `${id}-clip`, start, end }], postPlaybackState: "revert" as const
+    });
+    // Master says hidden at t=5; the embed layer (local t=1) says visible — the
+    // later (embed) layer wins for the shared object.
+    director.sync(registry, [
+      { tracks: [track("master", 0, 2)], time: 5 },
+      { tracks: [track("embed", 0, 2)], time: 1 }
+    ], true, 10, 5, true);
+    expect(object.visible).toBe(true);
+    // Embed window closed: only the master layer remains and it says hidden.
+    director.sync(registry, [{ tracks: [track("master", 0, 2)], time: 5 }], true, 10, 5, true);
     expect(object.visible).toBe(false);
   });
 });

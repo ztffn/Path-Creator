@@ -5,6 +5,8 @@ import {
   evaluateTransform,
   type ActivationTrack,
   type AnimationTrack,
+  type DesiredAnimation,
+  type DesiredTransform,
   type TransformTrack
 } from "../core";
 
@@ -30,6 +32,11 @@ export class ObjectBindingRegistry implements ObjectBindingResolver {
   resolveAnimation(id: string): ObjectAnimationBinding | null { return this.entries.get(id)?.animation ?? null; }
 }
 
+/** One evaluation layer for a director: these tracks, at this (local) time.
+ *  Hosts pass the master's tracks plus any embedded scenes' as later layers —
+ *  later layers override earlier ones per object. */
+export interface TrackLayer<T> { tracks: readonly T[]; time: number; }
+
 export class ActivationTrackDirector {
   private original = new Map<string, boolean>();
   private wasDriving = false;
@@ -37,26 +44,33 @@ export class ActivationTrackDirector {
   private lastPlaying = false;
   private lastTime = 0;
 
-  sync(registry: ObjectBindingResolver, tracks: readonly ActivationTrack[], driving: boolean, duration: number, time: number, playing: boolean): void {
+  sync(registry: ObjectBindingResolver, layers: readonly TrackLayer<ActivationTrack>[], driving: boolean, duration: number, time: number, playing: boolean): void {
     if (driving) {
       if (!this.wasDriving) {
         this.original.clear();
-        for (const track of tracks) {
-          const object = registry.resolve(track.objectId);
-          if (object && !this.original.has(track.objectId)) this.original.set(track.objectId, object.visible);
-        }
         this.held = false;
         this.wasDriving = true;
+      }
+      // Capture originals lazily every frame: an embed layer can introduce a
+      // track mid-drive (its window opens), and its object still needs a
+      // revert baseline from before the FIRST time this drive touched it.
+      for (const layer of layers) for (const track of layer.tracks) {
+        const object = registry.resolve(track.objectId);
+        if (object && !this.original.has(track.objectId)) this.original.set(track.objectId, object.visible);
       }
       const atEnd = duration > 0 && time >= duration - 1e-3;
       if (playing || time !== this.lastTime) this.held = false;
       if (this.lastPlaying && !playing && atEnd) this.held = true;
-      if (this.held) this.applyPostPlayback(registry, tracks);
-      else for (const [id, visible] of evaluateActivation(tracks, time)) {
-        const object = registry.resolve(id); if (object) object.visible = visible;
+      if (this.held) this.applyPostPlayback(registry, layers);
+      else {
+        const merged = new Map<string, boolean>();
+        for (const layer of layers) for (const [id, visible] of evaluateActivation(layer.tracks, layer.time)) merged.set(id, visible);
+        for (const [id, visible] of merged) {
+          const object = registry.resolve(id); if (object) object.visible = visible;
+        }
       }
     } else if (this.wasDriving) {
-      this.applyPostPlayback(registry, tracks);
+      this.applyPostPlayback(registry, layers);
       this.wasDriving = false;
       this.held = false;
     }
@@ -64,8 +78,8 @@ export class ActivationTrackDirector {
     this.lastTime = time;
   }
 
-  private applyPostPlayback(registry: ObjectBindingResolver, tracks: readonly ActivationTrack[]): void {
-    for (const track of tracks) {
+  private applyPostPlayback(registry: ObjectBindingResolver, layers: readonly TrackLayer<ActivationTrack>[]): void {
+    for (const layer of layers) for (const track of layer.tracks) {
       const object = registry.resolve(track.objectId); if (!object) continue;
       if (track.postPlaybackState === "active") object.visible = true;
       else if (track.postPlaybackState === "inactive") object.visible = false;
@@ -78,15 +92,17 @@ interface BaseTransform { position: [number,number,number]; quaternion: [number,
 export class TransformTrackDirector {
   private base = new Map<string, BaseTransform>();
   private wasDriving = false;
-  sync(registry: ObjectBindingResolver, tracks: readonly TransformTrack[], driving: boolean, time: number): void {
+  sync(registry: ObjectBindingResolver, layers: readonly TrackLayer<TransformTrack>[], driving: boolean): void {
     if (driving) {
       this.wasDriving = true;
-      for (const track of tracks) {
+      for (const layer of layers) for (const track of layer.tracks) {
         if (this.base.has(track.objectId)) continue;
         const object=registry.resolve(track.objectId); if(!object)continue;
         this.base.set(track.objectId,{position:[object.position.x,object.position.y,object.position.z],quaternion:[object.quaternion.x,object.quaternion.y,object.quaternion.z,object.quaternion.w],scale:[object.scale.x,object.scale.y,object.scale.z]});
       }
-      for(const[id,value]of evaluateTransform(tracks,time)){const object=registry.resolve(id);if(!object)continue;if(value.position)object.position.fromArray(value.position);if(value.rotation)object.quaternion.fromArray(value.rotation);if(value.scale)object.scale.fromArray(value.scale);}
+      const merged=new Map<string, DesiredTransform>();
+      for(const layer of layers)for(const[id,value]of evaluateTransform(layer.tracks,layer.time))merged.set(id,value);
+      for(const[id,value]of merged){const object=registry.resolve(id);if(!object)continue;if(value.position)object.position.fromArray(value.position);if(value.rotation)object.quaternion.fromArray(value.rotation);if(value.scale)object.scale.fromArray(value.scale);}
     } else if(this.wasDriving){for(const[id,base]of this.base){const object=registry.resolve(id);if(object){object.position.fromArray(base.position);object.quaternion.fromArray(base.quaternion);object.scale.fromArray(base.scale);}}this.base.clear();this.wasDriving=false;}
   }
 }
@@ -96,7 +112,7 @@ export class AnimationTrackDirector {
   private active = new Map<AnimationMixer, ObjectAnimationBinding>();
   private wasDriving = false;
 
-  sync(registry: ObjectBindingResolver, tracks: readonly AnimationTrack[], driving: boolean, time: number): void {
+  sync(registry: ObjectBindingResolver, layers: readonly TrackLayer<AnimationTrack>[], driving: boolean): void {
     if (!driving) {
       if (this.wasDriving) this.stopBindings(this.active.values());
       this.active.clear();
@@ -105,7 +121,8 @@ export class AnimationTrackDirector {
     }
 
     this.wasDriving = true;
-    const desired = evaluateAnimation(tracks, time);
+    const desired = new Map<string, DesiredAnimation[]>();
+    for (const layer of layers) for (const [id, wants] of evaluateAnimation(layer.tracks, layer.time)) desired.set(id, wants);
     const desiredBindings = new Map<AnimationMixer, ObjectAnimationBinding>();
     for (const objectId of desired.keys()) {
       const binding = registry.resolveAnimation(objectId);

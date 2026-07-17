@@ -16,7 +16,9 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 // v5: per-axis easing (TransformKey.easingAxes) for independent position/scale tangents.
 // v6: position/scale interpolate as a real cubic bezier in (time, value) space via
 //     per-axis tangent handles (TransformKey.tangentsAxes); easingAxes retired for them.
-export const TIMELINE_SCHEMA_VERSION = 6;
+// v7: scene tracks — clips that embed another Story scene into a master-time window
+//     (deterministic master-embed; evaluation maps master t to scene-local t).
+export const TIMELINE_SCHEMA_VERSION = 7;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -139,7 +141,52 @@ export interface TransformTrack {
   position?: TransformKey[]; rotation?: TransformKey[]; scale?: TransformKey[];
 }
 
-export type TimelineTrack = CameraTrack | CartTrack | EventTrack | ActivationTrack | AudioTrack | AnimationTrack | TransformTrack;
+/**
+ * Embeds another Story scene into a fixed master-time window: while
+ * `start <= t < end`, the referenced scene evaluates at local time
+ * `t - start + offset`. Purely deterministic (scrub-safe) — the live-branch
+ * counterpart is the playScene runtime. Nesting is depth-1: an embedded
+ * scene's own scene tracks are inert.
+ */
+export interface SceneClip {
+  id: string;
+  sceneId: string;
+  start: number;
+  end: number;
+  /** Scene-local time at the window's start (default 0). */
+  offset?: number;
+}
+export interface SceneTrack {
+  type: "scene"; id: string; name?: string; clips: SceneClip[];
+}
+
+export type TimelineTrack = CameraTrack | CartTrack | EventTrack | ActivationTrack | AudioTrack | AnimationTrack | TransformTrack | SceneTrack;
+
+/** One embedded scene active at a master time: evaluate `timeline` at `time`. */
+export interface SceneLayer { sceneId: string; timeline: Timeline; time: number; }
+
+/**
+ * The embedded-scene layers active at master time t, in override order (later
+ * tracks/clips win). Pure; `getScene` resolves a Story scene by id (unknown ids
+ * are skipped). Depth-1 by contract — callers evaluate the returned layers'
+ * NON-scene tracks only (their own scene tracks are ignored).
+ */
+export function evaluateSceneLayers(
+  tracks: readonly TimelineTrack[],
+  getScene: (sceneId: string) => Timeline | null,
+  t: number
+): SceneLayer[] {
+  const layers: SceneLayer[] = [];
+  for (const track of tracks) {
+    if (track.type !== "scene") continue;
+    for (const clip of track.clips) {
+      if (!covers(clip.start, clip.end, t)) continue;
+      const timeline = getScene(clip.sceneId);
+      if (timeline) layers.push({ sceneId: clip.sceneId, timeline, time: t - clip.start + (clip.offset ?? 0) });
+    }
+  }
+  return layers;
+}
 
 export interface Timeline {
   schemaVersion: typeof TIMELINE_SCHEMA_VERSION;
@@ -237,6 +284,7 @@ export function sortTimelineTracks(tracks: TimelineTrack[]): TimelineTrack[] {
     }
     if (track.type === "activation") return { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start) };
     if (track.type === "audio") return { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start) };
+    if (track.type === "animation") return { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start) };
     return { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start) };
   });
 }

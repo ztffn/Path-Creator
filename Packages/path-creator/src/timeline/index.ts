@@ -7,6 +7,7 @@
 import {
   TIMELINE_SCHEMA_VERSION,
   evaluateEasing,
+  evaluateSceneLayers,
   evaluateVirtualCameraBlendCurve,
   inverseLerp,
   lerp,
@@ -53,6 +54,9 @@ export type {
   CartKey,
   CartTrack,
   EventTrack,
+  SceneClip,
+  SceneLayer,
+  SceneTrack,
   Timeline,
   TimelineBlendIn,
   TimelineEvent,
@@ -66,6 +70,7 @@ export {
   evaluateActivation,
   evaluateAnimation,
   evaluateAudio,
+  evaluateSceneLayers,
   evaluateTransform,
   insertTransformKey,
   snapSeconds,
@@ -80,6 +85,9 @@ export interface TimelineRigContext {
   getTargetPosition?: (targetId: string) => Vec3 | null;
   /** Target world orientation, for target-relative orbit binding (`lockYaw`/`lock`). */
   getTargetOrientation?: (targetId: string) => QuaternionLike | null;
+  /** Resolves a Story scene by id, enabling scene tracks (deterministic
+   *  master-embed). Omit to leave scene tracks inert. */
+  getScene?: (sceneId: string) => Timeline | null;
 }
 
 export interface TimelineSample {
@@ -148,14 +156,35 @@ export function evaluateTimeline(
   let activeBlock: TimelineSample["activeBlock"] = null;
   let blendProgress = 1;
 
-  // Later camera tracks override earlier ones (layering).
+  // Later camera/scene tracks override earlier ones (layering).
   for (const track of timeline.tracks) {
-    if (track.type !== "camera") continue;
-    const result = evaluateCameraTrack(track, t, timeline.gapMode ?? "hold", resolveBlock);
-    if (result) {
-      camera = result.snapshot;
-      activeBlock = { trackId: track.id, block: result.block };
-      blendProgress = result.blendProgress;
+    if (track.type === "camera") {
+      const result = evaluateCameraTrack(track, t, timeline.gapMode ?? "hold", resolveBlock);
+      if (result) {
+        camera = result.snapshot;
+        activeBlock = { trackId: track.id, block: result.block };
+        blendProgress = result.blendProgress;
+      }
+    } else if (track.type === "scene" && context.getScene) {
+      // Deterministic master-embed: evaluate the embedded scene at its mapped
+      // local time. Depth-1 by construction — the sub-evaluation gets no
+      // getScene, so nested (and self-referential) scene tracks are inert.
+      const { getScene, ...subContext } = context;
+      for (const layer of evaluateSceneLayers([track], getScene, t)) {
+        const sub = evaluateTimeline(layer.timeline, subContext, layer.time);
+        // Merge only carts the embedded scene actually TRACKS — its free-running
+        // defaults for other carts must not clobber the master's frames.
+        for (const subTrack of layer.timeline.tracks) {
+          if (subTrack.type !== "cart") continue;
+          const frame = sub.cartFrames.get(subTrack.cartId);
+          if (frame) cartFrames.set(subTrack.cartId, frame);
+        }
+        if (sub.camera) {
+          camera = sub.camera;
+          activeBlock = sub.activeBlock;
+          blendProgress = sub.blendProgress;
+        }
+      }
     }
   }
 

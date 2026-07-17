@@ -53,6 +53,7 @@ import {
   createSceneRuntimeState,
   createTimelinePlayer,
   driveRigWithScenes,
+  evaluateSceneLayers,
   playScene,
   seekTimelinePlayer,
   type Timeline,
@@ -82,6 +83,7 @@ import {
   type ActivationTrack,
   type AnimationTrack,
   type AudioTrack,
+  type DesiredAudio,
   type ExtraTracks,
   type TransformKey,
   type TransformTrack
@@ -427,9 +429,12 @@ export function DemoSceneViewport({
       },
       vcams: vcamDefById,
       getTargetPosition: (id) => targetRegistry.resolve(id),
-      getTargetOrientation: (id) => targetRegistry.resolveOrientation(id)
+      getTargetOrientation: (id) => targetRegistry.resolveOrientation(id),
+      // Enables deterministic scene embeds (scene tracks) wherever this context
+      // evaluates — master playback and playScene branches alike.
+      getScene: (id) => storyScenes.get(id) ?? null
     }),
-    [targetRegistry, vertexPaths, vcamDefById, dollies]
+    [targetRegistry, vertexPaths, vcamDefById, dollies, storyScenes]
   );
   const brainCamera = useMemo(() => {
     const camera = new PerspectiveCamera(45, DOLLY_PIP_ASPECT, 0.1, 100);
@@ -616,34 +621,62 @@ export function DemoSceneViewport({
     if (scenePlayback && scenePlayback.sceneId === activeEditingSceneId) {
       seekTimelinePlayer(player, scenePlayback.time);
     }
-    const driveTracks = scenePlayback
-      ? {
-          activation: scenePlayback.timeline.tracks.filter((t): t is ActivationTrack => t.type === "activation"),
-          audio: scenePlayback.timeline.tracks.filter((t): t is AudioTrack => t.type === "audio"),
-          animation: scenePlayback.timeline.tracks.filter((t): t is AnimationTrack => t.type === "animation"),
-          transform: scenePlayback.timeline.tracks.filter((t): t is TransformTrack => t.type === "transform")
-        }
-      : { activation: activationTracks, audio: audioTracks, animation: animationTracks, transform: transformTracks };
+    // Director layers: the driving timeline's tracks at its clock, plus one layer
+    // per active scene embed at ITS mapped local time (later layers override per
+    // object). The master's extra tracks come from the editor's working state;
+    // branch/embed layers carry theirs inside their built timelines.
+    const getSceneById = (id: string): Timeline | null => storyScenes.get(id) ?? null;
+    const actLayers: { tracks: readonly ActivationTrack[]; time: number }[] = [];
+    const audLayers: { tracks: readonly AudioTrack[]; time: number }[] = [];
+    const animLayers: { tracks: readonly AnimationTrack[]; time: number }[] = [];
+    const xfLayers: { tracks: readonly TransformTrack[]; time: number }[] = [];
+    const pushTimelineLayer = (tracks: Timeline["tracks"], time: number): void => {
+      actLayers.push({ tracks: tracks.filter((t): t is ActivationTrack => t.type === "activation"), time });
+      audLayers.push({ tracks: tracks.filter((t): t is AudioTrack => t.type === "audio"), time });
+      animLayers.push({ tracks: tracks.filter((t): t is AnimationTrack => t.type === "animation"), time });
+      xfLayers.push({ tracks: tracks.filter((t): t is TransformTrack => t.type === "transform"), time });
+    };
+    if (scenePlayback) {
+      pushTimelineLayer(scenePlayback.timeline.tracks, scenePlayback.time);
+      for (const layer of evaluateSceneLayers(scenePlayback.timeline.tracks, getSceneById, scenePlayback.time)) {
+        pushTimelineLayer(layer.timeline.tracks, layer.time);
+      }
+    } else if (activeTimeline) {
+      actLayers.push({ tracks: activationTracks, time: player.time });
+      audLayers.push({ tracks: audioTracks, time: player.time });
+      animLayers.push({ tracks: animationTracks, time: player.time });
+      xfLayers.push({ tracks: transformTracks, time: player.time });
+      for (const layer of evaluateSceneLayers(activeTimeline.tracks, getSceneById, player.time)) {
+        pushTimelineLayer(layer.timeline.tracks, layer.time);
+      }
+    }
     const driveTime = scenePlayback ? scenePlayback.time : player.time;
     const drivePlaying = scenePlayback ? scenePlayback.playing : player.playing;
     const driveDuration = scenePlayback ? scenePlayback.timeline.duration : activeTimeline?.duration ?? 0;
     const timelineDriving = Boolean(activeTimeline) || Boolean(scenePlayback);
     activationDirector.sync(
       activatablesRegistry,
-      driveTracks.activation,
+      actLayers,
       timelineDriving,
       driveDuration,
       driveTime,
       drivePlaying
     );
     const audioLive = timelineDriving && drivePlaying;
-    audioPlayer.reconcile(audioLive ? evaluateAudio(driveTracks.audio, driveTime) : EMPTY_DESIRED, audioLive);
+    const desiredAudio = new Map<string, DesiredAudio>();
+    if (audioLive) {
+      for (const layer of audLayers) {
+        for (const [id, desired] of evaluateAudio(layer.tracks, layer.time)) desiredAudio.set(id, desired);
+      }
+    }
+    audioPlayer.reconcile(audioLive ? desiredAudio : EMPTY_DESIRED, audioLive);
     // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
     // gated on player.playing like audio, which must stay silent outside forward play.
-    mixerDirector.sync(activatablesRegistry, driveTracks.animation, timelineDriving, driveTime);
+    mixerDirector.sync(activatablesRegistry, animLayers, timelineDriving);
     // Keyframed transforms are pure in t too; they follow scrubbing and restore the
     // object's base pose when the timeline is left.
-    transformDirector.sync(activatablesRegistry, driveTracks.transform, timelineDriving, driveTime);
+    transformDirector.sync(activatablesRegistry, xfLayers, timelineDriving);
+
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.

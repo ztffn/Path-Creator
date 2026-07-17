@@ -16,6 +16,7 @@ import {
   type EasingCurve,
   type RigCartDefinition,
   type RigPathDefinition,
+  type SceneClip,
   type SerializedBezierPath,
   type Vec3
 } from "@huma/path-creator/core";
@@ -640,9 +641,11 @@ export function App() {
   // Per-dolly run-blocks. From a loaded document (F1+ saves hydrate these from
   // the cart tracks); pre-format shows start empty and re-author dolly moves.
   const [dollyRuns, setDollyRuns] = useState<Record<string, DollyRun[]>>(() => loadedScene?.dollyRuns ?? {});
+  // Deterministic embeds: other scenes played inside this scene's time windows.
+  const [sceneClips, setSceneClips] = useState<SceneClip[]>(() => loadedScene?.sceneClips ?? []);
   // The story's scene list. The ACTIVE scene's authoritative content lives in the
-  // four working states (shotTiming/dollyRuns/fovAnimations/extraTracks); its entry
-  // here goes stale while editing and is refreshed on switch and in currentStory.
+  // five working states (shotTiming/dollyRuns/fovAnimations/extraTracks/sceneClips);
+  // its entry here goes stale while editing and is refreshed on switch and in currentStory.
   const [sceneContents, setSceneContents] = useState<DemoSceneContent[]>(
     () => loadedStory?.scenes ?? [{ id: "show", name: "Show", ...EMPTY_SCENE_CONTENT }]
   );
@@ -685,8 +688,9 @@ export function App() {
     dollyRuns,
     fovAnimations,
     targets: pointTargets,
-    extraTracks
-  }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks]);
+    extraTracks,
+    sceneClips
+  }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks, sceneClips]);
   // Persist the whole story as a portable RigDocument: every scene's content,
   // with the active scene's list entry refreshed from the live working states.
   const currentStory = useMemo<DemoStory>(() => ({
@@ -721,6 +725,7 @@ export function App() {
     setDollyRuns(scene?.dollyRuns ?? {});
     setFovAnimations(scene?.fovAnimations ?? {});
     setExtraTracks(scene?.extraTracks ?? EMPTY_EXTRA_TRACKS);
+    setSceneClips(scene?.sceneClips ?? []);
     setSceneContents(story.scenes.length > 0 ? story.scenes : [{ id: entryId, name: "Show", ...EMPTY_SCENE_CONTENT }]);
     setActiveSceneId(scene ? entryId : story.scenes[0]?.id ?? entryId);
     setEntrySceneId(entryId);
@@ -746,6 +751,7 @@ export function App() {
     setDollyRuns(target.dollyRuns);
     setFovAnimations(target.fovAnimations);
     setExtraTracks(target.extraTracks);
+    setSceneClips(target.sceneClips);
     setActiveSceneId(sceneId);
     setSelection(null);
     timelinePlayerRef.current.playing = false;
@@ -767,6 +773,7 @@ export function App() {
     setDollyRuns({});
     setFovAnimations({});
     setExtraTracks(EMPTY_EXTRA_TRACKS);
+    setSceneClips([]);
     setActiveSceneId(id);
     setSelection(null);
     timelinePlayerRef.current.playing = false;
@@ -937,10 +944,12 @@ export function App() {
   // Latest clip end across activation/audio tracks: the show must run long enough
   // to cover object-only content (the core Timeline drives the player clock).
   const extraDuration = useMemo(() => maxClipEnd(extraTracks), [extraTracks]);
-  // Built whenever there's ANY content — cameras, dolly moves, OR activation/audio
-  // clips — so an object-only (or audio-only) show still plays; not vcam-coupled.
+  // Built whenever there's ANY content — cameras, dolly moves, activation/audio
+  // clips, OR scene embeds — so an object-only (or audio-only) show still plays.
   const hasTimelineContent =
-    vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0;
+    vcamDefs.length > 0 || Object.values(dollyRuns).some((runs) => runs.length > 0) || extraDuration > 0 ||
+    sceneClips.length > 0;
+  const sceneClipsKey = JSON.stringify(sceneClips);
   const demoTimeline = useMemo(() => {
     if (!hasTimelineContent) return null;
     const base = buildShowTimeline(
@@ -951,12 +960,14 @@ export function App() {
         const dolly = dollies.find((d) => d.id === cartId);
         return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
       },
-      fovAnimations
+      fovAnimations,
+      EMPTY_EXTRA_TRACKS,
+      sceneClips
     );
     // Extend the live clock to cover media/object clips that outlast camera/cart content.
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration]);
+  }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration, sceneClipsKey]);
   // Every scene as a playable runtime timeline (extra tracks embedded), for the
   // active-scene runtime's playScene branch. The active scene reads the live
   // working states; the rest read their stored content.
@@ -968,17 +979,19 @@ export function App() {
     const map = new Map<string, Timeline>();
     for (const content of sceneContents) {
       const live =
-        content.id === activeSceneId ? { shotTiming, dollyRuns, fovAnimations, extraTracks } : content;
+        content.id === activeSceneId
+          ? { shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips }
+          : content;
       map.set(
         content.id,
-        buildShowTimeline(vcamDefs, live.shotTiming, live.dollyRuns, cartLength, live.fovAnimations, live.extraTracks, {
+        buildShowTimeline(vcamDefs, live.shotTiming, live.dollyRuns, cartLength, live.fovAnimations, live.extraTracks, live.sceneClips, {
           id: content.id,
           ...(content.name !== undefined && { name: content.name })
         })
       );
     }
     return map;
-  }, [sceneContents, activeSceneId, shotTiming, dollyRuns, fovAnimations, extraTracks, vcamDefs, dollies, vertexPaths]);
+  }, [sceneContents, activeSceneId, shotTiming, dollyRuns, fovAnimations, extraTracks, sceneClips, vcamDefs, dollies, vertexPaths]);
   const liveSceneName = liveSceneId
     ? sceneContents.find((content) => content.id === liveSceneId)?.name ?? liveSceneId
     : null;
@@ -1410,7 +1423,26 @@ export function App() {
   // Padding (s) so a short/zero-span or keyless transform track still shows a
   // visible, grabbable block rather than an invisible far-left sliver.
   const TRANSFORM_MIN_WIDTH = 2;
+  const sceneNameOf = (sceneId: string): string =>
+    sceneContents.find((content) => content.id === sceneId)?.name ?? sceneId;
   const extraLanes = [
+    // Scene embeds: other scenes played inside this scene's time windows. Shown
+    // once the story has scenes to embed; click creates a clip (cycling through
+    // the other scenes), drag/resize adjusts the window.
+    ...(sceneContents.length > 1 || sceneClips.length > 0
+      ? [{
+          id: "scn:embeds",
+          name: "Scenes",
+          color: "rgba(249, 115, 22, 0.6)",
+          icon: <IconVideo size={14} />,
+          clips: sceneClips.map((clip) => ({
+            id: clip.id,
+            start: clip.start,
+            end: clip.end,
+            label: sceneNameOf(clip.sceneId)
+          }))
+        }]
+      : []),
     ...extraTracks.activationTracks.map((track) => ({
       id: `act:${track.id}`,
       name: activatables.find((a) => a.id === track.objectId)?.name ?? track.objectId ?? "Activation",
@@ -1499,7 +1531,9 @@ export function App() {
           })()
         : null;
   const setExtraClip = (laneId: string, clipId: string, start: number, end: number): void => {
-    if (laneId.startsWith("act:")) {
+    if (laneId.startsWith("scn:")) {
+      setSceneClips((prev) => prev.map((clip) => (clip.id === clipId ? { ...clip, start, end } : clip)));
+    } else if (laneId.startsWith("act:")) {
       const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
         ...prev,
@@ -1549,6 +1583,19 @@ export function App() {
   };
   const addExtraClip = (laneId: string, time: number): void => {
     const start = Math.max(0, Math.round(time * 4) / 4);
+    if (laneId.startsWith("scn:")) {
+      // Cycle through the OTHER scenes; the window defaults to the target's
+      // duration (min 1s) so a fresh embed plays the whole scene.
+      const others = sceneContents.filter((content) => content.id !== activeSceneId);
+      const target = others[sceneClips.length % Math.max(1, others.length)];
+      if (!target) return;
+      const length = Math.max(1, storyScenes.get(target.id)?.duration ?? 5);
+      setSceneClips((prev) => [
+        ...prev,
+        { id: newClipId(), sceneId: target.id, start, end: start + length }
+      ].sort((a, b) => a.start - b.start));
+      return;
+    }
     if (laneId.startsWith("act:")) {
       const trackId = laneTrackId(laneId);
       setExtraTracks((prev) => ({
