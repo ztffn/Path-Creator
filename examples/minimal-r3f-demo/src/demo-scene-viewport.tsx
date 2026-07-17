@@ -416,8 +416,9 @@ export function DemoSceneViewport({
   // Writes keyframed pos/rot/scale to bound objects; restores base transform on leave.
   const transformDirector = useMemo(() => new TransformTrackDirector(), []);
   // The gizmo is an authoring affordance: only while the timeline isn't driving the
-  // object (Shots mode), so posing never fights playback.
-  const objectGizmoEnabled = !activeTimeline;
+  // object (Shots mode) and only in Edit mode — in Play mode it would swallow the
+  // pointer taps that feed click triggers.
+  const objectGizmoEnabled = !activeTimeline && !playMode;
   // One live free-running cart per dolly; the timeline branch overwrites the
   // frames with evaluated ones while it owns playback.
   const liveDollies = useMemo(
@@ -494,6 +495,14 @@ export function DemoSceneViewport({
   const prevClocksRef = useRef({ master: 0, branchScene: null as string | null, branchTime: 0 });
   const triggerCamPos = useMemo(() => new Vector3(), []);
   const triggerObjPos = useMemo(() => new Vector3(), []);
+  // Object taps collected for the trigger snapshot, drained once per frame.
+  const pendingClicksRef = useRef<string[]>([]);
+  // In Play (present) mode an object tap is trigger input, not an editor
+  // selection; Edit mode keeps the normal selection behavior.
+  const reportEntityInteraction = (kind: EntityKind, id: string): void => {
+    if (playMode && kind === "object") pendingClicksRef.current.push(id);
+    else onSelectEntity(kind, id);
+  };
   // DEV-only oracle: lets headless verification read the driven camera's live pose
   // (take/release blends move it) without scraping pixels. Stripped in production.
   useEffect(() => {
@@ -766,10 +775,12 @@ export function DemoSceneViewport({
           bound.getWorldPosition(triggerObjPos);
           return { x: triggerObjPos.x, y: triggerObjPos.y, z: triggerObjPos.z };
         },
-        playback: playbackWindows
+        playback: playbackWindows,
+        clicks: pendingClicksRef.current
       },
       delta
     );
+    if (pendingClicksRef.current.length > 0) pendingClicksRef.current = [];
     if (triggerCommands.length > 0) dispatchTriggerCommands(triggerCommands);
 
     // Composer overlay: project the driven vcam's tracked target (and its
@@ -850,7 +861,7 @@ export function DemoSceneViewport({
         id="turbine/Nacelle"
         name="Turbine (spinning)"
         selected={isSelected(selection, "object", "turbine/Nacelle")}
-        onSelect={() => onSelectEntity("object", "turbine/Nacelle")}
+        onSelect={() => reportEntityInteraction("object", "turbine/Nacelle")}
         position={[-3.2, 1, -2.2]}
         gizmoEnabled={objectGizmoEnabled}
         onTransformingChange={onTransformingChange}
@@ -865,7 +876,7 @@ export function DemoSceneViewport({
       </Activatable>
       <DemoProps
         selectedId={selectedIdOf(selection, "object")}
-        onSelect={(propId) => onSelectEntity("object", propId)}
+        onSelect={(propId) => reportEntityInteraction("object", propId)}
         gizmoEnabled={objectGizmoEnabled}
         onTransformingChange={onTransformingChange}
       />
@@ -877,7 +888,7 @@ export function DemoSceneViewport({
           src="/Fox.glb"
           name="Fox (animated)"
           selected={isSelected(selection, "object", "fox")}
-          onSelect={() => onSelectEntity("object", "fox")}
+          onSelect={() => reportEntityInteraction("object", "fox")}
           position={[3, 0, -2]}
           scale={0.025}
           gizmoEnabled={objectGizmoEnabled}

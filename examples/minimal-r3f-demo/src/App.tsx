@@ -1861,7 +1861,14 @@ export function App() {
             liveCameraName: virtualCameraActivation
               ? virtualCameras.find((camera) => camera.id === virtualCameraActivation.toId)?.name ?? "Camera"
               : null,
-            onRelease: releaseVirtualCamera
+            onRelease: releaseVirtualCamera,
+            embeds: sceneClips.map((clip) => ({
+              id: clip.id,
+              sceneName: sceneNameOf(clip.sceneId),
+              start: clip.start,
+              end: clip.end
+            })),
+            onDeleteEmbed: (clipId) => setSceneClips((prev) => prev.filter((clip) => clip.id !== clipId))
           }}
           path={
             selectedPathDef

@@ -24,6 +24,10 @@ export interface SceneInspectorProps {
   transitionProgress: number;
   liveCameraName: string | null;
   onRelease: () => void;
+  /** The ACTIVE scene's embed clips (other scenes played inside its windows);
+   *  the lane creates/moves them, delete lives here (side-panel convention). */
+  embeds: { id: string; sceneName: string; start: number; end: number }[];
+  onDeleteEmbed: (clipId: string) => void;
 }
 
 export function SceneInspector({
@@ -41,7 +45,9 @@ export function SceneInspector({
   onBlendDurationChange,
   transitionProgress,
   liveCameraName,
-  onRelease
+  onRelease,
+  embeds,
+  onDeleteEmbed
 }: SceneInspectorProps) {
   return (
     <>
@@ -73,6 +79,25 @@ export function SceneInspector({
           <div style={{ width: `${Math.round(transitionProgress * 100)}%`, height: "100%", background: "#22c55e" }} />
         </div>
       </SettingsSection>
+
+      {embeds.length > 0 ? (
+        <SettingsSection title="Embeds">
+          {embeds.map((embed) => (
+            <div key={embed.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+              <span style={{ flex: 1, minWidth: 0, overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>
+                {embed.sceneName}
+              </span>
+              <span style={{ color: "rgba(232, 238, 245, 0.55)", fontSize: 11, flex: "0 0 auto" }}>
+                {embed.start.toFixed(1)}–{embed.end.toFixed(1)}s
+              </span>
+              <button className="pc-danger" title="Remove this embed clip" onClick={() => onDeleteEmbed(embed.id)}>×</button>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
+            Scenes embedded in this scene's timeline (the "Scenes" lane creates and times them).
+          </div>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="Viewport">
         <CheckRow checked={debugPreview} onChange={onDebugPreviewChange}>Show camera PiP</CheckRow>
