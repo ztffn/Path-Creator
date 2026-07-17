@@ -13,8 +13,10 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 // v4: embedded timeline v4 adds portable activation/audio/animation/transform tracks.
 // v5: embedded timeline v5 adds per-axis easing (TransformKey.easingAxes).
 // v6: embedded timeline v6 adds per-axis bezier tangents (TransformKey.tangentsAxes).
+// v7: `timelines` is a Story of Scenes — `entrySceneId` designates the entry/master
+//     scene; legacy single-timeline documents migrate as scene[0] = entry.
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 6;
+export const RIG_SCHEMA_VERSION = 7;
 
 export interface RigPathDefinition {
   id: string;
@@ -41,8 +43,12 @@ export interface RigDocument {
   vcams?: VirtualCameraDefinition[];
   /** v2: declared targets (points, carts, groups); object targets register at runtime. */
   targets?: TrackingTargetDefinition[];
-  /** v2: timelines referencing vcams/carts/targets by id. */
+  /** v2: timelines referencing vcams/carts/targets by id. v7: each timeline is a
+   *  Scene of the document's Story; order is the Story's authored order. */
   timelines?: RigTimelineDefinition[];
+  /** v7: the Story's entry/master scene (an id in `timelines`). Omitted on
+   *  pre-Story documents; resolution falls back to the first timeline. */
+  entrySceneId?: string;
 }
 
 /** Runtime instances built from a rig document, keyed by id. */
@@ -65,7 +71,8 @@ export function createRigDocument(
     carts: init.carts ?? [],
     ...(init.vcams && { vcams: init.vcams }),
     ...(init.targets && { targets: init.targets }),
-    ...(init.timelines && { timelines: init.timelines })
+    ...(init.timelines && { timelines: init.timelines }),
+    ...(init.entrySceneId !== undefined && { entrySceneId: init.entrySceneId })
   };
 }
 
@@ -102,10 +109,12 @@ export function parseRigDocument(json: string): RigDocument {
  * Upgrades an older document to the current schema. Future structural migrations
  * branch on `document.schemaVersion` here. The v1/v2 -> v3 step needs no per-field
  * transform: string easing is a valid subset of the v2 easing union, so we only
- * re-stamp the version numbers.
+ * re-stamp the version numbers. v7 wraps the legacy timeline list as the Story:
+ * the first timeline becomes the entry scene.
  */
 function migrateRigDocument(document: RigDocument): RigDocument {
   if (document.schemaVersion >= RIG_SCHEMA_VERSION) return document;
+  const entryId = document.entrySceneId ?? document.timelines?.[0]?.id;
   return {
     ...document,
     schemaVersion: RIG_SCHEMA_VERSION,
@@ -114,8 +123,39 @@ function migrateRigDocument(document: RigDocument): RigDocument {
         ...timeline,
         schemaVersion: TIMELINE_SCHEMA_VERSION
       }))
-    })
+    }),
+    ...(entryId !== undefined && { entrySceneId: entryId })
   };
+}
+
+/** All scenes of the document's Story, in authored order (empty when none). */
+export function listScenes(document: RigDocument): RigTimelineDefinition[] {
+  return document.timelines ?? [];
+}
+
+/** The scene with this id, or null. */
+export function getScene(document: RigDocument, sceneId: string): RigTimelineDefinition | null {
+  return document.timelines?.find((timeline) => timeline.id === sceneId) ?? null;
+}
+
+/** The Story's entry/master scene: `entrySceneId` when set, else the first scene. */
+export function getEntryScene(document: RigDocument): RigTimelineDefinition | null {
+  if (document.entrySceneId !== undefined) return getScene(document, document.entrySceneId);
+  return document.timelines?.[0] ?? null;
+}
+
+/** A scene's playable length in seconds. */
+export function sceneDuration(scene: Timeline): number {
+  return scene.duration;
+}
+
+/**
+ * Whether this scene takes the camera when invoked: it owns a camera iff it has
+ * a camera track with at least one block — composition, not a flag. A scene
+ * without one plays its other tracks while the host keeps the camera.
+ */
+export function sceneOwnsCamera(scene: Timeline): boolean {
+  return scene.tracks.some((track) => track.type === "camera" && track.blocks.length > 0);
 }
 
 export function serializeRigPath(

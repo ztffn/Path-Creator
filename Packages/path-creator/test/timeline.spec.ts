@@ -25,12 +25,25 @@ import {
 } from "../src/core";
 import { createRigDriveState, driveActivation } from "../src/three";
 import {
+  getEntryScene,
+  getScene,
+  listScenes,
+  parseRigDocument,
+  sceneOwnsCamera,
+  serializeRigDocument
+} from "../src/core";
+import {
   collectTimelineEvents,
+  createSceneRuntimeState,
   createTimelinePlayer,
+  driveRigWithScenes,
   driveTimeline,
   evaluateTimeline,
+  playScene,
   seekTimelinePlayer,
   stepTimelinePlayer,
+  stopScene,
+  type RigDriveIntent,
   type TimelineRigContext
 } from "../src/timeline";
 
@@ -678,5 +691,225 @@ describe("camera block lens animation", () => {
     const track = normalized.tracks[0];
     const easing = track.type === "camera" ? track.blocks[0].lensAnimation?.fov?.easing : undefined;
     expect(easing).toBe("linear");
+  });
+});
+
+describe("story schema (v7) migration and scene resolution", () => {
+  const legacyDoc = {
+    schemaVersion: 6,
+    paths: [],
+    carts: [],
+    vcams: [
+      {
+        id: "wide",
+        body: { type: "static", position: { x: 0, y: 5, z: 20 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } }
+      }
+    ],
+    timelines: [
+      {
+        id: "show",
+        ...createTimeline({
+          duration: 10,
+          tracks: [
+            { type: "camera", id: "cam", blocks: [{ id: "b", vcamId: "wide", start: 0, end: 10 }] }
+          ]
+        })
+      }
+    ]
+  };
+
+  it("migrates a legacy single-timeline document to a Story with scene[0] as entry", () => {
+    const migrated = parseRigDocument(JSON.stringify(legacyDoc));
+    expect(migrated.schemaVersion).toBe(7);
+    expect(migrated.entrySceneId).toBe("show");
+    expect(listScenes(migrated)).toHaveLength(1);
+    expect(getEntryScene(migrated)?.id).toBe("show");
+  });
+
+  it("round-trips a multi-scene story preserving the entry scene", () => {
+    const migrated = parseRigDocument(JSON.stringify(legacyDoc));
+    const story = {
+      ...migrated,
+      timelines: [
+        ...(migrated.timelines ?? []),
+        { id: "detail", ...createTimeline({ duration: 4, tracks: [] }) }
+      ],
+      entrySceneId: "detail"
+    };
+    const roundTripped = parseRigDocument(serializeRigDocument(story));
+    expect(roundTripped.entrySceneId).toBe("detail");
+    expect(listScenes(roundTripped).map((scene) => scene.id)).toEqual(["show", "detail"]);
+    expect(getScene(roundTripped, "missing")).toBeNull();
+    expect(getEntryScene(roundTripped)?.id).toBe("detail");
+  });
+
+  it("keeps a pre-existing entrySceneId through migration", () => {
+    const doc = { ...legacyDoc, entrySceneId: "show" };
+    expect(parseRigDocument(JSON.stringify(doc)).entrySceneId).toBe("show");
+  });
+
+  it("derives camera ownership from composition", () => {
+    const migrated = parseRigDocument(JSON.stringify(legacyDoc));
+    expect(sceneOwnsCamera(getScene(migrated, "show")!)).toBe(true);
+    expect(sceneOwnsCamera(createTimeline({ duration: 3, tracks: [] }))).toBe(false);
+    expect(
+      sceneOwnsCamera(createTimeline({ duration: 3, tracks: [{ type: "camera", id: "cam", blocks: [] }] }))
+    ).toBe(false);
+  });
+});
+
+describe("active-scene runtime (playScene)", () => {
+  const context = buildContext();
+
+  // A scene whose static shot sits away from the caller pose, so blends are visible.
+  const cameraScene = createTimeline({
+    duration: 4,
+    tracks: [
+      { type: "camera", id: "cam", blocks: [{ id: "b", vcamId: "wide", start: 0, end: 4 }] }
+    ]
+  });
+  const bareScene = createTimeline({ duration: 3, tracks: [] });
+  const scenes = new Map([
+    ["camera-scene", cameraScene],
+    ["bare-scene", bareScene]
+  ]);
+
+  function makeParams(base: RigDriveIntent, camera: PerspectiveCamera) {
+    return {
+      camera,
+      scenes,
+      context,
+      cartFrames: new Map<string, CartFrame>(),
+      base
+    };
+  }
+
+  function seededDrive() {
+    const camera = new PerspectiveCamera();
+    const rig = createRigDriveState({
+      position: { x: 100, y: 5, z: 20 },
+      quaternion: { x: 0, y: 0, z: 0, w: 1 }
+    });
+    const runtime = createSceneRuntimeState();
+    return { camera, rig, runtime };
+  }
+
+  it("takes the camera with a blend, plays the scene, and releases back to the caller pose", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const params = makeParams({ mode: "idle" }, camera);
+
+    playScene(runtime, { sceneId: "camera-scene", blend: { durationSeconds: 1, curve: "linear" } });
+
+    // Mid-take: halfway between the caller pose (x=100) and the shot (x=0).
+    let result = driveRigWithScenes(runtime, rig, params, 0.5);
+    expect(result.activeScene?.sceneId).toBe("camera-scene");
+    expect(result.handoffProgress).toBeCloseTo(0.5);
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(50);
+
+    // Take completes; the scene owns the camera at its shot.
+    result = driveRigWithScenes(runtime, rig, params, 0.5);
+    expect(result.handoffProgress).toBe(1);
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(0);
+    expect(camera.position.x).toBeCloseTo(0);
+
+    // Play to the end (already at t=1 after the take's two steps).
+    driveRigWithScenes(runtime, rig, params, 3);
+    // Completion begins the release; halfway back toward the caller pose.
+    result = driveRigWithScenes(runtime, rig, params, 0.5);
+    expect(result.activeScene).not.toBeNull();
+    expect(result.handoffProgress).toBeCloseTo(0.5);
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(50);
+
+    // Release completes: control returns to the base intent.
+    result = driveRigWithScenes(runtime, rig, params, 0.5);
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(100);
+    result = driveRigWithScenes(runtime, rig, params, 0.5);
+    expect(result.activeScene).toBeNull();
+  });
+
+  it("evaluates a scene identically regardless of invocation history (determinism)", () => {
+    const direct = evaluateTimeline(cameraScene, context, 2);
+    const { rig, runtime, camera } = seededDrive();
+    const params = makeParams({ mode: "idle" }, camera);
+    playScene(runtime, { sceneId: "camera-scene", blend: { durationSeconds: 0 } });
+    driveRigWithScenes(runtime, rig, params, 2);
+    const afterHistory = evaluateTimeline(cameraScene, context, 2);
+    expect(afterHistory).toEqual(direct);
+  });
+
+  it("a skippable takeover cancels on user input and blends back", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const base: RigDriveIntent = { mode: "idle" };
+    playScene(runtime, { sceneId: "camera-scene", blend: { durationSeconds: 1, curve: "linear" } });
+    driveRigWithScenes(runtime, rig, makeParams(base, camera), 1); // take done, live at t=1
+
+    const withInput = { ...makeParams(base, camera), overrideInput: { azimuthDeltaDeg: 2 } };
+    const result = driveRigWithScenes(runtime, rig, withInput, 0.5);
+    // Cancel entered release this frame: frozen at the scene pose, blend from next frame.
+    expect(result.handoffProgress).toBe(0);
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(0);
+    const mid = driveRigWithScenes(runtime, rig, makeParams(base, camera), 0.5);
+    expect(mid.handoffProgress).toBeCloseTo(0.5);
+    expect(mid.cameraSnapshot?.position.x).toBeCloseTo(50);
+    driveRigWithScenes(runtime, rig, makeParams(base, camera), 0.6);
+    expect(driveRigWithScenes(runtime, rig, makeParams(base, camera), 0.1).activeScene).toBeNull();
+  });
+
+  it("a non-skippable takeover ignores user input", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const base: RigDriveIntent = { mode: "idle" };
+    playScene(runtime, { sceneId: "camera-scene", skippable: false, blend: { durationSeconds: 0 } });
+    driveRigWithScenes(runtime, rig, makeParams(base, camera), 0.5);
+    const withInput = { ...makeParams(base, camera), overrideInput: { azimuthDeltaDeg: 2 } };
+    const result = driveRigWithScenes(runtime, rig, withInput, 0.5);
+    expect(result.activeScene?.sceneId).toBe("camera-scene");
+    expect(result.cameraSnapshot?.position.x).toBeCloseTo(0);
+  });
+
+  it("a camera-less scene plays while the base intent keeps the camera", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const params = makeParams({ mode: "idle" }, camera);
+    playScene(runtime, { sceneId: "bare-scene" });
+    const result = driveRigWithScenes(runtime, rig, params, 1);
+    expect(result.activeScene?.sceneId).toBe("bare-scene");
+    expect(result.activeScene?.time).toBeCloseTo(1);
+    // Idle base: the brain holds the caller pose untouched.
+    expect(rig.brain.live?.position.x).toBeCloseTo(100);
+    // Completion returns to the base with no handoff.
+    driveRigWithScenes(runtime, rig, params, 2.5);
+    expect(driveRigWithScenes(runtime, rig, params, 0.1).activeScene).toBeNull();
+  });
+
+  it("pauses a playing master timeline for the branch and resumes it on return", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const master = createTimelinePlayer({ playing: true });
+    const base: RigDriveIntent = {
+      mode: "timeline",
+      timeline: showTimeline,
+      player: master,
+      context,
+      cartFrames: new Map()
+    };
+    const params = makeParams(base, camera);
+    playScene(runtime, { sceneId: "camera-scene", blend: { durationSeconds: 0 } });
+    driveRigWithScenes(runtime, rig, params, 1);
+    expect(master.playing).toBe(false);
+
+    stopScene(runtime);
+    let guard = 0;
+    while (runtime.active && guard < 100) {
+      driveRigWithScenes(runtime, rig, params, 0.5);
+      guard += 1;
+    }
+    expect(runtime.active).toBeNull();
+    expect(master.playing).toBe(true);
+  });
+
+  it("seeks into a scene via fromTime", () => {
+    const { camera, rig, runtime } = seededDrive();
+    const params = makeParams({ mode: "idle" }, camera);
+    playScene(runtime, { sceneId: "camera-scene", fromTime: 3, blend: { durationSeconds: 0 } });
+    const result = driveRigWithScenes(runtime, rig, params, 0.25);
+    expect(result.activeScene?.time).toBeCloseTo(3.25);
   });
 });

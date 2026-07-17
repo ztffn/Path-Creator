@@ -50,7 +50,10 @@ import {
   type VirtualCameraSnapshot
 } from "@huma/path-creator/three";
 import {
+  createSceneRuntimeState,
   createTimelinePlayer,
+  driveRigWithScenes,
+  playScene,
   seekTimelinePlayer,
   type Timeline,
   type TimelinePlayer,
@@ -58,12 +61,6 @@ import {
 } from "@huma/path-creator/timeline";
 import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
-import {
-  buildShowTimeline,
-  deserializeScene,
-  serializeScene,
-  type DemoScene
-} from "./scene-io";
 import {
   Activatable,
   ActivatablesProvider,
@@ -315,6 +312,10 @@ export function DemoSceneViewport({
   vertexPaths,
   activeTimeline,
   timelinePlayerRef,
+  storyScenes,
+  activeEditingSceneId,
+  playSceneRequest,
+  onActiveSceneChange,
   activationTracks,
   audioTracks,
   animationTracks,
@@ -373,6 +374,15 @@ export function DemoSceneViewport({
   /** Non-null while the timeline owns the PiP. */
   activeTimeline: Timeline | null;
   timelinePlayerRef: { current: TimelinePlayer };
+  /** Every story scene as a playable timeline, for the playScene branch. */
+  storyScenes: Map<string, Timeline>;
+  /** The scene open in the editor: playing IT mirrors the branch clock onto the
+   *  timeline panel's playhead so the lanes follow the invocation. */
+  activeEditingSceneId: string;
+  /** Queued live scene invocation (activation-request style; key dedupes). */
+  playSceneRequest: { key: number; sceneId: string } | null;
+  /** Reports the scene the runtime is playing (null when control returned). */
+  onActiveSceneChange: (sceneId: string | null) => void;
   activationTracks: ActivationTrack[];
   audioTracks: AudioTrack[];
   animationTracks: AnimationTrack[];
@@ -452,6 +462,23 @@ export function DemoSceneViewport({
   // The extracted drive-loop: one shared brain + composer stage, driven each
   // frame via a neutral intent. Replaces the hand-rolled brain/composer refs.
   const rigDrive = useRigDrive();
+  // The active-scene runtime (playScene branch + camera take/blend/release),
+  // layered over the base intent. Request key dedupes re-renders; the reported
+  // live scene id fires only on change.
+  const sceneRuntimeRef = useRef(createSceneRuntimeState());
+  const lastPlaySceneKeyRef = useRef<number | null>(null);
+  const lastActiveSceneRef = useRef<string | null>(null);
+  // DEV-only oracle: lets headless verification read the driven camera's live pose
+  // (take/release blends move it) without scraping pixels. Stripped in production.
+  useEffect(() => {
+    if (!import.meta.env.DEV) return;
+    const w = window as unknown as { __demo?: Record<string, unknown> };
+    (w.__demo ??= {}).brainPose = () => ({
+      x: brainCamera.position.x,
+      y: brainCamera.position.y,
+      z: brainCamera.position.z
+    });
+  }, [brainCamera]);
   const projectedTarget = useMemo(() => new Vector3(), []);
   const { gl } = useThree();
 
@@ -532,7 +559,26 @@ export function DemoSceneViewport({
       intent = { mode: "idle" };
     }
 
-    const result = rigDrive.drive(brainCamera, intent, delta);
+    // Queue any new invocation, then drive through the scene runtime: with no
+    // active scene this is exactly the base intent; with one, the scene's clock
+    // advances and the camera take/blend/release handoff runs over the brain.
+    if (playSceneRequest && playSceneRequest.key !== lastPlaySceneKeyRef.current) {
+      lastPlaySceneKeyRef.current = playSceneRequest.key;
+      playScene(sceneRuntimeRef.current, { sceneId: playSceneRequest.sceneId });
+    }
+    const result = driveRigWithScenes(sceneRuntimeRef.current, rigDrive.state.current, {
+      camera: brainCamera,
+      scenes: storyScenes,
+      context: timelineContext,
+      cartFrames: dollyFramesRef.current,
+      base: intent,
+      ...(overrideInput && { overrideInput })
+    }, delta);
+    const liveSceneId = result.activeScene?.sceneId ?? null;
+    if (liveSceneId !== lastActiveSceneRef.current) {
+      lastActiveSceneRef.current = liveSceneId;
+      onActiveSceneChange(liveSceneId);
+    }
     frustumHelper.update();
 
     // Surface the actually-driven vcam id (timeline picks it per-frame) so the host
@@ -558,24 +604,46 @@ export function DemoSceneViewport({
     // the core Timeline). The director applies Unity Post-Playback semantics; audio
     // sounds only during forward playback (silent on scrub/pause), matching
     // stepTimelinePlayer's forward-only event semantics.
+    // While a scene is invoked, its embedded tracks + LOCAL clock drive instead of
+    // the editor's working tracks + master player.
     const player = timelinePlayerRef.current;
-    const timelineDriving = Boolean(activeTimeline);
+    const scenePlayback = result.activeScene;
+    // Playing the scene that's OPEN in the editor: mirror the branch's local
+    // clock onto the editor player so the timeline panel's playhead follows
+    // (seek, not play — event/audio edge semantics stay with the branch). This
+    // also parks the master at the scene's end on completion, so the release
+    // blend lands where the playhead shows.
+    if (scenePlayback && scenePlayback.sceneId === activeEditingSceneId) {
+      seekTimelinePlayer(player, scenePlayback.time);
+    }
+    const driveTracks = scenePlayback
+      ? {
+          activation: scenePlayback.timeline.tracks.filter((t): t is ActivationTrack => t.type === "activation"),
+          audio: scenePlayback.timeline.tracks.filter((t): t is AudioTrack => t.type === "audio"),
+          animation: scenePlayback.timeline.tracks.filter((t): t is AnimationTrack => t.type === "animation"),
+          transform: scenePlayback.timeline.tracks.filter((t): t is TransformTrack => t.type === "transform")
+        }
+      : { activation: activationTracks, audio: audioTracks, animation: animationTracks, transform: transformTracks };
+    const driveTime = scenePlayback ? scenePlayback.time : player.time;
+    const drivePlaying = scenePlayback ? scenePlayback.playing : player.playing;
+    const driveDuration = scenePlayback ? scenePlayback.timeline.duration : activeTimeline?.duration ?? 0;
+    const timelineDriving = Boolean(activeTimeline) || Boolean(scenePlayback);
     activationDirector.sync(
       activatablesRegistry,
-      activationTracks,
+      driveTracks.activation,
       timelineDriving,
-      activeTimeline?.duration ?? 0,
-      player.time,
-      player.playing
+      driveDuration,
+      driveTime,
+      drivePlaying
     );
-    const audioLive = timelineDriving && player.playing;
-    audioPlayer.reconcile(audioLive ? evaluateAudio(audioTracks, player.time) : EMPTY_DESIRED, audioLive);
+    const audioLive = timelineDriving && drivePlaying;
+    audioPlayer.reconcile(audioLive ? evaluateAudio(driveTracks.audio, driveTime) : EMPTY_DESIRED, audioLive);
     // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
     // gated on player.playing like audio, which must stay silent outside forward play.
-    mixerDirector.sync(activatablesRegistry, animationTracks, timelineDriving, player.time);
+    mixerDirector.sync(activatablesRegistry, driveTracks.animation, timelineDriving, driveTime);
     // Keyframed transforms are pure in t too; they follow scrubbing and restore the
     // object's base pose when the timeline is left.
-    transformDirector.sync(activatablesRegistry, transformTracks, timelineDriving, player.time);
+    transformDirector.sync(activatablesRegistry, driveTracks.transform, timelineDriving, driveTime);
 
     // Composer overlay: project the driven vcam's tracked target (and its
     // lookahead) onto the PiP camera so the zone markers track it live.

@@ -1,9 +1,16 @@
-// Round-trip tests for scene persistence: the demo's extra tracks (activation/audio/
-// animation/transform) survive serializeScene -> deserializeScene, the file stays a
-// valid RigDocument (tracks embedded in its timeline), while legacy sidecars still load.
+// Round-trip tests for story persistence: multi-scene assemble/serialize ->
+// deserialize preserves per-scene content (shot participation, extra tracks) and
+// the entry marker; the file stays a valid RigDocument (schema v7 Story); legacy
+// x-demo-tracks sidecars still load onto the entry scene; a scene without camera
+// timing entries persists with no camera track (composition = ownership).
 import { describe, expect, it } from "vitest";
-import { parseRigDocument } from "@huma/path-creator/core";
-import { serializeScene, deserializeScene, type DemoScene } from "./scene-io";
+import { parseRigDocument, sceneOwnsCamera, getScene } from "@huma/path-creator/core";
+import {
+  EMPTY_SCENE_CONTENT,
+  serializeStory,
+  deserializeStory,
+  type DemoStory
+} from "./scene-io";
 import { EMPTY_EXTRA_TRACKS, type ExtraTracks } from "./extra-tracks";
 
 const extraTracks: ExtraTracks = {
@@ -13,37 +20,61 @@ const extraTracks: ExtraTracks = {
   transformTracks: [{ type: "transform", id: "xf1", objectId: "fox", position: [{ time: 0, value: [3, 0, -2] }, { time: 4, value: [8, 0, -2], easing: "linear" }] }]
 };
 
-const scene: DemoScene = {
+const story: DemoStory = {
   paths: [],
   activePathId: null,
   dollies: [],
-  vcamDefs: [],
+  vcamDefs: [
+    { id: "vcam-1", name: "Wide", body: { type: "static", position: { x: 0, y: 2, z: 8 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } } }
+  ],
   editorVcams: {},
-  shotTiming: {},
-  dollyRuns: {},
-  fovAnimations: {},
   targets: [],
-  extraTracks
+  scenes: [
+    { id: "show", name: "Show", ...EMPTY_SCENE_CONTENT, shotTiming: { "vcam-1": { start: 0, end: 5 } }, extraTracks },
+    { id: "detail", name: "Detail", ...EMPTY_SCENE_CONTENT }
+  ],
+  entrySceneId: "show"
 };
 
-describe("scene extra-tracks portability", () => {
-  it("round-trips all four extra-track kinds through serialize -> deserialize", () => {
-    const restored = deserializeScene(serializeScene(scene));
-    expect(restored.extraTracks).toEqual(extraTracks);
+describe("story persistence", () => {
+  it("round-trips a multi-scene story with per-scene content and the entry marker", () => {
+    const restored = deserializeStory(serializeStory(story));
+    expect(restored.scenes.map((scene) => scene.id)).toEqual(["show", "detail"]);
+    expect(restored.entrySceneId).toBe("show");
+    expect(restored.scenes[0]?.extraTracks).toEqual(extraTracks);
+    expect(restored.scenes[0]?.shotTiming).toEqual({ "vcam-1": { start: 0, end: 5 } });
+    expect(restored.scenes[1]?.shotTiming).toEqual({});
+    expect(restored.scenes[1]?.extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
   });
 
-  it("embeds the tracks in the typed RigDocument timeline", () => {
-    const json = serializeScene(scene);
+  it("persists a valid v7 document; a scene without shots has no camera track", () => {
+    const json = serializeStory(story);
     const document = parseRigDocument(json);
+    expect(document.schemaVersion).toBe(7);
+    expect(document.entrySceneId).toBe("show");
+    expect(sceneOwnsCamera(getScene(document, "show")!)).toBe(true);
+    expect(sceneOwnsCamera(getScene(document, "detail")!)).toBe(false);
     expect(document.timelines?.[0]?.tracks.some((track) => track.type === "audio")).toBe(true);
     const raw = JSON.parse(json) as Record<string, unknown>;
-    expect(typeof raw.schemaVersion).toBe("number");
     expect(raw["x-demo-tracks"]).toBeUndefined();
   });
 
-  it("imports legacy x-demo-tracks sidecars", () => {
-    const bare = JSON.parse(serializeScene({ ...scene, extraTracks: EMPTY_EXTRA_TRACKS })) as Record<string, unknown>;
+  it("loads a legacy single-timeline document as a one-scene story", () => {
+    const legacy = JSON.parse(serializeStory({ ...story, scenes: [story.scenes[0]!], entrySceneId: null })) as Record<string, unknown>;
+    legacy.schemaVersion = 6;
+    delete legacy.entrySceneId;
+    const restored = deserializeStory(JSON.stringify(legacy));
+    expect(restored.scenes).toHaveLength(1);
+    expect(restored.entrySceneId).toBe("show");
+  });
+
+  it("imports legacy x-demo-tracks sidecars onto the entry scene", () => {
+    const bare = JSON.parse(
+      serializeStory({ ...story, scenes: story.scenes.map((scene) => ({ ...scene, extraTracks: EMPTY_EXTRA_TRACKS })) })
+    ) as Record<string, unknown>;
     bare["x-demo-tracks"] = extraTracks;
-    expect(deserializeScene(JSON.stringify(bare)).extraTracks).toEqual(extraTracks);
+    const restored = deserializeStory(JSON.stringify(bare));
+    expect(restored.scenes[0]?.extraTracks).toEqual(extraTracks);
+    expect(restored.scenes[1]?.extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
   });
 });

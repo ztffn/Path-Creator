@@ -1,9 +1,10 @@
-// Bridges the demo's editing state and the portable RigDocument scene file.
+// Bridges the demo's editing state and the portable RigDocument story file.
 // The package owns the real I/O (serializeRigDocument/parseRigDocument, schema
 // validation); this module assembles a document from the editor's working state and
-// hydrates it back — plus the show-timeline build/reverse and noise-preset matching.
-// Current scene files embed every track in the typed timeline. Legacy sidecar files
-// remain readable through the x-demo-tracks migration below.
+// hydrates it back — plus the per-scene timeline build/reverse and noise-preset
+// matching. A story is shared pools (paths/dollies/vcams/targets) + N scenes, each
+// persisted as one document timeline; entrySceneId marks the master. Legacy
+// single-timeline files and x-demo-tracks sidecars remain readable via migration.
 import {
   BezierPath,
   VertexPath,
@@ -38,7 +39,8 @@ const SHOW_TIMELINE_ID = "show";
 // alongside as an extension the package parser ignores (glTF-extensions style).
 const EXTRA_TRACKS_KEY = "x-demo-tracks";
 
-/** The demo's editing working-set — package types plus editor-only derived state. */
+/** The demo's editing working-set — the shared pools plus ONE scene's content,
+ *  flattened (the shape the editor's state hooks work in). */
 export interface DemoScene {
   paths: RigPathDefinition[];
   activePathId: string | null;
@@ -55,10 +57,72 @@ export interface DemoScene {
   extraTracks: ExtraTracks;
 }
 
+/** One scene's timeline-derived content. A vcam participates in a scene iff it
+ *  has a shotTiming entry here — the pool of vcams/dollies is story-shared. */
+export interface DemoSceneContent {
+  id: string;
+  name?: string;
+  shotTiming: Record<string, ShotTiming>;
+  dollyRuns: Record<string, DollyRun[]>;
+  fovAnimations: Record<string, FovAnimation>;
+  extraTracks: ExtraTracks;
+}
+
+/** The full authored story: shared pools + every scene, entry marked. */
+export interface DemoStory {
+  paths: RigPathDefinition[];
+  activePathId: string | null;
+  dollies: RigCartDefinition[];
+  vcamDefs: VirtualCameraDefinition[];
+  editorVcams: Record<string, EditorVcam>;
+  targets: SceneTarget[];
+  scenes: DemoSceneContent[];
+  entrySceneId: string | null;
+}
+
+export const EMPTY_SCENE_CONTENT: Omit<DemoSceneContent, "id" | "name"> = {
+  shotTiming: {},
+  dollyRuns: {},
+  fovAnimations: {},
+  extraTracks: EMPTY_EXTRA_TRACKS
+};
+
+/** The working set's scene-content half, stamped with the scene's identity. */
+export function contentFromScene(scene: DemoScene, id: string, name?: string): DemoSceneContent {
+  return {
+    id,
+    ...(name !== undefined && { name }),
+    shotTiming: scene.shotTiming,
+    dollyRuns: scene.dollyRuns,
+    fovAnimations: scene.fovAnimations,
+    extraTracks: scene.extraTracks
+  };
+}
+
+/** Flattens the story's pools + one scene's content into the editing working-set. */
+export function sceneFromStory(story: DemoStory, sceneId: string): DemoScene | null {
+  const content = story.scenes.find((scene) => scene.id === sceneId);
+  if (!content) return null;
+  return {
+    paths: story.paths,
+    activePathId: story.activePathId,
+    dollies: story.dollies,
+    vcamDefs: story.vcamDefs,
+    editorVcams: story.editorVcams,
+    targets: story.targets,
+    shotTiming: content.shotTiming,
+    dollyRuns: content.dollyRuns,
+    fovAnimations: content.fovAnimations,
+    extraTracks: content.extraTracks
+  };
+}
+
 /**
- * Builds the show timeline: camera blocks from shot timing (start/end, with a
+ * Builds one scene's timeline: camera blocks from shot timing (start/end, with a
  * crossfade blendIn where a shot overlaps its predecessor) and one cart track
  * per dolly whose keys are its authored run-blocks (each run a start/end pair).
+ * Only vcams WITH a timing entry participate — a scene without camera entries
+ * has no camera track, so invoking it leaves the camera with the user.
  */
 export function buildShowTimeline(
   vcamDefs: VirtualCameraDefinition[],
@@ -68,10 +132,12 @@ export function buildShowTimeline(
   cartLength: (cartId: string) => number,
   // Per-vcam FOV push/pull, emitted as the block's CameraBlock.lensAnimation.
   fovAnimations: Record<string, FovAnimation> = {},
-  extraTracks: ExtraTracks = EMPTY_EXTRA_TRACKS
+  extraTracks: ExtraTracks = EMPTY_EXTRA_TRACKS,
+  sceneMeta: { id?: string; name?: string } = {}
 ): RigTimelineDefinition {
   const shots = vcamDefs
-    .map((def) => ({ def, timing: shotTiming[def.id] ?? { start: 0, end: 5 } }))
+    .filter((def) => shotTiming[def.id])
+    .map((def) => ({ def, timing: shotTiming[def.id]! }))
     .sort((a, b) => a.timing.start - b.timing.start);
 
   const blocks: CameraBlock[] = shots.map((shot, index) => {
@@ -112,10 +178,11 @@ export function buildShowTimeline(
     .reduce((max, run) => Math.max(max, run.end), 0);
   const duration = Math.max(cartEnd, ...shots.map((shot) => shot.timing.end), maxClipEnd(extraTracks), 0);
   return {
-    id: SHOW_TIMELINE_ID,
-    name: "Show",
+    id: sceneMeta.id ?? SHOW_TIMELINE_ID,
+    name: sceneMeta.name ?? "Show",
+    // No camera track when no vcam participates: camera ownership is composition.
     ...createTimeline({ duration, tracks: [
-      { type: "camera", id: "camera-track", blocks },
+      ...(blocks.length > 0 ? [{ type: "camera" as const, id: "camera-track", blocks }] : []),
       ...cartTracks,
       ...extraTracks.activationTracks,
       ...extraTracks.audioTracks,
@@ -125,7 +192,8 @@ export function buildShowTimeline(
   };
 }
 
-/** Reverses camera-track blocks into per-shot timing (start/end). */
+/** Reverses camera-track blocks into per-shot timing. Only vcams with a block
+ *  get an entry — participation in the scene is exactly "has a timing entry". */
 function timingFromTimeline(
   timeline: Timeline | undefined,
   vcamDefs: VirtualCameraDefinition[]
@@ -134,8 +202,7 @@ function timingFromTimeline(
   const timing: Record<string, ShotTiming> = {};
   for (const def of vcamDefs) {
     const block = cameraTrack?.blocks.find((b) => b.vcamId === def.id);
-    const start = block?.start ?? 0;
-    timing[def.id] = { start, end: block?.end ?? start + 5 };
+    if (block) timing[def.id] = { start: block.start, end: block.end };
   }
   return timing;
 }
@@ -207,28 +274,53 @@ export function matchNoisePreset(noise: VirtualCameraDefinition["noise"]): DemoN
   return "off";
 }
 
-/** Assembles a portable RigDocument from the editor's working state. */
-export function assembleDocument(scene: DemoScene): RigDocument {
+/** Assembles a portable RigDocument (schema v7 Story) from the editor's story. */
+export function assembleDocument(story: DemoStory): RigDocument {
+  const cartLength = cartPathLengths(story.paths, story.dollies);
   return createRigDocument({
-    paths: scene.paths,
-    carts: scene.dollies,
-    vcams: scene.vcamDefs,
-    targets: scene.targets,
-    timelines: [
+    paths: story.paths,
+    carts: story.dollies,
+    vcams: story.vcamDefs,
+    targets: story.targets,
+    timelines: story.scenes.map((scene) =>
       buildShowTimeline(
-        scene.vcamDefs,
+        story.vcamDefs,
         scene.shotTiming,
         scene.dollyRuns,
-        cartPathLengths(scene.paths, scene.dollies),
+        cartLength,
         scene.fovAnimations,
-        scene.extraTracks
+        scene.extraTracks,
+        { id: scene.id, ...(scene.name !== undefined && { name: scene.name }) }
       )
-    ]
+    ),
+    ...(story.entrySceneId !== null && { entrySceneId: story.entrySceneId })
   });
 }
 
-/** Hydrates the editor working state from a document (editor sidecars derived). */
-export function hydrateScene(document: RigDocument): DemoScene {
+/** Decomposes one document timeline into a scene's editable content. */
+function contentFromTimeline(
+  timeline: RigTimelineDefinition,
+  vcamDefs: VirtualCameraDefinition[],
+  cartLength: (cartId: string) => number
+): DemoSceneContent {
+  return {
+    id: timeline.id,
+    ...(timeline.name !== undefined && { name: timeline.name }),
+    shotTiming: timingFromTimeline(timeline, vcamDefs),
+    dollyRuns: runsFromTimeline(timeline, cartLength),
+    fovAnimations: fovAnimationsFromTimeline(timeline, vcamDefs),
+    extraTracks: {
+      activationTracks: timeline.tracks.filter((track) => track.type === "activation"),
+      audioTracks: timeline.tracks.filter((track) => track.type === "audio"),
+      animationTracks: timeline.tracks.filter((track) => track.type === "animation"),
+      transformTracks: timeline.tracks.filter((track) => track.type === "transform")
+    }
+  };
+}
+
+/** Hydrates the full story from a document (editor sidecars derived). A document
+ *  with no timelines gets one empty entry scene so the editor always has a scene. */
+export function hydrateStory(document: RigDocument): DemoStory {
   const vcamDefs = document.vcams ?? [];
   const editorVcams: Record<string, EditorVcam> = {};
   for (const def of vcamDefs) {
@@ -237,39 +329,40 @@ export function hydrateScene(document: RigDocument): DemoScene {
       composerSettings: def.aim?.type === "track" && def.aim.settings ? def.aim.settings : DEFAULT_COMPOSER_SETTINGS
     };
   }
-  const timeline = document.timelines?.[0];
+  const cartLength = cartPathLengths(document.paths, document.carts);
+  const scenes = (document.timelines ?? []).map((timeline) =>
+    contentFromTimeline(timeline, vcamDefs, cartLength)
+  );
+  if (scenes.length === 0) scenes.push({ id: SHOW_TIMELINE_ID, name: "Show", ...EMPTY_SCENE_CONTENT });
   return {
     paths: document.paths,
     activePathId: document.paths[0]?.id ?? null,
     dollies: document.carts,
     vcamDefs,
     editorVcams,
-    shotTiming: timingFromTimeline(document.timelines?.[0], vcamDefs),
-    dollyRuns: runsFromTimeline(
-      document.timelines?.[0],
-      cartPathLengths(document.paths, document.carts)
-    ),
-    fovAnimations: fovAnimationsFromTimeline(document.timelines?.[0], vcamDefs),
     targets: (document.targets ?? []).filter(
       (target): target is SceneTarget => target.type === "point" || target.type === "cart"
     ),
-    extraTracks: {
-      activationTracks: timeline?.tracks.filter((track) => track.type === "activation") ?? [],
-      audioTracks: timeline?.tracks.filter((track) => track.type === "audio") ?? [],
-      animationTracks: timeline?.tracks.filter((track) => track.type === "animation") ?? [],
-      transformTracks: timeline?.tracks.filter((track) => track.type === "transform") ?? []
-    }
+    scenes,
+    entrySceneId: document.entrySceneId ?? scenes[0]?.id ?? null
   };
 }
 
-/** Serializes the scene as a portable RigDocument with all tracks embedded. */
-export function serializeScene(scene: DemoScene): string {
-  return JSON.stringify(assembleDocument(scene));
+/** Serializes the story as a portable RigDocument with all tracks embedded. */
+export function serializeStory(story: DemoStory): string {
+  return JSON.stringify(assembleDocument(story));
 }
 
-/** Parses current documents and migrates the legacy x-demo-tracks sidecar on load. */
-export function deserializeScene(json: string): DemoScene {
-  const scene = hydrateScene(parseRigDocument(json));
+/** Parses current documents and migrates the legacy x-demo-tracks sidecar on load
+ *  (legacy sidecar tracks land on the entry scene). */
+export function deserializeStory(json: string): DemoStory {
+  const story = hydrateStory(parseRigDocument(json));
   const raw = JSON.parse(json) as Record<string, unknown>;
-  return raw[EXTRA_TRACKS_KEY] ? { ...scene, extraTracks: normalizeExtraTracks(raw[EXTRA_TRACKS_KEY]) } : scene;
+  if (!raw[EXTRA_TRACKS_KEY]) return story;
+  const extraTracks = normalizeExtraTracks(raw[EXTRA_TRACKS_KEY]);
+  const entryId = story.entrySceneId ?? story.scenes[0]?.id;
+  return {
+    ...story,
+    scenes: story.scenes.map((scene) => (scene.id === entryId ? { ...scene, extraTracks } : scene))
+  };
 }

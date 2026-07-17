@@ -55,7 +55,12 @@ import { Suspense, useEffect, useMemo, useRef, useState } from "react";
 import { TimelineLanes } from "@huma/path-creator/timeline-ui";
 import {
   buildShowTimeline,
-  type DemoScene
+  contentFromScene,
+  sceneFromStory,
+  EMPTY_SCENE_CONTENT,
+  type DemoScene,
+  type DemoSceneContent,
+  type DemoStory
 } from "./scene-io";
 import {
   Activatable,
@@ -89,7 +94,7 @@ import { clipPeaks } from "./audio-peaks";
 import { dollyMoveSpeedSeries } from "./dolly-speed";
 import { DollyPreviewChrome } from "./camera-pip";
 import { DemoSceneViewport, type VirtualCameraActivation } from "./demo-scene-viewport";
-import { downloadScene, readSceneFile, usePersistedScene, useSceneAutosave } from "./scene-storage";
+import { downloadStory, readStoryFile, usePersistedStory, useStoryAutosave } from "./scene-storage";
 import { Hierarchy } from "./hierarchy";
 import { Inspector } from "./inspector";
 import { panelGlobalCss, BG, BORDER, MUTED, TEXT, FAINT, SANS } from "./panel-theme";
@@ -233,9 +238,19 @@ function nextTargetName(current: SceneTarget[]): string {
 }
 
 export function App() {
-  // The scene is a portable RigDocument. Load it if present; otherwise migrate a
-  // pre-format show once (read here, rewritten in the new format on first save).
-  const loadedScene = usePersistedScene(SCENE_STORAGE_KEY);
+  // The story is a portable RigDocument (schema v7: N scenes + entry marker).
+  // Load it if present; otherwise migrate a pre-format show once (read here,
+  // rewritten in the new format on first save). The editor's working states hold
+  // the ENTRY scene's content initially; other scenes stay in sceneContents.
+  const loadedStory = usePersistedStory(SCENE_STORAGE_KEY);
+  const loadedScene = useMemo(
+    () =>
+      loadedStory
+        ? sceneFromStory(loadedStory, loadedStory.entrySceneId ?? loadedStory.scenes[0]!.id) ??
+          sceneFromStory(loadedStory, loadedStory.scenes[0]!.id)
+        : null,
+    [loadedStory]
+  );
 
   const [bezierPath, setBezierPath] = useState<BezierPath | null>(() => {
     if (loadedScene) {
@@ -334,13 +349,19 @@ export function App() {
   // from production builds (import.meta.env.DEV is false there).
   useEffect(() => {
     if (!import.meta.env.DEV) return;
-    (window as unknown as { __demo?: unknown }).__demo = {
+    const w = window as unknown as { __demo?: Record<string, unknown> };
+    // Merge (don't replace): the viewport registers its own oracle keys (e.g.
+    // brainPose) on this object from a child effect that runs before this one.
+    w.__demo = {
+      ...w.__demo,
       isVisible: (id: string) => activatablesRegistry.resolve(id)?.visible ?? null,
       player: timelinePlayerRef.current,
       setExtraTracks,
       setFovAnimation,
       enterTimeline: () => setPipDriver("timeline"),
       leaveTimeline: () => setPipDriver("shots"),
+      playScene: (id: string) => setPlaySceneRequest({ key: Date.now(), sceneId: id }),
+      activeSceneId: () => liveSceneRef.current,
       selectObject: (id: string) => select("object", id),
       clipsOf: (id: string) => activatablesRegistry.resolveAnimation(id)?.clips ?? null,
       readPose: (id: string) => readObjectPose(id),
@@ -619,6 +640,31 @@ export function App() {
   // Per-dolly run-blocks. From a loaded document (F1+ saves hydrate these from
   // the cart tracks); pre-format shows start empty and re-author dolly moves.
   const [dollyRuns, setDollyRuns] = useState<Record<string, DollyRun[]>>(() => loadedScene?.dollyRuns ?? {});
+  // The story's scene list. The ACTIVE scene's authoritative content lives in the
+  // four working states (shotTiming/dollyRuns/fovAnimations/extraTracks); its entry
+  // here goes stale while editing and is refreshed on switch and in currentStory.
+  const [sceneContents, setSceneContents] = useState<DemoSceneContent[]>(
+    () => loadedStory?.scenes ?? [{ id: "show", name: "Show", ...EMPTY_SCENE_CONTENT }]
+  );
+  const [activeSceneId, setActiveSceneId] = useState<string>(
+    () => loadedStory?.entrySceneId ?? loadedStory?.scenes[0]?.id ?? "show"
+  );
+  const [entrySceneId, setEntrySceneId] = useState<string | null>(
+    () => loadedStory?.entrySceneId ?? loadedStory?.scenes[0]?.id ?? "show"
+  );
+  // A queued live scene invocation for the drive loop (activation-request style).
+  const [playSceneRequest, setPlaySceneRequest] = useState<{ key: number; sceneId: string } | null>(null);
+  // The scene the runtime is playing right now (reported by the drive loop); ref
+  // mirror keeps the DEV oracle closure fresh.
+  const [liveSceneId, setLiveSceneId] = useState<string | null>(null);
+  const liveSceneRef = useRef<string | null>(null);
+  const onActiveSceneChange = (sceneId: string | null): void => {
+    liveSceneRef.current = sceneId;
+    setLiveSceneId(sceneId);
+  };
+  function requestPlayScene(sceneId: string): void {
+    setPlaySceneRequest({ key: Date.now(), sceneId });
+  }
   // The UI-facing view is a pure projection of the authoritative model.
   const virtualCameras = useMemo<DemoVirtualCamera[]>(
     () =>
@@ -628,8 +674,7 @@ export function App() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [vcamDefs, editorVcams, shotTiming]
   );
-  // Persist the scene as a portable RigDocument. Each dolly carries its own
-  // free-run speed (per-cart), so a loaded document plays faithfully.
+  // The active scene's working set (pools + content), the shape the panels edit.
   const currentScene = useMemo<DemoScene>(() => ({
     paths,
     activePathId,
@@ -642,35 +687,99 @@ export function App() {
     targets: pointTargets,
     extraTracks
   }), [paths, activePathId, dollies, vcamDefs, editorVcams, shotTiming, dollyRuns, fovAnimations, pointTargets, extraTracks]);
-  useSceneAutosave(SCENE_STORAGE_KEY, currentScene);
+  // Persist the whole story as a portable RigDocument: every scene's content,
+  // with the active scene's list entry refreshed from the live working states.
+  const currentStory = useMemo<DemoStory>(() => ({
+    paths,
+    activePathId,
+    dollies,
+    vcamDefs,
+    editorVcams,
+    targets: pointTargets,
+    scenes: sceneContents.map((content) =>
+      content.id === activeSceneId ? contentFromScene(currentScene, content.id, content.name) : content
+    ),
+    entrySceneId
+  }), [currentScene, sceneContents, activeSceneId, entrySceneId, paths, activePathId, dollies, vcamDefs, editorVcams, pointTargets]);
+  useStoryAutosave(SCENE_STORAGE_KEY, currentStory);
 
-  // Replaces the whole editing state from a loaded/parsed scene.
-  function applyScene(scene: DemoScene): void {
-    const active = scene.paths.find((path) => path.id === scene.activePathId) ?? scene.paths[0] ?? null;
-    setPaths(scene.paths);
+  // Replaces the whole editing state from a loaded/parsed story (opens its entry scene).
+  function applyStory(story: DemoStory): void {
+    const entryId = story.entrySceneId ?? story.scenes[0]?.id ?? "show";
+    const scene =
+      sceneFromStory(story, entryId) ??
+      (story.scenes[0] ? sceneFromStory(story, story.scenes[0].id) : null);
+    const active = story.paths.find((path) => path.id === story.activePathId) ?? story.paths[0] ?? null;
+    setPaths(story.paths);
     setActivePathId(active?.id ?? null);
     setBezierPath(active ? BezierPath.fromJSON(active.bezier) : null);
-    setDollies(scene.dollies);
-    setVcamDefs(scene.vcamDefs);
-    setEditorVcams(scene.editorVcams);
-    setShotTiming(scene.shotTiming);
-    setDollyRuns(scene.dollyRuns);
-    setFovAnimations(scene.fovAnimations);
-    setPointTargets(scene.targets);
-    setExtraTracks(scene.extraTracks);
+    setDollies(story.dollies);
+    setVcamDefs(story.vcamDefs);
+    setEditorVcams(story.editorVcams);
+    setPointTargets(story.targets);
+    setShotTiming(scene?.shotTiming ?? {});
+    setDollyRuns(scene?.dollyRuns ?? {});
+    setFovAnimations(scene?.fovAnimations ?? {});
+    setExtraTracks(scene?.extraTracks ?? EMPTY_EXTRA_TRACKS);
+    setSceneContents(story.scenes.length > 0 ? story.scenes : [{ id: entryId, name: "Show", ...EMPTY_SCENE_CONTENT }]);
+    setActiveSceneId(scene ? entryId : story.scenes[0]?.id ?? entryId);
+    setEntrySceneId(entryId);
     setSelection(null);
     setSelectedMidpointIndex(null);
     setSelectedHandleIndex(active ? 0 : null);
     setPathVersion((version) => version + 1);
   }
 
+  // Scene switching: fold the live working states back into the list, then load
+  // the target's content — one pass per state so no functional update reads stale
+  // sibling state (the known multi-channel hazard).
+  function switchScene(sceneId: string): void {
+    if (sceneId === activeSceneId) return;
+    const target = sceneContents.find((content) => content.id === sceneId);
+    if (!target) return;
+    setSceneContents((prev) =>
+      prev.map((content) =>
+        content.id === activeSceneId ? contentFromScene(currentScene, content.id, content.name) : content
+      )
+    );
+    setShotTiming(target.shotTiming);
+    setDollyRuns(target.dollyRuns);
+    setFovAnimations(target.fovAnimations);
+    setExtraTracks(target.extraTracks);
+    setActiveSceneId(sceneId);
+    setSelection(null);
+    timelinePlayerRef.current.playing = false;
+    seekTimelinePlayer(timelinePlayerRef.current, 0);
+  }
+
+  // A new scene starts empty (no camera participation => invoking it leaves the
+  // user's camera alone until shots are added) and opens for editing.
+  function addScene(): void {
+    const id = `scene-${Date.now().toString(36)}`;
+    const name = `Scene ${sceneContents.length + 1}`;
+    setSceneContents((prev) => [
+      ...prev.map((content) =>
+        content.id === activeSceneId ? contentFromScene(currentScene, content.id, content.name) : content
+      ),
+      { id, name, ...EMPTY_SCENE_CONTENT }
+    ]);
+    setShotTiming({});
+    setDollyRuns({});
+    setFovAnimations({});
+    setExtraTracks(EMPTY_EXTRA_TRACKS);
+    setActiveSceneId(id);
+    setSelection(null);
+    timelinePlayerRef.current.playing = false;
+    seekTimelinePlayer(timelinePlayerRef.current, 0);
+  }
+
   function exportScene(): void {
-    downloadScene(currentScene);
+    downloadStory(currentStory);
   }
 
   function importSceneFile(file: File): void {
-    readSceneFile(file)
-      .then(applyScene)
+    readStoryFile(file)
+      .then(applyStory)
       .catch((error: unknown) => console.error("Scene import failed", error));
   }
 
@@ -680,17 +789,15 @@ export function App() {
       name: "Path 1",
       bezier: createDefaultBezier().toJSON()
     };
-    applyScene({
+    applyStory({
       paths: [path],
       activePathId: path.id,
       dollies: [makeDolly({ id: "dolly-1", name: "Dolly 1", pathId: path.id })],
       vcamDefs: [],
       editorVcams: {},
-      shotTiming: {},
-      dollyRuns: {},
-      fovAnimations: {},
       targets: [],
-      extraTracks: EMPTY_EXTRA_TRACKS
+      scenes: [{ id: "show", name: "Show", ...EMPTY_SCENE_CONTENT }],
+      entrySceneId: "show"
     });
   }
 
@@ -850,25 +957,52 @@ export function App() {
     return { ...base, duration: Math.max(base.duration, extraDuration) };
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [shotTimingKey, dollyRunKey, fovAnimKey, extraDuration]);
+  // Every scene as a playable runtime timeline (extra tracks embedded), for the
+  // active-scene runtime's playScene branch. The active scene reads the live
+  // working states; the rest read their stored content.
+  const storyScenes = useMemo(() => {
+    const cartLength = (cartId: string): number => {
+      const dolly = dollies.find((d) => d.id === cartId);
+      return (dolly && vertexPaths.get(dolly.pathId)?.length) || 1;
+    };
+    const map = new Map<string, Timeline>();
+    for (const content of sceneContents) {
+      const live =
+        content.id === activeSceneId ? { shotTiming, dollyRuns, fovAnimations, extraTracks } : content;
+      map.set(
+        content.id,
+        buildShowTimeline(vcamDefs, live.shotTiming, live.dollyRuns, cartLength, live.fovAnimations, live.extraTracks, {
+          id: content.id,
+          ...(content.name !== undefined && { name: content.name })
+        })
+      );
+    }
+    return map;
+  }, [sceneContents, activeSceneId, shotTiming, dollyRuns, fovAnimations, extraTracks, vcamDefs, dollies, vertexPaths]);
+  const liveSceneName = liveSceneId
+    ? sceneContents.find((content) => content.id === liveSceneId)?.name ?? liveSceneId
+    : null;
   const timelineActive = pipDriver === "timeline" && demoTimeline != null;
   // The rig preview only has a source while an editable path drives it; with
   // no timeline/shot/selection and no path, the PiP shows "no output".
-  const hasPipSource = Boolean(timelineActive || virtualCameraActivation || selectedVirtualCamera);
+  const hasPipSource = Boolean(timelineActive || virtualCameraActivation || selectedVirtualCamera || liveSceneId);
   // The vcam actually driving the PiP this frame (reported by the drive loop);
   // during timeline playback this is the active block's shot, which changes over
   // time — so the label names the real camera instead of an opaque "Timeline".
   const activeDrivenVcam = activeDrivenVcamId
     ? virtualCameras.find((camera) => camera.id === activeDrivenVcamId) ?? null
     : null;
-  const pipLabel = timelineActive
-    ? activeDrivenVcam
-      ? `▶ ${activeDrivenVcam.name}`
-      : "Timeline (gap)"
-    : virtualCameraActivation
-      ? activeDrivenVcam?.name ?? "Brain Camera"
-      : selectedVirtualCamera
-        ? selectedVirtualCamera.name
-        : "No output";
+  const pipLabel = liveSceneName
+    ? `▶ ${liveSceneName}`
+    : timelineActive
+      ? activeDrivenVcam
+        ? `▶ ${activeDrivenVcam.name}`
+        : "Timeline (gap)"
+      : virtualCameraActivation
+        ? activeDrivenVcam?.name ?? "Brain Camera"
+        : selectedVirtualCamera
+          ? selectedVirtualCamera.name
+          : "No output";
   // Composer zone overlay reflects the previewed vcam (selected or activated).
   const activatedVcam = virtualCameraActivation
     ? virtualCameras.find((camera) => camera.id === virtualCameraActivation.toId) ?? null
@@ -1494,6 +1628,13 @@ export function App() {
           onViewModeChange={setViewMode}
           selection={selection}
           onSelect={selectFromHierarchy}
+          scenes={sceneContents.map((content) => ({ id: content.id, name: content.name ?? content.id }))}
+          activeSceneId={activeSceneId}
+          entrySceneId={entrySceneId}
+          liveSceneId={liveSceneId}
+          onSelectScene={switchScene}
+          onAddScene={addScene}
+          onPlayScene={requestPlayScene}
           paths={paths.map((path) => ({ id: path.id, name: path.name ?? path.id }))}
           dollies={dollies.map((dolly) => ({ id: dolly.id, name: dolly.name ?? dolly.id }))}
           cameras={virtualCameras.map((camera) => ({
@@ -1664,12 +1805,16 @@ export function App() {
           extraLanes={extraLanes}
           onExtraClipTiming={setExtraClip}
           onCreateExtraClip={addExtraClip}
-          shots={virtualCameras.map((vcam) => ({
-            id: vcam.id,
-            name: vcam.name,
-            start: vcam.shotStart,
-            end: vcam.shotEnd
-          }))}
+          shots={virtualCameras
+            // Only vcams participating in the ACTIVE scene (they have a timing
+            // entry here); the vcam pool itself is story-shared.
+            .filter((vcam) => shotTiming[vcam.id])
+            .map((vcam) => ({
+              id: vcam.id,
+              name: vcam.name,
+              start: vcam.shotStart,
+              end: vcam.shotEnd
+            }))}
           dollies={dollies.map((dolly) => ({ id: dolly.id, name: dolly.name ?? dolly.id }))}
           dollyMoves={Object.entries(dollyRuns).flatMap(([cartId, runs]) =>
             runs.map((run) => ({
@@ -1749,6 +1894,10 @@ export function App() {
           vertexPaths={vertexPaths}
           activeTimeline={timelineActive ? demoTimeline : null}
           timelinePlayerRef={timelinePlayerRef}
+          storyScenes={storyScenes}
+          activeEditingSceneId={activeSceneId}
+          playSceneRequest={playSceneRequest}
+          onActiveSceneChange={onActiveSceneChange}
           activationTracks={extraTracks.activationTracks}
           audioTracks={extraTracks.audioTracks}
           animationTracks={extraTracks.animationTracks}

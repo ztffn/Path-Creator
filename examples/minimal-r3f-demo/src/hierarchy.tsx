@@ -23,6 +23,15 @@ export interface HierarchyProps {
   onViewModeChange: (mode: "edit" | "play") => void;
   selection: Selection;
   onSelect: (kind: EntityKind, id: string) => void;
+  /** The story's scenes: click a row to open it for editing, ▶ to invoke it live. */
+  scenes: Entity[];
+  activeSceneId: string;
+  entrySceneId: string | null;
+  /** The scene the runtime is playing right now (null when none). */
+  liveSceneId: string | null;
+  onSelectScene: (id: string) => void;
+  onAddScene: () => void;
+  onPlayScene: (id: string) => void;
   paths: Entity[];
   dollies: Entity[];
   cameras: CameraEntity[];
@@ -111,6 +120,34 @@ export function Hierarchy(props: HierarchyProps) {
           <Row selected={isSelected(selection, "scene", SCENE_ID)} onSelect={() => onSelect("scene", SCENE_ID)} label="Scene" />
         </div>
 
+        <Group title="Scenes" onAdd={props.onAddScene}>
+          {props.scenes.map((scene) => (
+            <div key={scene.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Row
+                  selected={scene.id === props.activeSceneId}
+                  onSelect={() => props.onSelectScene(scene.id)}
+                  label={scene.name}
+                  badge={
+                    scene.id === props.liveSceneId ? (
+                      <LiveBadge />
+                    ) : scene.id === props.entrySceneId ? (
+                      <EntryBadge />
+                    ) : undefined
+                  }
+                />
+              </div>
+              <button
+                title="Play this scene live (blends the camera in and back)"
+                onClick={() => props.onPlayScene(scene.id)}
+                style={{ ...addBtnStyle, flex: "0 0 auto" }}
+              >
+                ▶
+              </button>
+            </div>
+          ))}
+        </Group>
+
         <Group title="Paths" onAdd={props.onAddPath}>
           {props.paths.length === 0 ? <EmptyHint>No paths.</EmptyHint> : null}
           {props.paths.map((path) => (
@@ -189,6 +226,10 @@ const addBtnStyle = { height: 22, padding: "0 6px", fontSize: 10 };
 
 function ActiveBadge() {
   return <span style={{ fontSize: 9, color: "#38bdf8", letterSpacing: "0.08em", flex: "0 0 auto" }}>EDIT</span>;
+}
+
+function EntryBadge() {
+  return <span style={{ fontSize: 9, color: "#a78bfa", letterSpacing: "0.08em", flex: "0 0 auto" }}>ENTRY</span>;
 }
 
 function LiveBadge() {
