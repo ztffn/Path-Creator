@@ -226,6 +226,8 @@ export interface TimelineLanesProps {
   onCreateDollyRun: (cartId: string, timeSeconds: number) => void;
   /** An extra-lane clip was dragged/resized, or a lane double-clicked to add one. */
   onExtraClipTiming?: (laneId: string, clipId: string, start: number, end: number) => void;
+  /** An extra-lane clip was vertically dropped onto another extra lane. */
+  onExtraClipLaneChange?: (fromLaneId: string, toLaneId: string, clipId: string, start: number, end: number) => void;
   onCreateExtraClip?: (laneId: string, timeSeconds: number) => void;
   /** An extra lane was clicked (its rail icon or a clip) — report it for selection. */
   onSelectLane?: (laneId: string) => void;
@@ -255,6 +257,7 @@ export function TimelineLanes({
   onDollyRunTiming,
   onCreateDollyRun,
   onExtraClipTiming,
+  onExtraClipLaneChange,
   onCreateExtraClip,
   onSelectLane,
   selectedLaneId = null
@@ -268,9 +271,28 @@ export function TimelineLanes({
     dollyId?: string;
   } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
+  const pointerYRef = useRef<number | null>(null);
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const rememberPointer = (event: MouseEvent) => { pointerYRef.current = event.clientY; };
+    document.addEventListener("mousemove", rememberPointer);
+    return () => document.removeEventListener("mousemove", rememberPointer);
+  }, []);
+
+  const extraLaneAtPointer = (): string | null => {
+    const target = laneStateRef.current?.target;
+    const pointerY = pointerYRef.current;
+    if (!target || pointerY === null) return null;
+    const area = target.querySelector<HTMLElement>(".timeline-editor-edit-area");
+    const grid = area?.querySelector<HTMLElement>(".ReactVirtualized__Grid");
+    if (!area || !grid) return null;
+    const index = Math.floor((pointerY - area.getBoundingClientRect().top + grid.scrollTop) / LANE_HEIGHT);
+    const row = editorData[index];
+    return row?.id.startsWith("xrow|") ? row.id.slice(5) : null;
+  };
 
   // Clamp the context menu into the viewport (the lane sits at the bottom, so a
   // menu placed at the click point would open off-screen). Runs before paint.
@@ -564,6 +586,14 @@ export function TimelineLanes({
               ? undefined
               : wouldFullyContain(action.id, start, end) ? false : undefined
           }
+          onActionMoveEnd={({ action, start, end }) => {
+            const extra = parseExtraId(action.id);
+            const targetLane = extraLaneAtPointer();
+            if (!extra || !targetLane || targetLane === extra.laneId) return;
+            const snappedStart = Math.max(0, Math.round(start / SNAP_SECONDS) * SNAP_SECONDS);
+            const snappedEnd = Math.max(snappedStart + SNAP_SECONDS, Math.round(end / SNAP_SECONDS) * SNAP_SECONDS);
+            onExtraClipLaneChange?.(extra.laneId, targetLane, extra.clipId, snappedStart, snappedEnd);
+          }}
           onActionResizing={({ action, start, end }) =>
             action.id.startsWith("move-") || action.id.startsWith("x|")
               ? undefined

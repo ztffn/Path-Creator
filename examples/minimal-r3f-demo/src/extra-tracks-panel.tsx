@@ -8,6 +8,7 @@ import { useState, type CSSProperties } from "react";
 import { EASING_PRESETS, type AxisTangent, type Easing, type EasingCurve } from "@huma/path-creator/core";
 import { EasingEditor, KeyframeCurveEditor, type CurveChannelKey } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
+import { downloadAudioMixdown } from "./audio-bake";
 import type { ActivatableInfo } from "./activatables";
 import {
   insertTransformKey,
@@ -140,6 +141,34 @@ export interface AudioEditorProps {
   peaksFor?: (clip: AudioClip) => number[] | null;
 }
 
+/**
+ * Bakes every audio track on this scene to one WAV, through the same graph the live
+ * preview plays — so the file is what you auditioned. Renders faster than real time,
+ * but a long scene with stretched sources is not instant, hence the busy state.
+ */
+function MixdownButton({ tracks }: { tracks: AudioTrack[] }) {
+  const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
+  const clipCount = tracks.reduce((n, track) => n + (track.mute ? 0 : track.clips.length), 0);
+  if (clipCount === 0) return null;
+  return (
+    <button
+      disabled={state === "busy"}
+      title="Render all audio tracks to a single WAV"
+      onClick={() => {
+        setState("busy");
+        void downloadAudioMixdown(tracks)
+          .then(() => setState("idle"))
+          .catch((error) => {
+            console.warn("[bake] mixdown failed", error);
+            setState("failed");
+          });
+      }}
+    >
+      {state === "busy" ? "Baking…" : state === "failed" ? "Bake failed — see console" : `Bake mixdown (${clipCount} clips)`}
+    </button>
+  );
+}
+
 export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
   const emit = (next: AudioTrack[]): void => onChange({ audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
@@ -183,6 +212,22 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
                     onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, gain: Number(e.target.value) } : c)) })} />
                   <span>{(clip.gain ?? 1).toFixed(2)}</span>
                 </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+                  <span>pitch</span>
+                  <input type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
+                    value={clip.rate ?? 1}
+                    title="Playback rate — 2 plays twice as fast an octave up. Changes how much of the file the clip covers, so the waveform rewindows as you drag."
+                    onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, rate: Number(e.target.value) } : c)) })} />
+                  <span>{(clip.rate ?? 1).toFixed(2)}×</span>
+                </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+                  <span>speed</span>
+                  <input type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
+                    value={clip.stretch ?? 1}
+                    title="Time stretch — same speed change as pitch, but the pitch stays put. Costs an offline re-render of the source, so it lands a beat after you let go."
+                    onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, stretch: Number(e.target.value) } : c)) })} />
+                  <span>{(clip.stretch ?? 1).toFixed(2)}×</span>
+                </div>
                 <EasingEditor
                   mode="value"
                   height={90}
@@ -208,6 +253,7 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
           Add Audio Track
         </button>
       )}
+      <MixdownButton tracks={audioTracks} />
     </div>
   );
 }
@@ -399,6 +445,15 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 </option>
               ))}
             </select>
+            <button
+              style={{ ...iconBtn, width: "auto", padding: "0 6px", opacity: track.additive ? 1 : 0.4 }}
+              title={track.additive
+                ? "Additive: keys offset the pose already on the object, so this layers over baked animation"
+                : "Absolute: keys replace the object's pose, overwriting any animation driving it"}
+              onClick={() => patch(track.id, { additive: !track.additive })}
+            >
+              {track.additive ? "+Δ" : "abs"}
+            </button>
             <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(transformTracks.filter((t) => t.id !== track.id))}>
               ×
             </button>

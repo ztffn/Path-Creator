@@ -2,10 +2,11 @@
 // Runtime math and schemas live in @huma/path-creator/core; this file only groups
 // the four kinds for the editor's existing per-section state shape.
 import type { ActivationTrack, AnimationTrack, AudioClip, AudioTrack, TransformTrack } from "@huma/path-creator/core";
-import { evaluateTransform as evalTransform, transformKeyTimes as keyTimes, transformSpan as span } from "@huma/path-creator/core";
+import { audioClipSpeed as clipSpeed, evaluateTransform as evalTransform, transformKeyTimes as keyTimes, transformSpan as span } from "@huma/path-creator/core";
 import type { BlockSeriesData } from "@huma/path-creator/timeline-ui";
 
 export {
+  audioClipSpeed,
   evaluateActivation,
   evaluateAnimation,
   evaluateAudio,
@@ -57,8 +58,32 @@ export const hasExtraTracks = (tracks: ExtraTracks): boolean =>
 export function resizeAudioClip(clip: AudioClip, start: number, end: number): AudioClip {
   const duration = Math.max(0.25, end - start);
   const resized = Math.abs(duration - clip.duration) > 1e-6;
-  const offset = resized ? Math.max(0, (clip.offset ?? 0) + start - clip.start) : clip.offset;
+  // A left-edge drag moves the in-point; a right-edge drag leaves start alone, so the
+  // delta is 0 and offset survives. The timeline delta converts to SOURCE seconds by
+  // the clip's speed — at rate 2, dragging the edge one second in skips two seconds of file.
+  const offset = resized
+    ? Math.max(0, (clip.offset ?? 0) + (start - clip.start) * clipSpeed(clip))
+    : clip.offset;
   return { ...clip, start, duration, ...(offset !== undefined && { offset }) };
+}
+
+export function moveAudioClipBetweenTracks(
+  tracks: AudioTrack[],
+  fromTrackId: string,
+  toTrackId: string,
+  clipId: string,
+  start: number,
+  end: number
+): AudioTrack[] {
+  const source = tracks.find((track) => track.id === fromTrackId);
+  const clip = source?.clips.find((candidate) => candidate.id === clipId);
+  if (!clip || fromTrackId === toTrackId || !tracks.some((track) => track.id === toTrackId)) return tracks;
+  const moved = resizeAudioClip(clip, start, end);
+  return tracks.map((track) => {
+    if (track.id === fromTrackId) return { ...track, clips: track.clips.filter((candidate) => candidate.id !== clipId) };
+    if (track.id === toTrackId) return { ...track, clips: [...track.clips, moved].sort((a, b) => a.start - b.start) };
+    return track;
+  });
 }
 
 export function maxClipEnd(tracks: ExtraTracks): number {
@@ -71,8 +96,6 @@ export function maxClipEnd(tracks: ExtraTracks): number {
     ].map((key) => key.time))
   );
 }
-
-export const EMPTY_DESIRED: ReadonlyMap<string, import("@huma/path-creator/core").DesiredAudio> = new Map();
 
 // --- Transform-track timeline block (one lane per track: markers + faint value lines) ---
 

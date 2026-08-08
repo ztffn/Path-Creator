@@ -1,30 +1,56 @@
-// Web Audio reconciler for the demo's 2D Audio tracks. Given the per-frame desired
-// audio state (from evaluateAudio) it starts/stops/gains AudioBufferSourceNodes so
-// playback matches the timeline, and resyncs when the source drifts from the clock
-// (a scrub-then-play). Buffers are decoded once per src and cached; `tone:<freq>`
-// synthesizes a sine buffer so the demo needs no bundled asset. Demo scaffolding.
-import { sampleEasingCurve } from "@huma/path-creator/core";
-import type { AudioClip, DesiredAudio } from "./extra-tracks";
+// Web Audio playback for the demo's 2D Audio tracks. Schedules one buffer source per
+// clip at its exact context time through the shared graph builder — the same builder
+// the offline mixdown uses, so what you audition and what you export cannot diverge.
+// Reschedules only when what should be heard changes (play, seek, edit, a late decode)
+// instead of reconciling every frame. `tone:<freq>` synthesizes a sine buffer so the
+// demo needs no bundled asset. Demo scaffolding.
+import type { AudioClip, AudioTrack } from "@huma/path-creator/core";
+import { buildAudioGraph, type AudioGraphLayer, type ScheduledClip } from "./audio-graph";
+import { stretchAudioBuffer } from "./audio-stretch";
 
-const RESYNC_TOLERANCE_SECONDS = 0.3;
 const TONE_BUFFER_SECONDS = 60;
+// A seek is a discontinuity in the drive clock, not drift: the scheduler does not drift,
+// so anything past a few frames of slack means the playhead was moved (or the timeline
+// looped) and the schedule has to be rebuilt.
+const SEEK_EPSILON_SECONDS = 0.05;
 
-interface ActiveClip {
-  src: string;
-  source: AudioBufferSourceNode;
-  gain: GainNode;
-  /** ctx.currentTime when the source started, and the buffer offset it started at. */
-  startedAtContextTime: number;
-  startedOffset: number;
-  loop: boolean;
+interface ScheduleAnchor {
+  contextTime: number;
+  driveTime: number;
+  signature: string;
+}
+
+/**
+ * Everything about the layers that changes what gets scheduled. Rebuilt each frame and
+ * compared: the per-frame `.filter()` upstream allocates fresh track arrays, so
+ * reference identity cannot be used and content is what's left. A handful of clips
+ * makes this trivial next to the render work happening alongside it.
+ */
+function scheduleSignature(layers: readonly AudioGraphLayer[], driveTime: number): string {
+  const parts: string[] = [];
+  for (const layer of layers) {
+    parts.push((layer.time - driveTime).toFixed(4));
+    for (const track of layer.tracks) {
+      parts.push(track.id, track.mute ? "m" : "", String(track.gain ?? 1));
+      for (const clip of track.clips) {
+        parts.push(
+          clip.id, clip.src, String(clip.start), String(clip.duration), String(clip.offset ?? 0),
+          String(clip.gain ?? 1), String(clip.rate ?? 1), String(clip.stretch ?? 1),
+          clip.loop ? "L" : "", clip.gainCurve ? JSON.stringify(clip.gainCurve) : ""
+        );
+      }
+    }
+  }
+  return parts.join(",");
 }
 
 export class AudioTrackPlayer {
   private context: AudioContext | null = null;
   private buffers = new Map<string, AudioBuffer>();
   private loading = new Set<string>();
-  private active = new Map<string, ActiveClip>();
-  private preview: { source: AudioBufferSourceNode; gain: GainNode } | null = null;
+  private scheduled: ScheduledClip[] = [];
+  private anchor: ScheduleAnchor | null = null;
+  private preview: ScheduledClip[] = [];
 
   /** Resume the AudioContext from a user gesture (autoplay policy). Call on Play. */
   resume(): void {
@@ -33,148 +59,77 @@ export class AudioTrackPlayer {
   }
 
   /**
-   * Play one clip once from the inspector, applying its volume envelope (level × gainCurve)
-   * as scheduled gain automation, so you can hear the fade you drew. Stops any prior preview.
+   * Follow the timeline. Called every frame, but only rebuilds the schedule when what
+   * should be heard actually changed — the clip edit, the seek, the decode that just
+   * landed. Silent whenever `live` is false, matching the forward-play-only contract.
+   */
+  sync(layers: readonly AudioGraphLayer[], driveTime: number, live: boolean): void {
+    if (!live) {
+      this.stopScheduled();
+      return;
+    }
+    const ctx = this.ensureContext();
+    if (ctx.state !== "running") {
+      void ctx.resume();
+      this.stopScheduled();
+      return;
+    }
+    this.stopPreview(); // timeline audio takes over from an inspector preview
+
+    const signature = scheduleSignature(layers, driveTime);
+    if (this.anchor) {
+      const expected = this.anchor.driveTime + (ctx.currentTime - this.anchor.contextTime);
+      const continuous = Math.abs(driveTime - expected) <= SEEK_EPSILON_SECONDS;
+      if (continuous && this.anchor.signature === signature) return;
+    }
+
+    this.stopScheduled();
+    this.scheduled = buildAudioGraph(ctx, layers, {
+      originContextTime: ctx.currentTime,
+      getBuffer: (src, stretch) => this.getBuffer(src, stretch),
+      destination: ctx.destination,
+      // A source still decoding drops out of this schedule; the decode invalidates the
+      // anchor when it lands so the next frame picks it up.
+      onMissing: () => undefined
+    });
+    this.anchor = { contextTime: ctx.currentTime, driveTime, signature };
+  }
+
+  /**
+   * Play one clip once from the inspector, through the same builder the timeline uses,
+   * so an auditioned clip sounds exactly as it will in place (minus its neighbours'
+   * crossfades, which is what previewing one clip means).
    */
   async previewClip(clip: AudioClip, trackGain: number): Promise<void> {
     const ctx = this.ensureContext();
     if (ctx.state !== "running") await ctx.resume();
-    let buffer = this.buffers.get(clip.src);
-    if (!buffer) {
-      buffer = await this.loadBuffer(clip.src);
-      this.buffers.set(clip.src, buffer);
-    }
+    await this.loadInto(clip.src, 1);
     this.stopPreview();
-    const offset = Math.max(0, clip.offset ?? 0);
-    const dur = Math.max(0.05, Math.min(clip.duration, buffer.duration - offset));
-    const base = (clip.gain ?? 1) * trackGain;
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    const gain = ctx.createGain();
-    source.connect(gain).connect(ctx.destination);
-    if (clip.gainCurve) {
-      const n = 64;
-      const curve = new Float32Array(n + 1);
-      for (let i = 0; i <= n; i++) curve[i] = base * Math.min(1, Math.max(0, sampleEasingCurve(clip.gainCurve, i / n)));
-      gain.gain.setValueCurveAtTime(curve, ctx.currentTime, dur);
-    } else {
-      gain.gain.value = base;
-    }
-    const node = { source, gain };
-    source.onended = () => {
-      if (this.preview === node) {
-        gain.disconnect();
-        this.preview = null;
-      }
-    };
-    source.start(0, offset);
-    source.stop(ctx.currentTime + dur);
-    this.preview = node;
-  }
-
-  private stopPreview(): void {
-    if (!this.preview) return;
-    this.preview.source.onended = null;
-    try {
-      this.preview.source.stop();
-    } catch {
-      /* already stopped */
-    }
-    this.preview.source.disconnect();
-    this.preview.gain.disconnect();
-    this.preview = null;
-  }
-
-  /**
-   * Reconcile actual playback to `desired` (clipId -> DesiredAudio). When not live
-   * (paused/scrubbing) all nodes are stopped so audio is silent outside forward play.
-   */
-  reconcile(desired: ReadonlyMap<string, DesiredAudio>, live: boolean): void {
-    if (!live) {
-      this.stopAll();
-      return;
-    }
-    this.stopPreview(); // live timeline audio takes over; don't overlap an inspector preview
-    const ctx = this.ensureContext();
-    if (ctx.state !== "running") {
-      void ctx.resume();
-      this.stopAll();
-      return;
-    }
-
-    // Stop clips no longer desired.
-    for (const [clipId, clip] of this.active) {
-      if (!desired.has(clipId)) {
-        this.stopClip(clipId, clip);
-      }
-    }
-
-    for (const [clipId, want] of desired) {
-      const buffer = this.getBuffer(want.src);
-      if (!buffer) continue; // still decoding; start once ready
-
-      const current = this.active.get(clipId);
-      if (!current) {
-        this.startClip(ctx, clipId, buffer, want);
-        continue;
-      }
-      current.gain.gain.value = want.gain;
-      current.loop = want.loop;
-      current.source.loop = want.loop;
-      // Resync if the source has drifted from the timeline (e.g. after a seek).
-      const played = ctx.currentTime - current.startedAtContextTime + current.startedOffset;
-      const expected = want.loop ? want.offset % buffer.duration : want.offset;
-      if (current.src !== want.src || Math.abs(played - expected) > RESYNC_TOLERANCE_SECONDS) {
-        this.stopClip(clipId, current);
-        this.startClip(ctx, clipId, buffer, want);
-      }
-    }
+    const track: AudioTrack = { type: "audio", id: "preview", clips: [clip], gain: trackGain };
+    this.preview = buildAudioGraph(ctx, [{ tracks: [track], time: clip.start }], {
+      originContextTime: ctx.currentTime,
+      getBuffer: (src, stretch) => this.buffers.get(bufferKey(src, stretch)) ?? null,
+      destination: ctx.destination
+    });
   }
 
   dispose(): void {
     this.stopPreview();
-    this.stopAll();
+    this.stopScheduled();
     void this.context?.close();
     this.context = null;
   }
 
-  private startClip(ctx: AudioContext, clipId: string, buffer: AudioBuffer, want: DesiredAudio): void {
-    const source = ctx.createBufferSource();
-    source.buffer = buffer;
-    source.loop = want.loop;
-    const gain = ctx.createGain();
-    gain.gain.value = want.gain;
-    source.connect(gain).connect(ctx.destination);
-    const offset = want.loop ? want.offset % buffer.duration : Math.min(want.offset, buffer.duration);
-    const clip: ActiveClip = {
-      src: want.src,
-      source,
-      gain,
-      startedAtContextTime: ctx.currentTime,
-      startedOffset: offset,
-      loop: want.loop
-    };
-    source.onended = () => {
-      if (this.active.get(clipId) === clip) this.active.delete(clipId);
-    };
-    source.start(0, Math.max(0, offset));
-    this.active.set(clipId, clip);
+  private stopScheduled(): void {
+    if (this.scheduled.length) stopClips(this.scheduled);
+    this.scheduled = [];
+    this.anchor = null;
   }
 
-  private stopClip(clipId: string, clip: ActiveClip): void {
-    clip.source.onended = null;
-    try {
-      clip.source.stop();
-    } catch {
-      /* already stopped */
-    }
-    clip.source.disconnect();
-    clip.gain.disconnect();
-    this.active.delete(clipId);
-  }
-
-  private stopAll(): void {
-    for (const [clipId, clip] of [...this.active]) this.stopClip(clipId, clip);
+  private stopPreview(): void {
+    if (!this.preview.length) return;
+    stopClips(this.preview);
+    this.preview = [];
   }
 
   private ensureContext(): AudioContext {
@@ -182,37 +137,71 @@ export class AudioTrackPlayer {
     return this.context;
   }
 
-  private getBuffer(src: string): AudioBuffer | null {
-    const cached = this.buffers.get(src);
+  /**
+   * A decoded buffer, or null while it decodes. `stretch` keys the cache because a
+   * pitch-preserving stretch produces a different buffer for the same source; until the
+   * offline stretcher exists only the unstretched variant is ever produced.
+   */
+  private getBuffer(src: string, stretch: number): AudioBuffer | null {
+    const key = bufferKey(src, stretch);
+    const cached = this.buffers.get(key);
     if (cached) return cached;
-    if (!this.loading.has(src)) {
-      this.loading.add(src);
-      void this.loadBuffer(src)
-        .then((buffer) => this.buffers.set(src, buffer))
-        .catch((error) => console.warn(`[audio] failed to load ${src}`, error))
-        .finally(() => this.loading.delete(src));
+    if (!this.loading.has(key)) {
+      void this.loadInto(src, stretch).catch((error) => console.warn(`[audio] failed to load ${src}`, error));
     }
     return null;
   }
 
-  private async loadBuffer(src: string): Promise<AudioBuffer> {
-    const ctx = this.ensureContext();
-    if (src.startsWith("tone:")) {
-      const freq = Number(src.slice(5)) || 440;
-      return this.synthesizeTone(ctx, freq);
+  private async loadInto(src: string, stretch: number): Promise<AudioBuffer> {
+    const key = bufferKey(src, stretch);
+    const cached = this.buffers.get(key);
+    if (cached) return cached;
+    this.loading.add(key);
+    try {
+      const source = this.buffers.get(src) ?? (await this.loadBuffer(src));
+      this.buffers.set(src, source);
+      // Stretch here too, with the same function the bake uses. Skipping it would leave
+      // preview playing a stretched clip at its original length while the export played
+      // it correctly — the exact divergence the shared graph exists to prevent.
+      const buffer = stretchAudioBuffer(this.ensureContext(), source, stretch);
+      this.buffers.set(key, buffer);
+      // A clip that was skipped for want of this buffer must get scheduled now.
+      this.anchor = null;
+      return buffer;
+    } finally {
+      this.loading.delete(key);
     }
-    const response = await fetch(src);
-    const arrayBuffer = await response.arrayBuffer();
-    return ctx.decodeAudioData(arrayBuffer);
   }
 
-  /** A gentle looping sine tone, so the demo has audio with zero bundled assets. */
-  private synthesizeTone(ctx: BaseAudioContext, freq: number): AudioBuffer {
-    const length = Math.floor(ctx.sampleRate * TONE_BUFFER_SECONDS);
-    const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
-    const data = buffer.getChannelData(0);
-    const omega = (2 * Math.PI * freq) / ctx.sampleRate;
-    for (let i = 0; i < length; i++) data[i] = Math.sin(omega * i) * 0.2;
-    return buffer;
+  private async loadBuffer(src: string): Promise<AudioBuffer> {
+    const ctx = this.ensureContext();
+    if (src.startsWith("tone:")) return synthesizeTone(ctx, Number(src.slice(5)) || 440);
+    const response = await fetch(src);
+    return ctx.decodeAudioData(await response.arrayBuffer());
   }
+}
+
+const bufferKey = (src: string, stretch: number): string => (stretch === 1 ? src : `${src}@${stretch}`);
+
+function stopClips(clips: readonly ScheduledClip[]): void {
+  for (const { source, gain } of clips) {
+    source.onended = null;
+    try {
+      source.stop();
+    } catch {
+      /* already stopped */
+    }
+    source.disconnect();
+    gain.disconnect();
+  }
+}
+
+/** A gentle looping sine tone, so the demo has audio with zero bundled assets. */
+export function synthesizeTone(ctx: BaseAudioContext, freq: number): AudioBuffer {
+  const length = Math.floor(ctx.sampleRate * TONE_BUFFER_SECONDS);
+  const buffer = ctx.createBuffer(1, length, ctx.sampleRate);
+  const data = buffer.getChannelData(0);
+  const omega = (2 * Math.PI * freq) / ctx.sampleRate;
+  for (let i = 0; i < length; i++) data[i] = Math.sin(omega * i) * 0.2;
+  return buffer;
 }

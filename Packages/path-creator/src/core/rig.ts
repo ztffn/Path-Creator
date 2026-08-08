@@ -19,8 +19,10 @@ import type { VirtualCameraDefinition } from "./virtual-camera";
 // v8: embedded timeline v7 adds scene tracks (deterministic master-embed of scenes).
 // v9: document-level triggers/actions/bindings (reactive interaction layer).
 // v10: embedded timeline v8 adds SceneClip.blendSeconds (embed boundary blends).
+// v11: embedded timeline v9 adds AudioClip.rate / AudioClip.stretch (per-clip source speed).
+// v12: embedded timeline v10 adds TransformTrack.additive (offset over baked animation).
 // Older documents migrate by version stamp because the new fields are additive/optional.
-export const RIG_SCHEMA_VERSION = 10;
+export const RIG_SCHEMA_VERSION = 12;
 
 export interface RigPathDefinition {
   id: string;

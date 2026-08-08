@@ -74,6 +74,7 @@ export type {
 } from "../core";
 export {
   TIMELINE_SCHEMA_VERSION,
+  audioClipSpeed,
   createTimeline,
   evaluateActivation,
   evaluateAnimation,

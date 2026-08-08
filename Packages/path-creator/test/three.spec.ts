@@ -1526,6 +1526,87 @@ describe("portable object track directors", () => {
     expect(object.position.toArray()).toEqual([4, 5, 6]);
   });
 
+  it("additive transforms offset the pose already on the object instead of replacing it", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("bone", object);
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "bone",
+      additive: true,
+      position: [{ time: 0, value: [0.5, 0, 0] as [number, number, number] }],
+      scale: [{ time: 0, value: [2, 1, 1] as [number, number, number] }]
+    }];
+    // Stand in for the mixer having just written this frame's animated pose.
+    object.position.set(10, 0, 0);
+    object.scale.set(3, 3, 3);
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([10.5, 0, 0]); // added, not replaced
+    expect(object.scale.toArray()).toEqual([6, 3, 3]); // scale composes by multiply
+
+    // Next frame the mixer writes a new pose; the same offset applies to THAT pose,
+    // rather than accumulating on the one it already offset.
+    object.position.set(20, 0, 0);
+    object.scale.set(3, 3, 3);
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([20.5, 0, 0]);
+    expect(object.scale.toArray()).toEqual([6, 3, 3]);
+  });
+
+  it("additive rotation composes in the object's own space", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("bone", object);
+    const director = new TransformTrackDirector();
+    object.rotation.set(0, Math.PI / 2, 0); // the baked animation's pose
+    director.sync(registry, [{ tracks: [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "bone",
+      additive: true,
+      rotation: [{ time: 0, value: [0, 90, 0] as [number, number, number] }]
+    }], time: 0 }], true);
+    // 90 degrees of animation plus 90 degrees of correction about the same axis is a
+    // half turn. Checked by where the object's forward axis ends up rather than by Euler
+    // angles, which decompose a half turn onto whichever axes they please.
+    const forward = new Vector3(0, 0, 1).applyQuaternion(object.quaternion);
+    expect(forward.x).toBeCloseTo(0, 5);
+    expect(forward.z).toBeCloseTo(-1, 5);
+  });
+
+  it("an additive track on an un-animated object restores the pose it offset", () => {
+    const object = new Group();
+    object.position.set(1, 1, 1);
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "offset",
+      objectId: "prop",
+      additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }]
+    }];
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([6, 1, 1]);
+    director.sync(registry, [{ tracks, time: 0 }], false);
+    expect(object.position.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it("absolute and additive tracks on one object compose, absolute first", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    director.sync(registry, [{ tracks: [
+      { type: "transform" as const, id: "abs", objectId: "prop", position: [{ time: 0, value: [3, 0, 0] as [number, number, number] }] },
+      { type: "transform" as const, id: "add", objectId: "prop", additive: true, position: [{ time: 0, value: [0.25, 0, 0] as [number, number, number] }] }
+    ], time: 0 }], true);
+    expect(object.position.toArray()).toEqual([3.25, 0, 0]);
+  });
+
   it("applies activation post-playback state", () => {
     const object = new Group();
     object.visible = false;

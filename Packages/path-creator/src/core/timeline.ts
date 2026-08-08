@@ -19,7 +19,11 @@ const lerp = (a: number, b: number, t: number): number => a + (b - a) * t;
 // v7: scene tracks — clips that embed another Story scene into a master-time window
 //     (deterministic master-embed; evaluation maps master t to scene-local t).
 // v8: SceneClip.blendSeconds — eased camera blend at the embed window's edges.
-export const TIMELINE_SCHEMA_VERSION = 8;
+// v9: AudioClip.rate / AudioClip.stretch — per-clip source speed, with and without
+//     pitch following (see the AudioClip doc comment for how they compose).
+// v10: TransformTrack.additive — keys read as an offset from the pose already on the
+//     object rather than as an absolute pose, so a track can correct baked animation.
+export const TIMELINE_SCHEMA_VERSION = 10;
 
 export interface TimelineBlendIn {
   durationSeconds: number;
@@ -103,9 +107,23 @@ export interface ActivationTrack {
   type: "activation"; id: string; name?: string; objectId: string;
   clips: ActivationClip[]; postPlaybackState: PostPlaybackState;
 }
+/**
+ * One sound placed on a mix lane. `start`/`duration` are the TIMELINE window;
+ * `offset` is the in-point in the ORIGINAL source, in source seconds.
+ *
+ * `rate` and `stretch` (v9) are both source-speed multipliers — 2 consumes source
+ * twice as fast, 0.5 half as fast — differing only in what happens to pitch:
+ * - `rate` moves pitch with speed (a resample; `AudioBufferSourceNode.playbackRate`).
+ * - `stretch` holds pitch, which needs an offline re-render of the source.
+ * They compose multiplicatively, so a clip consumes `duration * rate * stretch`
+ * seconds of source across its window. Non-positive or non-finite values read as 1.
+ * Both are constant per clip: a varying rate would make source position the integral
+ * of a curve, so every seek would integrate rather than multiply.
+ */
 export interface AudioClip {
   id: string; src: string; start: number; duration: number; offset?: number;
   gain?: number; gainCurve?: EasingCurve; loop?: boolean; peaks?: number[];
+  rate?: number; stretch?: number;
 }
 export interface AudioTrack {
   type: "audio"; id: string; name?: string; clips: AudioClip[]; gain?: number; mute?: boolean;
@@ -140,6 +158,15 @@ export interface TransformKey {
 export interface TransformTrack {
   type: "transform"; id: string; name?: string; objectId: string;
   position?: TransformKey[]; rotation?: TransformKey[]; scale?: TransformKey[];
+  /**
+   * v10. Read this track's keys as an OFFSET from whatever pose the object already
+   * carries, instead of as an absolute pose. An absolute track pointed at a bone driven
+   * by an AnimationMixer erases the animation; an additive one layers on top of it, which
+   * is what a corrective offset over baked animation needs. Neutral keys are 0 for
+   * position and rotation and 1 for scale. The evaluator is unaffected — it returns the
+   * same values either way; how they are applied is the director's business.
+   */
+  additive?: boolean;
 }
 
 /**
@@ -294,13 +321,28 @@ export function sortTimelineTracks(tracks: TimelineTrack[]): TimelineTrack[] {
   });
 }
 
-export interface DesiredAudio { src: string; offset: number; gain: number; loop: boolean; }
+/**
+ * What one clip wants to be doing at time t. `offset` is a position in the ORIGINAL
+ * source (seconds), already advanced by the clip's speed — so a host that pre-renders
+ * a stretched buffer must scale it by `stretch` to index that buffer. `rate` and
+ * `stretch` are the resolved (defaulted) multipliers; a host with no time-stretcher
+ * can honour `rate` alone and will play the clip at the wrong length, not the wrong pitch.
+ */
+export interface DesiredAudio {
+  src: string; offset: number; gain: number; loop: boolean; rate: number; stretch: number;
+}
 export interface DesiredAnimation { clipName: string; localTime: number; weight: number; loop: boolean; }
 export interface DesiredTransform {
   position?: [number, number, number]; rotation?: [number, number, number, number]; scale?: [number, number, number];
 }
 
 const covers = (start: number, end: number, t: number): boolean => t >= start && t < end;
+// Speed multipliers arrive from third-party-authored documents; 0 would freeze the
+// source position and a negative would run it backwards into nonsense. Sanitized here
+// rather than at the deserialize boundary because in-memory editors (the demo builds
+// tracks directly) never pass through normalizeTimelineEasing.
+const speedOr1 = (value: number | undefined): number =>
+  typeof value === "number" && Number.isFinite(value) && value > 0 ? value : 1;
 export const snapSeconds = (t: number, step = 0.25): number => Math.max(0, Math.round(t / step) * step);
 
 export function evaluateActivation(tracks: readonly ActivationTrack[], t: number): Map<string, boolean> {
@@ -308,6 +350,33 @@ export function evaluateActivation(tracks: readonly ActivationTrack[], t: number
   for (const track of tracks) result.set(track.objectId, track.clips.some((clip) => covers(clip.start, clip.end, t)));
   return result;
 }
+
+export interface AudioClipSpeeds {
+  /** Pitch-following resample factor. */
+  rate: number;
+  /** Pitch-preserving factor; also the time base of a pre-rendered stretched buffer. */
+  stretch: number;
+  /** `rate * stretch` — source seconds consumed per timeline second. */
+  speed: number;
+}
+
+/**
+ * A clip's sanitized speed factors. Anything driving audio needs these resolved the
+ * same way the evaluator resolves them, so the rule lives here once: non-positive and
+ * non-finite read as 1.
+ */
+export function audioClipSpeeds(clip: AudioClip): AudioClipSpeeds {
+  const rate = speedOr1(clip.rate);
+  const stretch = speedOr1(clip.stretch);
+  return { rate, stretch, speed: rate * stretch };
+}
+
+/**
+ * How fast a clip consumes its source: `rate * stretch`, sanitized. A clip spans
+ * `duration * audioClipSpeed(clip)` seconds of source — the conversion editors need
+ * to window a waveform or re-derive an in-point when a clip edge is dragged.
+ */
+export const audioClipSpeed = (clip: AudioClip): number => audioClipSpeeds(clip).speed;
 
 export function evaluateAudio(tracks: readonly AudioTrack[], t: number): Map<string, DesiredAudio> {
   const result = new Map<string, DesiredAudio>();
@@ -326,7 +395,16 @@ export function evaluateAudio(tracks: readonly AudioTrack[], t: number): Map<str
       const next = ordered[i + 1];
       const end = clip.start + clip.duration;
       if (next && next.start < end && t >= next.start) crossfade *= 1 - Math.min(1, Math.max(0, (t - next.start) / (end - next.start)));
-      result.set(clip.id, { src: clip.src, offset: (clip.offset ?? 0) + t - clip.start, gain: (clip.gain ?? 1) * (track.gain ?? 1) * envelope * crossfade, loop: clip.loop ?? false });
+      const rate = speedOr1(clip.rate);
+      const stretch = speedOr1(clip.stretch);
+      result.set(clip.id, {
+        src: clip.src,
+        offset: (clip.offset ?? 0) + (t - clip.start) * rate * stretch,
+        gain: (clip.gain ?? 1) * (track.gain ?? 1) * envelope * crossfade,
+        loop: clip.loop ?? false,
+        rate,
+        stretch
+      });
     }
   }
   return result;

@@ -226,7 +226,10 @@ export function Hierarchy(props: HierarchyProps) {
           ))}
         </Group>
 
-        <Group title="Audio" onAdd={props.onAddAudioTrack}>
+        <Group
+          title="Audio"
+          add={<button title="Add a new audio lane" style={{ ...addBtnStyle, justifySelf: "start", marginTop: 4 }} onClick={props.onAddAudioTrack}>+ Track</button>}
+        >
           {props.audioTracks.length === 0 ? <EmptyHint>No audio tracks.</EmptyHint> : null}
           {props.audioTracks.map((track) => (
             <Row key={track.id} selected={isSelected(selection, "audio", track.id)} onSelect={() => onSelect("audio", track.id)} icon={<IconVolume size={13} />} label={track.name} />

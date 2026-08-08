@@ -9,6 +9,7 @@ import {
   BezierPath,
   TargetRegistry,
   VertexPath,
+  audioClipSpeed,
   buildRigRuntime,
   createPathCart,
   createRigDocument,
@@ -20,6 +21,7 @@ import {
   transformComponentAt,
   serializeRigCart,
   serializeRigPath,
+  type AudioClip,
   type CartFrame,
   type VirtualCameraDefinition
 } from "../src/core";
@@ -172,6 +174,39 @@ describe("portable object and media tracks", () => {
       const viaEval = evaluateTransform([{ type: "transform", id: "xf", objectId: "fox", position: keys }], t).get("fox")?.position;
       for (let c = 0; c < 3; c += 1) expect(transformComponentAt(keys, c, t)).toBeCloseTo(viaEval![c]!, 6);
     }
+  });
+
+  it("advances the audio source position by rate x stretch", () => {
+    const at = (t: number, over: Partial<AudioClip>) => evaluateAudio([{
+      type: "audio", id: "a", clips: [{ id: "c", src: "s", start: 1, duration: 8, offset: 0.5, ...over }]
+    }], t).get("c");
+    // Unchanged default: one second of timeline consumes one second of source.
+    expect(at(3, {})?.offset).toBeCloseTo(2.5, 6);
+    expect(at(3, {})?.rate).toBe(1);
+    expect(at(3, {})?.stretch).toBe(1);
+    // rate and stretch are both speed multipliers and compose multiplicatively.
+    expect(at(3, { rate: 2 })?.offset).toBeCloseTo(4.5, 6);
+    expect(at(3, { stretch: 0.5 })?.offset).toBeCloseTo(1.5, 6);
+    expect(at(3, { rate: 2, stretch: 3 })?.offset).toBeCloseTo(12.5, 6);
+    // The in-point is a source position, so it is NOT scaled — only elapsed time is.
+    expect(at(1, { rate: 4 })?.offset).toBeCloseTo(0.5, 6);
+  });
+
+  it("reads non-positive or non-finite audio speeds as 1", () => {
+    for (const bad of [0, -2, Number.NaN, Number.POSITIVE_INFINITY]) {
+      const desired = evaluateAudio([{
+        type: "audio", id: "a", clips: [{ id: "c", src: "s", start: 0, duration: 4, rate: bad, stretch: bad }]
+      }], 1).get("c");
+      expect(desired?.rate).toBe(1);
+      expect(desired?.stretch).toBe(1);
+      expect(desired?.offset).toBeCloseTo(1, 6);
+    }
+  });
+
+  it("audioClipSpeed reports the source seconds a clip spans per timeline second", () => {
+    expect(audioClipSpeed({ id: "c", src: "s", start: 0, duration: 4 })).toBe(1);
+    expect(audioClipSpeed({ id: "c", src: "s", start: 0, duration: 4, rate: 2, stretch: 1.5 })).toBeCloseTo(3, 6);
+    expect(audioClipSpeed({ id: "c", src: "s", start: 0, duration: 4, rate: 0 })).toBe(1);
   });
 
   it("drops malformed persisted audio gain curves instead of crashing", () => {

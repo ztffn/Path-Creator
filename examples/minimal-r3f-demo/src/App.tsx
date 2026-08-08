@@ -80,9 +80,8 @@ import {
 } from "./activatables";
 import { GltfActivatable } from "./gltf-activatable";
 import {
-  EMPTY_DESIRED,
   EMPTY_EXTRA_TRACKS,
-  evaluateAudio,
+  moveAudioClipBetweenTracks,
   resizeAudioClip,
   maxClipEnd,
   snapSeconds,
@@ -1695,7 +1694,7 @@ export function App() {
       icon: <IconVolume size={14} />,
       crossfade: true,
       clips: track.clips.map((c) => {
-        const peaks = clipPeaks(c.src, c.offset ?? 0, c.duration, () => setPeaksTick((t) => t + 1));
+        const peaks = clipPeaks(c, () => setPeaksTick((t) => t + 1));
         // Waveform (envelope) with the volume envelope (line) drawn over it, DAW-style.
         const series = [
           ...(peaks ? [{ kind: "envelope" as const, points: peaks }] : []),
@@ -1890,6 +1889,19 @@ export function App() {
         })
       }));
     }
+  };
+
+  const moveExtraClipToLane = (fromLaneId: string, toLaneId: string, clipId: string, start: number, end: number): void => {
+    // Re-laning is currently meaningful for audio: tracks are mix lanes, and clips
+    // must share one to receive the automatic adjacent-overlap crossfade.
+    if (!fromLaneId.startsWith("aud:") || !toLaneId.startsWith("aud:")) return;
+    const fromTrackId = laneTrackId(fromLaneId);
+    const toTrackId = laneTrackId(toLaneId);
+    if (fromTrackId === toTrackId) return;
+    setExtraTracks((current) => {
+      const audioTracks = moveAudioClipBetweenTracks(current.audioTracks, fromTrackId, toTrackId, clipId, start, end);
+      return audioTracks === current.audioTracks ? current : { ...current, audioTracks };
+    });
   };
 
   // Inspector prop groups — resolve the selected entity per kind (null when absent)
@@ -2106,7 +2118,7 @@ export function App() {
                   extraTracks,
                   onChange: (next) => setExtraTracks((prev) => ({ ...prev, ...next })),
                   onPreviewClip: (clip, trackGain) => void audioPlayer.previewClip(clip, trackGain),
-                  peaksFor: (clip) => clipPeaks(clip.src, clip.offset ?? 0, clip.duration, () => setPeaksTick((t) => t + 1))
+                  peaksFor: (clip) => clipPeaks(clip, () => setPeaksTick((t) => t + 1))
                 }
               : null
           }
@@ -2161,6 +2173,7 @@ export function App() {
           dollyIcon={<IconTrack size={15} />}
           extraLanes={extraLanes}
           onExtraClipTiming={setExtraClip}
+          onExtraClipLaneChange={moveExtraClipToLane}
           onCreateExtraClip={addExtraClip}
           shots={virtualCameras
             // Only vcams participating in the ACTIVE scene (they have a timing

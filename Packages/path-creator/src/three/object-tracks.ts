@@ -1,4 +1,4 @@
-import { LoopRepeat, type AnimationAction, type AnimationMixer, type Object3D } from "three";
+import { LoopRepeat, Quaternion, type AnimationAction, type AnimationMixer, type Object3D } from "three";
 import {
   evaluateActivation,
   evaluateAnimation,
@@ -89,21 +89,95 @@ export class ActivationTrackDirector {
 }
 
 interface BaseTransform { position: [number,number,number]; quaternion: [number,number,number,number]; scale: [number,number,number]; }
+const snapshot = (object: Object3D): BaseTransform => ({
+  position: [object.position.x, object.position.y, object.position.z],
+  quaternion: [object.quaternion.x, object.quaternion.y, object.quaternion.z, object.quaternion.w],
+  scale: [object.scale.x, object.scale.y, object.scale.z]
+});
+/** Scratch for the additive rotation delta — this runs per object per frame. */
+const deltaQuaternion = new Quaternion();
+const restore = (object: Object3D, pose: BaseTransform): void => {
+  object.position.fromArray(pose.position);
+  object.quaternion.fromArray(pose.quaternion);
+  object.scale.fromArray(pose.scale);
+};
+
+/**
+ * Applies transform tracks to bound objects. Absolute tracks (the default) write the
+ * pose outright and restore the object's pre-drive pose when the timeline is left.
+ * Additive tracks (`TransformTrack.additive`) instead offset whatever pose is already
+ * there — so pointed at a bone an AnimationMixer just wrote, they correct the animation
+ * rather than erasing it. Hosts must sync the AnimationTrackDirector FIRST for that to
+ * mean anything; the mixer has to have written before the offset is layered on.
+ */
 export class TransformTrackDirector {
   private base = new Map<string, BaseTransform>();
+  private additiveBase = new Map<string, BaseTransform>();
   private wasDriving = false;
+
   sync(registry: ObjectBindingResolver, layers: readonly TrackLayer<TransformTrack>[], driving: boolean): void {
-    if (driving) {
-      this.wasDriving = true;
-      for (const layer of layers) for (const track of layer.tracks) {
+    if (!driving) {
+      if (this.wasDriving) this.release(registry);
+      return;
+    }
+    this.wasDriving = true;
+
+    const absolute = new Map<string, DesiredTransform>();
+    const additive = new Map<string, DesiredTransform>();
+    for (const layer of layers) {
+      // Most rigs have no additive track at all; skip the partition when so.
+      const hasAdditive = layer.tracks.some((track) => track.additive);
+      const absoluteTracks = hasAdditive ? layer.tracks.filter((track) => !track.additive) : layer.tracks;
+      for (const track of absoluteTracks) {
         if (this.base.has(track.objectId)) continue;
-        const object=registry.resolve(track.objectId); if(!object)continue;
-        this.base.set(track.objectId,{position:[object.position.x,object.position.y,object.position.z],quaternion:[object.quaternion.x,object.quaternion.y,object.quaternion.z,object.quaternion.w],scale:[object.scale.x,object.scale.y,object.scale.z]});
+        const object = registry.resolve(track.objectId);
+        if (object) this.base.set(track.objectId, snapshot(object));
       }
-      const merged=new Map<string, DesiredTransform>();
-      for(const layer of layers)for(const[id,value]of evaluateTransform(layer.tracks,layer.time))merged.set(id,value);
-      for(const[id,value]of merged){const object=registry.resolve(id);if(!object)continue;if(value.position)object.position.fromArray(value.position);if(value.rotation)object.quaternion.fromArray(value.rotation);if(value.scale)object.scale.fromArray(value.scale);}
-    } else if(this.wasDriving){for(const[id,base]of this.base){const object=registry.resolve(id);if(object){object.position.fromArray(base.position);object.quaternion.fromArray(base.quaternion);object.scale.fromArray(base.scale);}}this.base.clear();this.wasDriving=false;}
+      for (const [id, value] of evaluateTransform(absoluteTracks, layer.time)) absolute.set(id, value);
+      if (hasAdditive) {
+        const additiveTracks = layer.tracks.filter((track) => track.additive);
+        for (const [id, value] of evaluateTransform(additiveTracks, layer.time)) additive.set(id, value);
+      }
+    }
+
+    for (const [id, value] of absolute) {
+      const object = registry.resolve(id);
+      if (!object) continue;
+      if (value.position) object.position.fromArray(value.position);
+      if (value.rotation) object.quaternion.fromArray(value.rotation);
+      if (value.scale) object.scale.fromArray(value.scale);
+    }
+
+    for (const [id, value] of additive) {
+      const object = registry.resolve(id);
+      if (!object) continue;
+      // Snapshot every frame, not once: the pose being offset is the mixer's output and
+      // changes under us, so a first-drive snapshot would restore an arbitrary frame.
+      this.additiveBase.set(id, snapshot(object));
+      if (value.position) object.position.set(object.position.x + value.position[0], object.position.y + value.position[1], object.position.z + value.position[2]);
+      // Post-multiply: the offset is expressed in the object's own space, so a bone
+      // correction reads as "bend this joint a further N degrees", not as a world twist.
+      if (value.rotation) object.quaternion.multiply(deltaQuaternion.fromArray(value.rotation));
+      if (value.scale) object.scale.set(object.scale.x * value.scale[0], object.scale.y * value.scale[1], object.scale.z * value.scale[2]);
+    }
+  }
+
+  private release(registry: ObjectBindingResolver): void {
+    for (const [id, pose] of this.base) {
+      const object = registry.resolve(id);
+      if (object) restore(object, pose);
+    }
+    for (const [id, pose] of this.additiveBase) {
+      // An animated object's mixer has already reset it to rest by the time this runs;
+      // writing a remembered pose over that would freeze it at an arbitrary frame. For
+      // an object nothing else drives, the remembered pose IS the correct resting state.
+      if (registry.resolveAnimation(id)) continue;
+      const object = registry.resolve(id);
+      if (object) restore(object, pose);
+    }
+    this.base.clear();
+    this.additiveBase.clear();
+    this.wasDriving = false;
   }
 }
 

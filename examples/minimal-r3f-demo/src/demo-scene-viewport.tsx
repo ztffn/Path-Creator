@@ -79,9 +79,7 @@ import {
 } from "./activatables";
 import { GltfActivatable } from "./gltf-activatable";
 import {
-  EMPTY_DESIRED,
   EMPTY_EXTRA_TRACKS,
-  evaluateAudio,
   resizeAudioClip,
   maxClipEnd,
   transformKeyTimes,
@@ -91,7 +89,6 @@ import {
   type ActivationTrack,
   type AnimationTrack,
   type AudioTrack,
-  type DesiredAudio,
   type ExtraTracks,
   type TransformKey,
   type TransformTrack
@@ -800,14 +797,10 @@ export function DemoSceneViewport({
       driveTime,
       drivePlaying
     );
-    const audioLive = timelineDriving && drivePlaying;
-    const desiredAudio = new Map<string, DesiredAudio>();
-    if (audioLive) {
-      for (const layer of audLayers) {
-        for (const [id, desired] of evaluateAudio(layer.tracks, layer.time)) desiredAudio.set(id, desired);
-      }
-    }
-    audioPlayer.reconcile(audioLive ? desiredAudio : EMPTY_DESIRED, audioLive);
+    // Audio is scheduled, not reconciled: on play/seek/edit every upcoming clip is
+    // handed to the audio hardware at its exact context time, so a clip's attack starts
+    // whole instead of being seeked into by however far the frame overshot its start.
+    audioPlayer.sync(audLayers, driveTime, timelineDriving && drivePlaying);
     // GLB clips are driven by time (scrub-safe), so they follow scrubbing too — not
     // gated on player.playing like audio, which must stay silent outside forward play.
     mixerDirector.sync(activatablesRegistry, animLayers, timelineDriving);
