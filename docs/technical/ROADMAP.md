@@ -338,12 +338,14 @@ camera bodies for "view changes as you scroll". Consider a small reusable
 
 ## Known gaps / smaller items
 
-- **Conditional: smooth Web Audio gain automation if crossfade artifacts are observed.**
-  Overlapping clips already receive automatic complementary crossfade weights, multiplied
-  by authored clip envelopes and track gain. The player currently applies the evaluated
-  gain once per render frame. Do not add scheduling complexity preemptively; if audible
-  zipper noise or clicks are reproduced, ramp or time-constant-smooth `GainNode.gain`
-  updates and add an audio regression/manual verification case.
+- ~~**Conditional: smooth Web Audio gain automation if crossfade artifacts are observed.**~~
+  **RESOLVED (2026-08-08) as a side effect of the audio scheduler.** The concern was that
+  the player applied the evaluated gain once per render frame, so a crossfade advanced in
+  frame-sized steps and could zipper. Gain is now scheduled as a sampled value curve
+  (`setValueCurveAtTime`) taken from `evaluateAudio` itself, at 20Hz minimum and
+  interpolated by the audio hardware — so the envelope, the automatic crossfade and the
+  track gain all arrive as continuous automation rather than per-frame steps. Nothing was
+  added preemptively; it fell out of scheduling.
 - Legacy migration: pre-RigDocument saved shows (old `SHOW_STORAGE_KEY`) do NOT migrate
   dolly moves into per-dolly runs (edge case; only affects saves made before this session's
   storage change). Shots/paths/targets still migrate.
