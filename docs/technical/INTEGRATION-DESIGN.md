@@ -20,10 +20,13 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
 | Camera ownership | **Proven** — one owner per frame, with a cooperative path. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
+| Clone identity versus track references | **Decided** — remap on clone. §10 decision 1, R8. |
+| Time as a Pascal plugin | **Built and measured** — M1.1, M1.2. `Packages/pascal-time`. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
-Last revised 2026-08-17, after the Pascal spike answered all five questions
-(`examples/elastiq/README.md`).
+Last revised 2026-08-17, after M1.1 and M1.2 built the time plugin against Pascal's real
+registry and viewer (`Packages/pascal-time`, `examples/pascal-time-harness`). The spike that
+preceded them, and answered the original five questions, is `examples/elastiq/README.md`.
 
 ---
 
@@ -121,9 +124,9 @@ No stateful selection, no wall-clock reads inside evaluation.
 
 **R8 — Node ids are a contract, not an implementation detail.** They must be stable across save,
 load, and export. A change that re-mints ids breaks every timeline referencing them.
-*Why:* the timeline holds ids it did not create and cannot repair. See §10 for the unresolved
-case: Pascal's `cloneNodesInto` mints *fresh* ids by design, which is exactly what a prefab
-needs and exactly what a timeline reference cannot survive.
+*Why:* the timeline holds ids it did not create and cannot repair. Pascal's `cloneNodesInto`
+mints *fresh* ids by design — exactly what a prefab needs and exactly what a timeline reference
+cannot survive. **Resolved 2026-08-17: remap tracks on clone.** See §10, decision 1.
 
 **R9 — The camera has exactly one owner per frame.** With no camera controller mounted, the time
 layer writes the camera. With a controller mounted, the controller writes it and the time layer
@@ -387,11 +390,22 @@ Each measured while integrating; each will be paid again by the next person.
 
 ## 10. Open decisions
 
-1. **Prefab instancing versus timeline references (R8).** `cloneNodesInto` mints fresh ids —
-   correct for a prefab, fatal for a timeline that references the originals. Options not yet
-   evaluated: id remapping on clone, per-instance timeline binding, or relative addressing
-   within a subtree. **This is the hardest unsolved problem on the boundary**, and it only
-   appears once prefabs and timelines are used together, which is the intended end state.
+1. ~~**Prefab instancing versus timeline references (R8).**~~ **DECIDED 2026-08-17 — remap on
+   clone.** `cloneNodesInto` mints fresh ids, which is correct for a prefab and fatal for a
+   timeline referencing the originals. When a subtree is duplicated, the tracks referencing
+   nodes inside it are duplicated too and their `objectId`s rewritten to the new ids, so the
+   copy animates like the original. It lives entirely in our plugin — no upstream change, no
+   new document concept.
+
+   *Accepted limitation:* N copies means N track sets, so re-animating a duplicated object
+   means editing it N times. That bites only at authoring scale, and the upgrade when it does
+   is **binding indirection** — tracks name a slot, instances map slots to ids, one track set
+   drives N instances. Remapping does not foreclose it.
+
+   *Ruled out, do not revisit without new evidence:* relative addressing within the subtree
+   (`root/child/grandchild`). It resolves clones without remapping, but it breaks on rename and
+   on reparent — which is to say it reintroduces exactly the failure R8 exists to prevent, in a
+   form that looks like a feature. Full reasoning in the implementation plan's §M1.6.
 2. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
    [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671). Until it merges, 50 fps
    is the design constraint. Fallback if declined: drive R3F's `advance` ourselves.

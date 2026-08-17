@@ -101,7 +101,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
 | M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
-| M1.6 persistence | M | both | M1.2 | Gated on the clone-id decision. |
+| M1.6 persistence | M | both | M1.2 | Unblocked — clone identity decided (remap on clone). |
 | M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
 | M2.1 post-processing | M | both | M0.1, M2.0 | Mechanical. Direct TSL equivalents. Includes seam PRs if (c). |
 | M2.2 environment + lighting | **XL** | both | M2.1, M2.0 | A re-authoring. The biggest risk in the plan. |
