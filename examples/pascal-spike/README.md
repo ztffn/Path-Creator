@@ -195,12 +195,43 @@ Each of these cost real time and would cost it again:
   created. `item` needs a catalog asset; `column` is parametric and asset-free, so it is the
   cheap thing to drive in a test.
 
-### Q3, Q4 — not yet run
+### Q3 — Who owns the camera? **Whoever is mounted. There is a cooperative path.** (2026-08-17)
 
-Q3 (camera ownership) is now the more interesting of the two: the viewer owns the frame loop
-as well as the camera, so the same question about `<FrameLimiter>` applies to `<ViewerCamera>`.
-Q4 (hotspot as a plugin node kind) is unchanged, with one new wrinkle — Pascal's hierarchy is
-site → building → level → item, and a world-anchored hotspot belongs to none of them.
+`<ViewerCamera>` turned out to be twelve lines — a drei camera with `makeDefault` and a fixed
+initial position. It writes nothing per frame, so the viewer does not contest the camera at all.
+Pascal's camera *motion* lives in `@pascal-app/editor`, which mounts drei's `<CameraControls>`.
+The probe therefore mounts the same component, so this is the real contest, not a proxy.
+
+1230 frames per mode, measured the same way as Q2 — read what the camera holds, then write.
+`?camera=solo|contested|cooperative`.
+
+| Mode | Frames with drift | Worst drift | Radius actually held (authored 12.0) |
+|---|---|---|---|
+| **solo** — no controls, direct write | 1 of 1230 (the initial jump) | 11.0 | **12.000** |
+| **contested** — controls mounted, direct write | **1229 of 1230** | 25.7 | **16.76** |
+| **cooperative** — controls mounted, pose pushed via `setLookAt` | 1 of 1230 | 11.0 | **12.000** |
+
+Read the last column, not the drift column. Under contention the camera does not merely
+jitter — it sits at a completely different radius from the one the shot authored. Every frame
+is a tug of war that the controller wins, because `camera-controls` re-derives the camera pose
+from its own position/target state on every update. Writing the camera directly past a mounted
+controller is not degraded, it is broken.
+
+Handing the same resolved pose to the controller instead — `setLookAt(...)` then `update(0)` —
+is **indistinguishable from owning the camera outright**. Same drift, same radius, to the digit.
+
+**So the rule is one owner per frame:** with no controller mounted the time layer writes the
+camera; with a controller mounted the controller writes it and the time layer feeds it. Both
+paths are supported and neither needs anything from Pascal that does not already exist.
+
+The one drifted frame in the clean modes is frame 1, where the camera moves from the viewer's
+default `[10, 10, 10]` to the first resolved pose of the shot. That is the shot taking over, not
+a conflict.
+
+### Q4 — not yet run
+
+Unchanged, with one wrinkle: Pascal's hierarchy is site → building → level → item, and a
+world-anchored hotspot belongs to none of them.
 
 ### Context gathered while scaffolding
 

@@ -14,11 +14,11 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 |---|---|
 | The model, the ownership rules, the classification test | **Decided.** Change via §11. |
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
-| Camera ownership | **Open.** See §5.4 and §10. |
+| Camera ownership | **Proven** — one owner per frame, with a cooperative path. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proposed**, not yet built. §5.5, §10. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
-Last revised 2026-08-17, after the Pascal spike answered Q1, Q2 and Q5
+Last revised 2026-08-17, after the Pascal spike answered Q1, Q2, Q3 and Q5
 (`examples/pascal-spike/README.md`).
 
 ---
@@ -121,6 +121,13 @@ load, and export. A change that re-mints ids breaks every timeline referencing t
 case: Pascal's `cloneNodesInto` mints *fresh* ids by design, which is exactly what a prefab
 needs and exactly what a timeline reference cannot survive.
 
+**R9 — The camera has exactly one owner per frame.** With no camera controller mounted, the time
+layer writes the camera. With a controller mounted, the controller writes it and the time layer
+feeds it a pose. Never both.
+*Why:* measured — writing the camera past a mounted `camera-controls` loses 1229 frames of 1230
+and settles the camera on a different shot entirely (radius 16.76 against an authored 12.0).
+Feeding the same pose through the controller is indistinguishable from owning the camera. §5.4.
+
 ---
 
 ## 4. The classification test
@@ -187,12 +194,25 @@ in [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671) (default
 changes nothing until asked). Until that merges, treat 50 as the ceiling and do not design
 around 60; if it is rejected, the fallback is driving `advance` ourselves.
 
-### 5.4 The camera — **OPEN**
+### 5.4 The camera — **proven**
 
-Pascal's viewer owns the camera *and* the frame loop. This library owns virtual cameras, blends,
-dollies, orbit bodies, and manual override. Two camera owners in one scene is the most likely
-place the integration breaks, and it is untested. Nothing here should be assumed until Q3 of the
-spike is answered. Do not ship a camera feature across this boundary before then.
+The viewer does *not* contest the camera: `<ViewerCamera>` is a drei camera with `makeDefault`
+and a fixed initial position, and writes nothing per frame. Camera **motion** lives in
+`@pascal-app/editor`, which mounts drei's `<CameraControls>`.
+
+That gives two supported configurations, and they are not interchangeable:
+
+- **No controller mounted** — a published presentation, a viewer-only surface. The time layer
+  owns the camera and writes the resolved snapshot directly.
+- **A controller mounted** — authoring inside Pascal's editor. The controller owns the camera.
+  The time layer hands it the resolved pose (`setLookAt(...)` then `update(0)`) instead of
+  writing past it.
+
+Measured over 1230 frames per configuration: writing directly with a controller mounted loses
+1229 frames out of 1230 and parks the camera at radius 16.76 against an authored 12.0 — not
+jitter, a different shot. Going through the controller is indistinguishable from owning the
+camera outright: same drift, same radius, to the digit. `camera-controls` re-derives the pose
+from its own position/target state every update, which is why there is no middle ground.
 
 ### 5.5 Input and triggers — **proposed**
 
@@ -218,6 +238,7 @@ throw); it does **not** repair the reference.
 | Time layer | Write to Pascal's node data during playback | Every frame becomes an undo entry |
 | Time layer | Own anything with an authored position | Becomes a second scene editor (the whole point) |
 | Time layer | Read wall-clock time inside an evaluator | Breaks scrub determinism |
+| Time layer | Write the camera while a controller is mounted | Camera settles on a different shot (R9) |
 | Scene layer | Re-mint node ids on save, load, or migration | Silently breaks every timeline reference |
 | Scene layer | Edit a driven node mid-playback | One-frame snap-back to authored pose |
 | Product layer | Reach into either document's internals | Couples the product to two schemas it does not own |
@@ -238,6 +259,9 @@ probe mounted inside the viewer's frame loop.
 | Worst drift, clean path | 0.02 m, self-healed the next frame |
 | Mid-playback edits to *other* nodes | 0 drift |
 | Editing the *driven* node mid-playback | 1 frame, 1.98 m, recovered next frame |
+| Camera, no controller, direct write (1230 frames) | 1 drifted frame; radius 12.000 as authored |
+| Camera, controller mounted, direct write | 1229 drifted frames; radius 16.76 vs authored 12.0 |
+| Camera, controller mounted, pose via `setLookAt` | 1 drifted frame; radius 12.000 as authored |
 | Pascal undo depth grown by driving | 0 |
 | Pascal dirty-node count while driving | 0 |
 | Track directors over a Pascal-shaped registry | 4 tests green, including restore-on-leave |
@@ -293,19 +317,18 @@ Each measured while integrating; each will be paid again by the next person.
 
 ## 10. Open decisions
 
-1. **Camera ownership (Q3).** Blocking any cross-boundary camera work. §5.4.
-2. **Hotspot as a plugin node kind (Q4).** Pascal's hierarchy is site → building → level → item,
-   and a world-anchored hotspot belongs to none of them. Whether the plugin API generalises, or
-   whether hotspots need a parent that does not exist yet, is unknown.
-3. **Prefab instancing versus timeline references (R8).** `cloneNodesInto` mints fresh ids —
+1. **Hotspot as a plugin node kind (Q4).** Pascal's hierarchy is site → building → level →
+   item, and a world-anchored hotspot belongs to none of them. Whether the plugin API
+   generalises, or whether hotspots need a parent that does not exist yet, is unknown.
+2. **Prefab instancing versus timeline references (R8).** `cloneNodesInto` mints fresh ids —
    correct for a prefab, fatal for a timeline that references the originals. Options not yet
    evaluated: id remapping on clone, per-instance timeline binding, or relative addressing
    within a subtree. **This is the hardest unsolved problem on the boundary**, and it only
    appears once prefabs and timelines are used together, which is the intended end state.
-4. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
+3. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
    [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671). Until it merges, 50 fps
    is the design constraint. Fallback if declined: drive R3F's `advance` ourselves.
-5. **Where the product layer lives.** elastiq composing two libraries, versus a thin shared
+4. **Where the product layer lives.** elastiq composing two libraries, versus a thin shared
    host package both products consume. Not urgent until the second product is real.
 
 ---

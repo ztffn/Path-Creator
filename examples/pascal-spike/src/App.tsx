@@ -12,10 +12,15 @@ import { TransformTrackDirector } from "@huma/path-creator/three";
 import type { TransformTrack } from "@huma/path-creator/core";
 import { loadPascalBuiltins } from "./pascal-bootstrap";
 import { pascalObjectBinding } from "./pascal-binding";
+import { CameraProbe, type CameraMode, type CameraReport } from "./CameraProbe";
 
 // `?pokeDriven` edits the node being driven, mid-playback — the one case that makes Pascal
 // reapply its own position over ours. Off by default so the baseline measures the clean path.
 const POKE_DRIVEN = typeof window !== "undefined" && new URLSearchParams(window.location.search).has("pokeDriven");
+// Q3 mode: ?camera=solo | contested | cooperative. Absent = Q2 only.
+const CAMERA_MODE = (typeof window !== "undefined"
+  ? new URLSearchParams(window.location.search).get("camera")
+  : null) as CameraMode | null;
 const CYCLE_SECONDS = 6;
 const LIFT_METRES = 3;
 
@@ -42,7 +47,7 @@ const report: SpikeReport = {
   driftWorst: 0, driftLast: 0, driftNonZeroFrames: 0, undoDepth: 0, dirtyNodes: 0,
   probeMounted: false, driftFrames: [], perturbedAt: [], error: null
 };
-declare global { interface Window { __spike?: SpikeReport } }
+declare global { interface Window { __spike?: SpikeReport; __camera?: CameraReport } }
 
 function undoDepth(): number {
   // zundo hangs a `temporal` store off the zustand store; missing means Pascal changed how
@@ -136,6 +141,7 @@ function DriftProbe({ onReport }: { onReport: (r: SpikeReport) => void }) {
 
 export default function App() {
   const [view, setView] = useState<SpikeReport>(report);
+  const [cam, setCam] = useState<CameraReport | null>(null);
 
   useEffect(() => {
     try {
@@ -169,6 +175,9 @@ export default function App() {
     <div style={{ position: "fixed", inset: 0 }}>
       <Viewer>
         <DriftProbe onReport={(r) => { window.__spike = r; setView(r); }} />
+        {CAMERA_MODE ? (
+          <CameraProbe mode={CAMERA_MODE} onReport={(r) => { window.__camera = r; setCam(r); }} />
+        ) : null}
       </Viewer>
       <pre style={{
         position: "absolute", top: 12, left: 12, margin: 0, padding: "10px 12px",
@@ -190,7 +199,15 @@ dirty nodes      : ${view.dirtyNodes}
 probe mounted    : ${view.probeMounted}
 drift at frames  : ${view.driftFrames.join(", ") || "—"}
 perturbed at     : ${view.perturbedAt.join(", ") || "—"}
-error            : ${view.error ?? "none"}`}
+error            : ${view.error ?? "none"}
+${cam ? `
+Q3 — who owns the camera?   mode: ${cam.mode}
+frames           : ${cam.frames}
+drift last       : ${cam.driftLast.toExponential(2)}
+drift worst      : ${cam.driftWorst.toExponential(2)}
+frames w/ drift  : ${cam.driftFrames}
+orbit radius     : ${cam.radiusHeld.toFixed(3)}  (authored 12.000)
+camera error     : ${cam.error ?? "none"}` : ""}`}
       </pre>
     </div>
   );
