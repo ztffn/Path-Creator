@@ -64,7 +64,7 @@ must state which stack it touches, and nothing in the runtime path may import fr
 
 | Repo | Role | Notes |
 |---|---|---|
-| `pascalorg/editor` (Pascal) | the 3D editor | MIT, pre-1.0, commits daily. **Consume as packages, do not fork** — our work ships as a plugin. A fork exists only to carry the frame-rate patch until [#671](https://github.com/pascalorg/editor/pull/671) merges, and is retired when it does. |
+| `pascalorg/editor` (Pascal) | the 3D editor | MIT, pre-1.0, commits daily. **M1 consumes it as packages and ships a plugin — no fork.** M2 cannot: rendering is not a plugin contribution, so it needs upstream work or a fork. See §M2.0. |
 | `Path-Creator` (`@huma/path-creator`) | the time layer | Ours. Timeline schema v10, rig schema v12. |
 | `humatopia-frontend` (elastiq) | the product | Ours. Presentation system under `src/features/presentation/` and `src/routes/elastiq/`. |
 
@@ -87,8 +87,9 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
 | M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
 | M1.6 persistence | M | both | M1.2 | Gated on the clone-id decision. |
-| M2.1 post-processing | M | both | M0.1 | Mechanical. Direct TSL equivalents. |
-| M2.2 environment + lighting | **XL** | both | M2.1 | A re-authoring. The biggest risk in the plan. |
+| M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
+| M2.1 post-processing | M | both | M0.1, M2.0 | Mechanical. Direct TSL equivalents. Includes seam PRs if (c). |
+| M2.2 environment + lighting | **XL** | both | M2.1, M2.0 | A re-authoring. The biggest risk in the plan. |
 | M2.3 materials | **L** | both | M2.1 | |
 | M2.4 shadows | M | both | M2.2 | |
 | M2.5 splats | M | both | M2.1 | Implementation exists elsewhere; integrate. |
@@ -194,6 +195,23 @@ anyone adds later.
 
 **Deliverable:** a plugin package (working name `@huma/pascal-time`) providing node kinds,
 tracks, and timeline authoring UI.
+
+**Where it lives.** `Packages/pascal-time` in the Path-Creator workspace to begin with, then
+extracted to its own repository once the API stabilises.
+
+Start there because the plugin is the first real consumer of the timeline as an *authoring*
+surface and will expose gaps in path-creator's API — the two will change together constantly
+during M1, and cross-repo version coordination through that would be friction for nothing. It is
+safe because in a pnpm workspace a sibling package's dependency on Pascal does **not** propagate
+to `@huma/path-creator`; consumers of the published library never see Pascal in their tree.
+
+Extract later for a reason beyond tidiness: a widely used 3D editor with no animation is a gap
+someone will fill, and a cleanly packaged time plugin is contributable to Pascal's ecosystem in a
+way a package inside our monorepo is not.
+
+**The rule that keeps this honest: `@huma/path-creator` must never import from Pascal.** It is a
+renderer-agnostic time library with other consumers. If that rule ever needs breaking, the design
+is wrong, not the rule.
 
 ### Pascal plugin traps — read before writing a single kind
 
@@ -312,6 +330,42 @@ decision recorded in `INTEGRATION-DESIGN.md` §10.**
 renderer, so author and audience see the same picture.
 
 Do these in order — the first is mechanical and the rest are not.
+
+### M2.0 — Decide how this ships *(before any M2 code)*
+
+**M1's "no fork" rule does not extend to M2.** Rendering is not a plugin contribution: Pascal's
+plugin contract explicitly lists materials as *not* a contribution point, and there is no hook for
+replacing or extending the post-processing pipeline. Changing the look means changing
+`@pascal-app/viewer` itself.
+
+So M2 ships one of three ways, and the choice materially changes its cost:
+
+**(a) Upstream the look.** Propose the additions to Pascal directly. No carrying cost if accepted.
+But it is an architectural editor and this is a presentation-grade aesthetic — their roadmap may
+simply not want bloom and transmission materials, and PR latency would gate our schedule.
+
+**(b) Fork `@pascal-app/viewer`.** Total control, and a recurring rebase cost against a pre-1.0
+package that commits daily. This is the expensive option and it compounds.
+
+**(c) Upstream the *seam*, keep the look. — recommended.** Contribute the extensibility rather
+than the aesthetic: a pluggable post-processing pipeline, an environment provider hook, a material
+registry. Then our look lives in our own code on top of a supported extension point, and Pascal
+gains a capability its ecosystem wants regardless of what we do with it.
+
+This is exactly the shape of [#671](https://github.com/pascalorg/editor/pull/671), already open:
+we did not upstream our frame rate, we upstreamed the ability to configure it. Same move, larger
+surface.
+
+**Cost note.** (c) is more work than (b) up front — a seam has to be designed and accepted — and
+far less work than (b) over any horizon longer than a few months. Budget the seam PRs as part of
+M2.1 rather than treating them as overhead.
+
+**Interaction with the M2 fallback.** If Pascal will not take a seam and a maintained fork is
+judged unacceptable, the two-renderer fallback below stops being a contingency and becomes the
+plan. Establish this before M2.2, not after.
+
+**Done when:** the delivery mechanism is chosen and recorded here, and if (c), at least one seam
+proposal is open upstream.
 
 ### M2.1 — Post-processing chain *(mechanical)*
 
@@ -559,11 +613,13 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 1. **Clone versus timeline references** (M1.6) — the hardest unsolved problem on the boundary.
 2. **Deck schema** (M3.1) — keep React Flow's node/edge shape verbatim, or give the deck its own
    schema with React Flow as a view over it.
-3. **Where the look lives** (M2.6) — scene nodes, timeline tracks, or split. Blocks M2.6 and
+3. **How M2 ships** (M2.0) — upstream the look, fork the viewer, or upstream the seam and keep the
+   look. Recommendation is (c). This gates all of M2 and changes its cost by a large factor.
+4. **Where the look lives** (M2.6) — scene nodes, timeline tracks, or split. Blocks M2.6 and
    shapes M2.2. A recommendation is written there; it needs a decision.
-4. **Migration policy for ambiguous part references** (M3.1) — apply to all, apply to the first,
+5. **Migration policy for ambiguous part references** (M3.1) — apply to all, apply to the first,
    or drop and warn; and whether authors see a migration report. Some data cannot be recovered
    either way, so this is about what users are told, not only what the code does.
-5. **Fork policy for Pascal** — the plan says consume as packages and carry a patch only until
-   [#671](https://github.com/pascalorg/editor/pull/671) merges. Confirm, and set the threshold at
-   which divergence must be upstreamed instead of carried.
+6. **Fork policy for Pascal** — M1 needs no fork. M2 does unless decision 3 lands on upstreaming a
+   seam. Set the threshold at which divergence must be upstreamed rather than carried, and who
+   owns rebasing if a fork is taken.
