@@ -25,7 +25,7 @@ camera and everything else for free. There is no separate transition system to b
 | `scene-kinds.ts` | The product's node vocabulary: a GLB at a transform, and a hotspot. |
 | `scene-plugin.ts` | Those kinds as one Pascal plugin manifest. |
 | `model-renderer.tsx` / `hotspot-renderer.tsx` | Their renderers; `useRegistry` is what makes them timeline-drivable. |
-| `cues.ts` | Slides as timestamps, and the ride that animates the clock between them. |
+| *(cues)* | Slides as timestamps and the ride between them — **promoted into `@huma/path-creator/timeline` in M1.5**; this example now imports them. |
 | `presentation.ts` | The authored content — scene above the line, cues and shots below it. |
 | `src/render/scene-binding.ts` | Pascal's registry as a path-creator `ObjectBindingResolver`. |
 

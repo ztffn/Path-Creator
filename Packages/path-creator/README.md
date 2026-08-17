@@ -19,7 +19,7 @@ npm install react @react-three/fiber
 - `@huma/path-creator/core`
 - `@huma/path-creator/three`
 - `@huma/path-creator/r3f`
-- `@huma/path-creator/timeline` — headless timeline model + player (`buildShowTimeline`, `createTimelinePlayer`, `evaluateTimeline`, `seekTimelinePlayer`)
+- `@huma/path-creator/timeline` — headless timeline model + player (`buildShowTimeline`, `createTimelinePlayer`, `evaluateTimeline`, `seekTimelinePlayer`), and cues (`currentCue`, `rideToCue`, `stepCueTransport`)
 - `@huma/path-creator/timeline-ui` — `TimelineLanes`, a themeable DOM multilane editor (renderer-agnostic)
 
 Timeline schema v4 supports portable camera, cart, event, activation, audio,

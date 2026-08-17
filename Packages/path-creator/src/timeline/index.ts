@@ -36,6 +36,7 @@ import {
   type VirtualCameraSnapshot
 } from "../core";
 import type { Camera, Matrix4 } from "three";
+import { createTimelinePlayer, type TimelinePlayer } from "./player";
 import {
   applyVirtualCameraSnapshot,
   blendVirtualCameraSnapshots,
@@ -72,6 +73,9 @@ export type {
   TransformKey,
   TransformTrack
 } from "../core";
+export * from "./player";
+export * from "./cues";
+
 export {
   TIMELINE_SCHEMA_VERSION,
   audioClipSpeed,
@@ -233,22 +237,6 @@ export function collectTimelineEvents(
   return fired.sort((a, b) => a.time - b.time);
 }
 
-export interface TimelinePlayer {
-  time: number;
-  playing: boolean;
-  rate: number;
-  loop: boolean;
-}
-
-export function createTimelinePlayer(init: Partial<TimelinePlayer> = {}): TimelinePlayer {
-  return {
-    time: init.time ?? 0,
-    playing: init.playing ?? false,
-    rate: init.rate ?? 1,
-    loop: init.loop ?? false
-  };
-}
-
 /**
  * Advances the player clock and returns events crossed this step, fired
  * exactly once each. Pauses at the end unless looping (loop wraps and fires
@@ -276,11 +264,6 @@ export function stepTimelinePlayer(
 
   player.time = to;
   return collectTimelineEvents(timeline, from, to);
-}
-
-/** Jumps the clock without firing events (scrub semantics). */
-export function seekTimelinePlayer(player: TimelinePlayer, timeSeconds: number): void {
-  player.time = Math.max(0, timeSeconds);
 }
 
 export interface RigTimelineParams {

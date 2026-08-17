@@ -4,7 +4,7 @@
 // from the URL, because the URL belongs to the presentation system's routing, not to render
 // state. Scope: prototype document layer.
 import type { VirtualCameraDefinition } from "@huma/path-creator/core";
-import type { Cue } from "./cues";
+import type { Cue } from "@huma/path-creator/timeline";
 import { ELASTIQ_PLUGIN_ID } from "./scene-plugin";
 
 /**
@@ -14,6 +14,16 @@ import { ELASTIQ_PLUGIN_ID } from "./scene-plugin";
  * same renderers — only the shell around them differs.
  */
 export type RenderMode = "polished" | "reading";
+
+/**
+ * This product's cue: a library cue plus the look it opens. The library's lookup helpers are
+ * generic over the cue type, so they hand this back whole rather than narrowing it to `Cue` —
+ * which is what lets `renderModeAt` read a field the timeline layer knows nothing about.
+ */
+export interface SlideCue extends Cue {
+  /** Optional look change from this slide onward. Resolved by `renderModeAt`. */
+  renderMode?: RenderMode;
+}
 
 /** A camera shot, anchored at a time. Binds to the scene by node id and nothing else. */
 export interface Shot {
@@ -28,7 +38,7 @@ export interface Presentation {
   renderMode: RenderMode;
   /** Seconds the clock takes to ride between slides. */
   transitionSeconds: number;
-  cues: Cue[];
+  cues: SlideCue[];
   shots: Shot[];
 }
 

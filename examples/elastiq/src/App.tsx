@@ -15,12 +15,14 @@ import {
   resolveVirtualCameraDefinition
 } from "@huma/path-creator/three";
 import { TargetRegistry } from "@huma/path-creator/core";
-import { createTimelinePlayer } from "@huma/path-creator/timeline";
 import {
-  createCueTransport, currentCue, rideTo, rideToNext, rideToPrevious, stepCueTransport, type Cue
-} from "./document/cues";
+  createCueTransport, createTimelinePlayer, currentCue, rideToCue, rideToNext,
+  rideToPrevious, stepCueTransport
+} from "@huma/path-creator/timeline";
 import { hotspotClicks } from "./document/scene-kinds";
-import { buildScene, PRESENTATION, renderModeAt, type RenderMode } from "./document/presentation";
+import {
+  buildScene, PRESENTATION, renderModeAt, type RenderMode, type SlideCue
+} from "./document/presentation";
 import { PresentationScene } from "./render/scene-renderer";
 
 interface Playhead {
@@ -39,7 +41,7 @@ function Director({ onFrame }: { onFrame: (state: Playhead) => void }) {
 
   // Next, previous and a marker click are one verb: ride the clock somewhere.
   const ride = useCallback(
-    (direction: 1 | -1): Cue | null =>
+    (direction: 1 | -1): SlideCue | null =>
       direction === 1
         ? rideToNext(transport, player, PRESENTATION.cues, { seconds: PRESENTATION.transitionSeconds })
         : rideToPrevious(transport, player, PRESENTATION.cues, { seconds: PRESENTATION.transitionSeconds }),
@@ -47,7 +49,7 @@ function Director({ onFrame }: { onFrame: (state: Playhead) => void }) {
   );
 
   useEffect(() => {
-    (window as unknown as { __elastiq?: { ride: (d: 1 | -1) => Cue | null } }).__elastiq = { ride };
+    (window as unknown as { __elastiq?: { ride: (d: 1 | -1) => SlideCue | null } }).__elastiq = { ride };
   }, [ride]);
 
   useFrame((_, delta) => {
@@ -62,8 +64,9 @@ function Director({ onFrame }: { onFrame: (state: Playhead) => void }) {
 
     while (hotspotClicks.length) {
       const click = hotspotClicks.shift()!;
-      const target = PRESENTATION.cues.find((cue) => cue.id === click.action.cueId);
-      if (target) rideTo(transport, player, target.time, { seconds: click.action.transitionSeconds });
+      rideToCue(transport, player, PRESENTATION.cues, click.action.cueId, {
+        seconds: click.action.transitionSeconds
+      });
     }
 
     stepCueTransport(transport, player, delta);
