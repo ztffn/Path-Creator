@@ -4,7 +4,7 @@
 // and contribute our own vocabulary, so `@pascal-app/core` is the only Pascal dependency.
 // Scope: prototype bootstrap.
 import { loadPlugin, nodeRegistry } from "@pascal-app/core";
-import { elastiqPlugin } from "./scene-plugin";
+import { elastiqPlugin } from "./document/scene-plugin";
 
 let loaded = false;
 

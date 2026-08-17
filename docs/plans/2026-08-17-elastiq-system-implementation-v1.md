@@ -60,6 +60,10 @@ plugin and its panel. **A published presentation mounts core + nodes + viewer + 
 document, same renderer, same timeline evaluation; a fraction of the bundle. Every phase below
 must state which stack it touches, and nothing in the runtime path may import from `/editor`.
 
+**This is a deployment boundary, not only an import boundary** — `@pascal-app/editor` ships
+unbuilt TypeScript with a `next >= 15` peer, so authoring runs as a Next app and elastiq's Vite
+runtime cannot mount it. See §0b.
+
 ### The repositories
 
 | Repo | Role | Notes |
@@ -79,11 +83,12 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 |---|---|---|---|---|
 | M0.1 three alignment | S | both | — | Do first; everything installs behind it. |
 | M0.2 version field | S | runtime | — | An hour. Expensive to retrofit. |
-| M0.3 security | M | runtime | — | Independent. Blocks external launch. |
-| M0.4 asset pipeline | M | both | M0.2 | M3.1 cannot ship without it. |
+| M0.3 security + authoring app auth | **L** | both | — | Blocks external launch. Now also covers the separate editor app's identity — §0b. |
+| M0.4 typecheck gap | S | — | — | Two lines per example. Hid a broken commit for four commits. |
+| M0.5 asset pipeline | M | both | M0.2 | M3.1 cannot ship without it. |
 | M1.1 plugin skeleton | S | authoring | M0.1 | |
 | M1.2 binding + tracks | M | both | M1.1 | Adapter is proven; the work is track coverage. |
-| M1.3 timeline UI | **L** | authoring | M1.2 | **The largest single chunk in the plan.** |
+| M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
 | M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
 | M1.6 persistence | M | both | M1.2 | Gated on the clone-id decision. |
@@ -94,10 +99,10 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M2.4 shadows | M | both | M2.2 | |
 | M2.5 splats | M | both | M2.1 | Implementation exists elsewhere; integrate. |
 | M2.6 look authorable | M | both | M2.2, and an open decision | See §M2.6 — schema question first. |
-| M3.1 document format | M | runtime | M0.2, M0.4 | |
+| M3.1 document format | M | runtime | M0.2, M0.5 | |
 | M3.2 worlds + one canvas | M | runtime | M3.1, M1.6 | |
 | M3.3 riding on navigation | S | runtime | M3.2, M1.5 | Small, because the ride already exists. |
-| M3.4 embedded authoring | L | authoring | M1.3, M3.2 | |
+| M3.4 embedded authoring | M | both | M1.3, M3.2 | Iframe + postMessage, not a React mount. Smaller than first sized — see §0b. |
 | M3.5 steps as sub-cues | S | runtime | M3.3 | |
 | M3.6 AI schema doc | S | — | M3.1 | Otherwise AI decks stay 2D forever. |
 | M4.0 transport | **L** | runtime | M0.3 | Backend. Not free. |
@@ -112,10 +117,73 @@ and can be staffed separately:
 
 - **Time** — M1 entire. Touches Pascal and path-creator. Does not need rendering work.
 - **Rendering** — M2 entire. Touches Pascal's viewer. Does not need the timeline to exist.
-- **Format and product** — M0.2, M0.4, M3.1. Touches elastiq. Does not need either of the above.
+- **Format and product** — M0.2, M0.5, M3.1. Touches elastiq. Does not need either of the above.
 
 They converge at **M3.2**, which is the first phase requiring all three. Schedule backwards from
 there. M2.2 is the long pole; start it early even though it is not blocking anything yet.
+
+---
+
+## 0b. Deployment topology — two apps, one document
+
+**Discovered during M1.1, and it constrains M1.3 and M3.4.** `@pascal-app/editor@1.0.0-beta.4`
+does not ship a built bundle. It ships **438 raw `.tsx` files** with `next >= 15` as a peer
+dependency, `next` imported in 26 of them, plus Tailwind and roughly twenty Radix, dnd-kit and
+pdfkit dependencies. Elastiq is Vite with TanStack Router. The editor cannot be mounted there.
+
+**We are not changing that.** Pascal is a large project with many contributors and a deliberate
+Next choice; opening that as an upstream architecture debate is not a fight we can win or should
+pick. We contain the coupling instead.
+
+```
+   editor.elastiq.<domain>              elastiq (existing, Vite)
+   ───────────────────────              ────────────────────────
+   Next app                             presentation runtime
+   @pascal-app/core + nodes             @pascal-app/core + nodes
+                 + viewer + editor                    + viewer
+   @huma/pascal-time  (manifest         @huma/pascal-time  (manifest
+                       + host panel)                       only)
+   @huma/path-creator (authoring)       @huma/path-creator (runtime)
+              │                                    │
+              └────────  one document  ────────────┘
+```
+
+**Authoring is a separate Next app.** All Next coupling lives there and stops there. It mounts
+Pascal's editor with our plugin loaded through their `setPluginDiscovery` hook — the mechanism
+their plugin docs describe for exactly this — rather than us standing up bespoke Next scaffolding.
+
+**Presentation stays elastiq unchanged.** Vite, mounting core + nodes + viewer + the timeline
+*runtime*. No editor package, therefore no Next, therefore no framework collision.
+
+**In-product, the editor is an iframe — and this is not a compromise.** Elastiq already does it:
+its 3D scene editor opens in a separate tab and rounds its config back over a `BroadcastChannel`
+keyed by session, and it runs sandboxed micro-apps in iframes with a postMessage bridge that
+forwards arrow keys so deck navigation keeps working. Pointing that existing, load-bearing pattern
+at a deployed editor app is an upgrade to something that already ships, not a new architecture.
+
+### What this requires of the plugin package
+
+**Two entry points, split at the package boundary** — which is the shape Pascal already expects:
+
+- **`@huma/pascal-time`** — the manifest: node kinds, tracks, evaluation. Framework-agnostic,
+  consumable by Vite and Next alike. Loaded by **both** apps.
+- **`@huma/pascal-time/host-panel`** — the `EditorHostPanel` (timeline UI). Editor-coupled and
+  therefore Next-coupled. Loaded **only** by the authoring app.
+
+Split them from the start so the runtime half can never drag the panel — and the whole Next
+dependency tree — into elastiq's bundle. A single entry point that conditionally imports the panel
+will not survive a bundler.
+
+### Consequences elsewhere in this plan
+
+- **M1.3** builds the host panel against Pascal's own `apps/editor` (with our plugin injected via
+  `setPluginDiscovery`), not against a Vite harness. Re-size accordingly: standing up that loop is
+  part of the phase.
+- **M3.4** "embedded authoring" means **iframe plus postMessage document handoff**, not mounting
+  the editor in elastiq's React tree. Reuse the existing session-keyed round-trip pattern.
+- **A deployment and auth story is now in scope** for the authoring app: where it runs, how it
+  authenticates against the same documents, and how the handoff carries identity. Folded into
+  M0.3, which is already the auth phase.
 
 ---
 
@@ -167,7 +235,19 @@ contains unresolved git merge-conflict markers that leak it.
 **Done when:** presentations are owner-scoped and auth-checked, the key is rotated out of git
 history and into env, and the skill file is repaired.
 
-### M0.4 — Asset pipeline
+### M0.4 — Close the typecheck gap in CI
+
+**Why.** Only `Packages/path-creator` declares a `lint` script, so `pnpm -r lint` silently skips
+all three examples and exits zero. The examples are typechecked only by `pnpm -r build`, and
+`vitest` never typechecks at all. A commit with six unresolvable import specifiers therefore
+passed lint and passed tests, and survived four commits before an agent caught it by building.
+
+**Tasks.** A `lint` script (`tsc -b --noEmit` or equivalent) in every example package, so
+`pnpm -r lint` covers the workspace. Confirm CI runs it.
+
+**Done when:** deliberately breaking an import in an example fails `pnpm -r lint`.
+
+### M0.5 — Asset pipeline
 
 **Why.** M3.1 says assets become content-addressed references, and the format cannot ship without
 somewhere for them to live. Today two of three save paths write `blob:` URLs straight into slides,
@@ -272,6 +352,15 @@ package ships two entry points: the node kinds through the manifest, and the tim
 through the host-panel export, registered with `registerEditorHostPanel`. The upstream
 `plugin-bones`, `plugin-trees` and `plugin-streetscape` packs all do this — read one before
 starting.
+
+**Where you develop it.** Not in a Vite harness — the editor package is unbuilt TSX with a Next
+peer (§0b). Run against Pascal's own `apps/editor`, injecting our plugin through their
+`setPluginDiscovery` hook, which their plugin docs describe for this purpose. Standing that loop up
+is part of this phase, not preparation for it.
+
+**Package split.** The panel is `@huma/pascal-time/host-panel`, a separate entry point from the
+manifest, so elastiq's runtime can never pull the editor — and therefore Next — into its bundle.
+See §0b.
 
 **Why this is the long pole.** `/timeline-ui` is DOM and React with its own theme; Pascal's editor
 has its own chrome and design language. Expect real work reconciling them, and expect the
@@ -529,11 +618,22 @@ you can go; the timeline decides what the journey looks like.
 main narrative plays as one continuous forward motion and branches jump. In a graph deck the
 timeline is an address space, not a playback order.
 
-### M3.4 — Embedded authoring
+### M3.4 — Embedded authoring *(iframe, not a React mount)*
 
-The Pascal-based editor inside elastiq, reading as one product. Note the current dependency runs
-backwards — `src/features/presentation/*` imports `ModelViewerPage` from a **route file**. Do not
-reproduce that.
+The authoring app is a separate Next deployment (§0b), so this is **not** mounting an editor
+component in elastiq's tree — it is an iframe plus a postMessage document handoff.
+
+**Reuse what exists rather than inventing.** Elastiq already opens its 3D scene editor in a
+separate tab and rounds the config back over a `BroadcastChannel` keyed by session, and already
+runs sandboxed iframes with a postMessage bridge that forwards arrow keys so deck navigation keeps
+working. Point that pattern at the deployed editor and carry the document instead of a config blob.
+
+**Make it read as one product**, not a linked-out tool: same chrome, same auth session, no visible
+navigation away. That is a presentation concern and it is where the effort goes.
+
+**Do not reproduce the current inversion** — `src/features/presentation/*` imports
+`ModelViewerPage` from a **route file** today. The runtime must not import from an authoring
+surface at all.
 
 ### M3.5 — Steps as sub-cues
 
@@ -613,13 +713,16 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 1. **Clone versus timeline references** (M1.6) — the hardest unsolved problem on the boundary.
 2. **Deck schema** (M3.1) — keep React Flow's node/edge shape verbatim, or give the deck its own
    schema with React Flow as a view over it.
-3. **How M2 ships** (M2.0) — upstream the look, fork the viewer, or upstream the seam and keep the
+3. **Where the authoring app lives and how it authenticates** (§0b) — subdomain, path, or
+   same-origin route; and how it shares identity with elastiq's documents. Blocks M1.3's
+   deployment story, not its code.
+4. **How M2 ships** (M2.0) — upstream the look, fork the viewer, or upstream the seam and keep the
    look. Recommendation is (c). This gates all of M2 and changes its cost by a large factor.
-4. **Where the look lives** (M2.6) — scene nodes, timeline tracks, or split. Blocks M2.6 and
+5. **Where the look lives** (M2.6) — scene nodes, timeline tracks, or split. Blocks M2.6 and
    shapes M2.2. A recommendation is written there; it needs a decision.
-5. **Migration policy for ambiguous part references** (M3.1) — apply to all, apply to the first,
+6. **Migration policy for ambiguous part references** (M3.1) — apply to all, apply to the first,
    or drop and warn; and whether authors see a migration report. Some data cannot be recovered
    either way, so this is about what users are told, not only what the code does.
-6. **Fork policy for Pascal** — M1 needs no fork. M2 does unless decision 3 lands on upstreaming a
+7. **Fork policy for Pascal** — M1 needs no fork. M2 does unless decision 3 lands on upstreaming a
    seam. Set the threshold at which divergence must be upstreamed rather than carried, and who
    owns rebasing if a fork is taken.

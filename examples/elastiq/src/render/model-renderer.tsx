@@ -7,7 +7,7 @@ import { useMemo, useRef } from "react";
 import { useGLTF } from "@react-three/drei";
 import { useRegistry } from "@pascal-app/core";
 import { MathUtils, type Object3D } from "three";
-import type { ModelNodeType } from "./scene-kinds";
+import type { ModelNodeType } from "../document/scene-kinds";
 
 export default function ModelRenderer({ node }: { node: ModelNodeType }) {
   const ref = useRef<Object3D>(null!);

@@ -25,7 +25,7 @@ export const modelDefinition = {
     rotationDeg: [0, 0, 0] as [number, number, number],
     scale: [1, 1, 1] as [number, number, number]
   }),
-  renderer: { kind: "parametric", module: () => import("./model-renderer") },
+  renderer: { kind: "parametric", module: () => import("../render/model-renderer") },
   capabilities: { selectable: { hitVolume: "bbox" }, duplicable: true, deletable: true }
 } as unknown as NodeDefinition<typeof ModelNode>;
 
@@ -43,7 +43,7 @@ export const hotspotDefinition = {
     label: "Hotspot",
     action: { cueId: "", transitionSeconds: 1.6 }
   }),
-  renderer: { kind: "parametric", module: () => import("./hotspot-renderer") },
+  renderer: { kind: "parametric", module: () => import("../render/hotspot-renderer") },
   capabilities: { selectable: { hitVolume: "bbox" }, duplicable: true, deletable: true }
 } as unknown as NodeDefinition<typeof HotspotNode>;
 

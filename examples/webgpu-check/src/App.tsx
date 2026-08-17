@@ -5,14 +5,18 @@
 // are draggable; a visible theme so the rail reads on the dark background. Anchor
 // labels + midpoint pivot are gated off on WebGPU inside PathEditor (RigLabel is a
 // ROADMAP follow-up).
-import { Canvas, extend } from "@react-three/fiber";
+import { Canvas, extend, type Catalogue } from "@react-three/fiber";
 import { OrbitControls } from "@react-three/drei";
 import { useMemo, useState } from "react";
 import * as THREE from "three/webgpu";
 import { BezierPath, ControlMode, PathSpace, VertexPath, type Vec3 } from "@huma/path-creator/core";
 import { PathEditor, TransformGizmo, useEditorHelpersVisible } from "@huma/path-creator/r3f";
 
-extend(THREE as unknown as Record<string, unknown>);
+// `three/webgpu` IS a catalogue of three constructors, but its namespace type does not
+// structurally satisfy R3F's `Catalogue` (it also carries non-constructor exports), so the
+// cast names the shape R3F wants rather than erasing it to `Record<string, unknown>` — which
+// matches neither `extend` overload and was only ever accepted because nothing typechecked here.
+extend(THREE as unknown as Catalogue);
 
 // Bright rail/handles so the editor reads on the dark canvas (the default theme's
 // near-black rail is invisible here — a consumer supplies its own theme).

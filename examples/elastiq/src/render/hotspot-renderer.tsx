@@ -6,7 +6,7 @@
 import { useRef } from "react";
 import { useRegistry } from "@pascal-app/core";
 import type { Object3D } from "three";
-import { hotspotClicks, type HotspotNodeType } from "./scene-kinds";
+import { hotspotClicks, type HotspotNodeType } from "../document/scene-kinds";
 
 export default function HotspotRenderer({ node }: { node: HotspotNodeType }) {
   const ref = useRef<Object3D>(null!);

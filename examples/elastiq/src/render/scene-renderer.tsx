@@ -4,7 +4,7 @@
 // install gate and its lazy-module contract; reimplementing it buys back the renderer, the
 // frame loop, the camera and the entire look. Scope: prototype presentation renderer.
 import { useScene } from "@pascal-app/core";
-import type { ModelNodeType, HotspotNodeType } from "./scene-kinds";
+import type { ModelNodeType, HotspotNodeType } from "../document/scene-kinds";
 import ModelRenderer from "./model-renderer";
 import HotspotRenderer from "./hotspot-renderer";
 
