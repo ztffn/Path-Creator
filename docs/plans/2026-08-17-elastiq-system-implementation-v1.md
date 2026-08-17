@@ -550,11 +550,31 @@ immediate seek. Promote it into `@huma/path-creator/timeline`.
 
 The timeline lives in the scene document alongside the nodes. Schema-versioned, migrating.
 
-**The unsolved problem, and it lands here.** Pascal's `cloneNodesInto` mints **fresh ids** — which
-is exactly what a prefab needs and exactly what a timeline reference cannot survive. Duplicating an
-animated object will break its tracks. Options not yet evaluated: remap ids on clone, per-instance
-track binding, or relative addressing within a subtree. **Do not close this milestone without a
-decision recorded in `INTEGRATION-DESIGN.md` §10.**
+**Clone identity — DECIDED 2026-08-17: remap on clone.** Pascal's `cloneNodesInto` mints fresh
+ids, which is what a prefab needs and what a timeline reference cannot survive: duplicating an
+animated object would otherwise produce an inert copy.
+
+**Implement:** when a subtree is duplicated, duplicate any tracks referencing nodes inside it and
+rewrite their `objectId`s to the new ids. The copy animates like the original. This lives entirely
+in our plugin — no upstream change, no new document concept.
+
+**Known limitation, accepted:** N copies means N track sets, so editing the animation of a
+duplicated object means editing it N times. That bites only at authoring scale, and the upgrade
+when it does is **binding indirection** — tracks reference a slot, instances map slots to ids, one
+track set drives N instances. Remapping does not block moving there later.
+
+**Ruled out, do not revisit without new evidence:** relative addressing within the subtree
+(`root/child/grandchild`). It resolves clones without remapping and breaks on rename and reparent —
+name-keying returning through a side door, which is the exact defect this design exists to remove.
+
+**Fallback:** if remapping proves unimplementable, drop tracks on clone with a visible warning.
+
+**First risk to check when this phase starts:** whether Pascal's clone is observable to a plugin.
+`cloneNodesInto` is on `SceneApi` and core depends on `mitt`, so an event may exist to hang off. If
+clone is neither observable nor wrappable, remapping needs an upstream hook and its latency
+reopens this decision — escalate rather than improvising.
+
+Record the outcome in `INTEGRATION-DESIGN.md` §10 when implemented.
 
 ---
 
@@ -855,30 +875,13 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 
 ## Open decisions, owned by the product owner
 
-1. **Clone versus timeline references** (M1.6) — the hardest unsolved problem on the boundary.
-   Pascal's `cloneNodesInto` mints fresh ids, which is what a prefab needs and what a timeline
-   reference cannot survive.
-
-   **Recommendation: remap on clone.** When a subtree is duplicated, duplicate any tracks
-   referencing nodes inside it and rewrite the object ids. Matches naive expectation, adds no new
-   concepts, lives entirely in our plugin. Its weakness arrives late: N copies means N track sets.
-
-   *Upgrade path, not the start:* **binding indirection** — tracks reference a slot, instances map
-   slots to ids, one track set drives N instances. Correct at scale, more machinery than the
-   problem currently justifies, and remapping does not block moving here later.
-
-   *Ruled out on principle:* **relative paths within the subtree**. It resolves clones without
-   remapping and breaks on rename and reparent — name-keying returning through a side door, which
-   is the exact defect this design exists to remove. Least code, wrong answer.
-
-   *Fallback if remapping proves unimplementable:* drop tracks on clone with a warning.
-
-   **Implementation risk to check when M1.6 starts:** whether Pascal's clone is observable to a
-   plugin. `cloneNodesInto` is on `SceneApi` and core depends on `mitt`, so an event may exist. If
-   clone is neither observable nor wrappable, remapping needs an upstream hook, and that latency
-   changes the recommendation.
-2. **Deck schema** (M3.1) — keep React Flow's node/edge shape verbatim, or give the deck its own
-   schema with React Flow as a view over it.
+1. ~~**Clone versus timeline references** (M1.6)~~ — **DECIDED 2026-08-17: remap tracks on clone.**
+   Binding indirection is the upgrade at scale; relative subtree paths ruled out on principle. Full
+   reasoning and the implementation risk are in §M1.6.
+2. **Parametric animation, or transform-and-visibility?** (§0b) — decides bake versus asking
+   upstream to split `@pascal-app/nodes`. Baking gives a Next-free runtime and costs parametric
+   animation: a wall can move into place but cannot build itself. Answer at M1.3, with a real baked
+   scene in hand.
 3. **Where the authoring app lives and how it authenticates** (§0b) — subdomain, path, or
    same-origin route; and how it shares identity with elastiq's documents. Blocks M1.3's
    deployment story, not its code.
