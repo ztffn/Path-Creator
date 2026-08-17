@@ -1,0 +1,24 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Pascal spike — time over someone else's scene</title>
+    <style>
+      html, body, #root { margin: 0; height: 100%; background: #0e1116; }
+    </style>
+  </head>
+  <body>
+    <div id="root"></div>
+    <!--
+      Pascal's published bundles read `process.env.NODE_ENV` at module scope (they are built
+      for Next.js, where it always exists). Vite does not provide it, so without this shim
+      the viewer throws "process is not defined" before it renders anything. Worth recording
+      as an integration cost: consuming Pascal outside Next needs this.
+    -->
+    <script>
+      window.process = window.process || { env: { NODE_ENV: "development" } };
+    </script>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
