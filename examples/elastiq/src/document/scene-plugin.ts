@@ -4,16 +4,16 @@
 // so they can never collide with Pascal's built-ins, and every renderer is a lazy module with a
 // default export because a direct component reference is dropped without warning.
 import type { NodeDefinition, Plugin } from "@pascal-app/core";
-import { GlbModelNode, HotspotNode } from "./scene-kinds";
+import { ModelNode, HotspotNode } from "./scene-kinds";
 
-export const SCENE_PLUGIN_ID = "huma:presentation";
+export const ELASTIQ_PLUGIN_ID = "elastiq";
 
 // Casts at the boundary: this workspace compiles with `exactOptionalPropertyTypes` and Pascal's
 // published types do not, so the shapes match at runtime but not to our compiler.
-export const glbModelDefinition = {
-  kind: "huma:glb",
+export const modelDefinition = {
+  kind: "elastiq:model",
   schemaVersion: 1,
-  schema: GlbModelNode,
+  schema: ModelNode,
   category: "furnish",
   defaults: () => ({
     object: "node" as const,
@@ -25,12 +25,12 @@ export const glbModelDefinition = {
     rotationDeg: [0, 0, 0] as [number, number, number],
     scale: [1, 1, 1] as [number, number, number]
   }),
-  renderer: { kind: "parametric", module: () => import("./glb-model-renderer") },
+  renderer: { kind: "parametric", module: () => import("./model-renderer") },
   capabilities: { selectable: { hitVolume: "bbox" }, duplicable: true, deletable: true }
-} as unknown as NodeDefinition<typeof GlbModelNode>;
+} as unknown as NodeDefinition<typeof ModelNode>;
 
 export const hotspotDefinition = {
-  kind: "huma:hotspot",
+  kind: "elastiq:hotspot",
   schemaVersion: 1,
   schema: HotspotNode,
   category: "analysis",
@@ -47,8 +47,8 @@ export const hotspotDefinition = {
   capabilities: { selectable: { hitVolume: "bbox" }, duplicable: true, deletable: true }
 } as unknown as NodeDefinition<typeof HotspotNode>;
 
-export const presentationScenePlugin: Plugin = {
-  id: SCENE_PLUGIN_ID,
+export const elastiqPlugin: Plugin = {
+  id: ELASTIQ_PLUGIN_ID,
   apiVersion: 1,
-  nodes: [glbModelDefinition as never, hotspotDefinition as never]
+  nodes: [modelDefinition as never, hotspotDefinition as never]
 };

@@ -13,14 +13,14 @@ const Vec3Tuple = z.tuple([z.number(), z.number(), z.number()]);
  * transforms. Everything time-varying about it — when it moves, when it is visible — lives in
  * the timeline and references this node by id, never in here.
  */
-export const GlbModelNode = BaseNode.extend({
-  type: z.literal("huma:glb").default("huma:glb"),
+export const ModelNode = BaseNode.extend({
+  type: z.literal("elastiq:model").default("elastiq:model"),
   url: z.string().default(""),
   position: Vec3Tuple.default([0, 0, 0]),
   rotationDeg: Vec3Tuple.default([0, 0, 0]),
   scale: Vec3Tuple.default([1, 1, 1])
 });
-export type GlbModelNodeType = z.infer<typeof GlbModelNode>;
+export type ModelNodeType = z.infer<typeof ModelNode>;
 
 /**
  * A clickable point bound to a timeline action. Per the integration design's classification
@@ -34,7 +34,7 @@ export const HotspotAction = z.object({
 });
 
 export const HotspotNode = BaseNode.extend({
-  type: z.literal("huma:hotspot").default("huma:hotspot"),
+  type: z.literal("elastiq:hotspot").default("elastiq:hotspot"),
   position: Vec3Tuple.default([0, 0, 0]),
   label: z.string().default("Hotspot"),
   action: HotspotAction.default({ cueId: "", transitionSeconds: 1.6 })

@@ -6,7 +6,7 @@
 import { describe, expect, it } from "vitest";
 import { Group, Object3D } from "three";
 import { ActivationTrackDirector, TransformTrackDirector } from "@huma/path-creator/three";
-import { pascalObjectBinding, type PascalSceneRegistryLike } from "./pascal-binding";
+import { pascalObjectBinding, type PascalSceneRegistryLike } from "./scene-binding";
 
 /** Same shape as Pascal's registry: a plain id -> Object3D map at module scope. */
 function registryWith(entries: Record<string, Object3D>): PascalSceneRegistryLike {

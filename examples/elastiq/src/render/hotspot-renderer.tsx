@@ -1,4 +1,4 @@
-// Renderer for the `huma:hotspot` node kind. Registers under the node id like every other kind,
+// Renderer for the `elastiq:hotspot` node kind. Registers under the node id like every other kind,
 // so a hotspot is drivable by the timeline exactly as a model is, and pushes its opaque action
 // payload on click for the product layer to interpret. Default export + lazy import are required
 // by Pascal's renderer dispatch — a direct component reference is dropped silently.
@@ -10,7 +10,7 @@ import { hotspotClicks, type HotspotNodeType } from "./scene-kinds";
 
 export default function HotspotRenderer({ node }: { node: HotspotNodeType }) {
   const ref = useRef<Object3D>(null!);
-  useRegistry(node.id, "huma:hotspot", ref);
+  useRegistry(node.id, "elastiq:hotspot", ref);
 
   return (
     <group name={node.label} position={node.position} ref={ref} visible={node.visible !== false}>

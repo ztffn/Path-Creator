@@ -11,6 +11,8 @@ export interface Cue {
   id: string;
   name: string;
   time: number;
+  /** Optional look change from this slide onward. Resolved by `renderModeAt`. */
+  renderMode?: "polished" | "reading";
 }
 
 export interface CueTransition {

@@ -4,8 +4,8 @@
 // install gate and its lazy-module contract; reimplementing it buys back the renderer, the
 // frame loop, the camera and the entire look. Scope: prototype presentation renderer.
 import { useScene } from "@pascal-app/core";
-import type { GlbModelNodeType, HotspotNodeType } from "./scene-kinds";
-import GlbModelRenderer from "./glb-model-renderer";
+import type { ModelNodeType, HotspotNodeType } from "./scene-kinds";
+import ModelRenderer from "./model-renderer";
 import HotspotRenderer from "./hotspot-renderer";
 
 type AnySceneNode = { id: string; type: string; visible?: boolean };
@@ -21,10 +21,10 @@ export function PresentationScene() {
   return (
     <>
       {Object.values(nodes).map((node) => {
-        if (node.type === "huma:glb") {
-          return <GlbModelRenderer key={node.id} node={node as unknown as GlbModelNodeType} />;
+        if (node.type === "elastiq:model") {
+          return <ModelRenderer key={node.id} node={node as unknown as ModelNodeType} />;
         }
-        if (node.type === "huma:hotspot") {
+        if (node.type === "elastiq:hotspot") {
           return <HotspotRenderer key={node.id} node={node as unknown as HotspotNodeType} />;
         }
         return null;

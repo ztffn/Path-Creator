@@ -8,6 +8,10 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 
 # Integration design — space, time, and the boundary between them
 
+> **Read [`ELASTIQ-SYSTEM.md`](./ELASTIQ-SYSTEM.md) first.** It defines the system these rules
+> serve — Pascal as the editor, path-creator as time, elastiq as the product — and the build
+> sequence. This document holds the detailed ownership rules and the measurements behind them.
+
 ## Status
 
 | Section | Standing |

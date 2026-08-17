@@ -4,16 +4,16 @@
 // and contribute our own vocabulary, so `@pascal-app/core` is the only Pascal dependency.
 // Scope: prototype bootstrap.
 import { loadPlugin, nodeRegistry } from "@pascal-app/core";
-import { presentationScenePlugin } from "./scene-plugin";
+import { elastiqPlugin } from "./scene-plugin";
 
 let loaded = false;
 
-export function loadSceneKinds(): string[] {
+export function loadElastiqKinds(): string[] {
   if (!loaded) {
     loaded = true;
     // `loadPlugin` (not `registerNode`) is what records kind -> plugin id, which is what makes
     // the per-project install gate apply rather than be bypassed.
-    if (!nodeRegistry.has("huma:glb")) loadPlugin(presentationScenePlugin);
+    if (!nodeRegistry.has("elastiq:model")) loadPlugin(elastiqPlugin);
   }
   return Array.from(nodeRegistry.entries(), ([kind]) => kind);
 }
