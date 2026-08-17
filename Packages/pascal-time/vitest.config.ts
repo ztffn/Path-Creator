@@ -6,6 +6,9 @@ export default defineConfig({
     // Node ESM rejects — the documented "bundler-only" constraint. Inlining routes them
     // through Vite's resolver instead, which is what lets these tests run against
     // Pascal's REAL store and REAL registry rather than a stand-in shaped like them.
-    server: { deps: { inline: [/@pascal-app\//] } }
+    server: { deps: { inline: [/@pascal-app\//] } },
+    // Supplies requestAnimationFrame, without which Pascal's dirty marking silently never
+    // runs and the "driving leaves the document alone" assertions measure nothing.
+    setupFiles: ["./test/setup.ts"]
   }
 });

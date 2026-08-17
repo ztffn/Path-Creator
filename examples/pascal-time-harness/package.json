@@ -1,0 +1,35 @@
+{
+  "name": "pascal-time-harness",
+  "private": true,
+  "version": "0.0.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc -b && vite build",
+    "preview": "vite preview",
+    "lint": "tsc --noEmit",
+    "test": "echo \"No unit tests — measured in a browser via pnpm verify\"",
+    "verify": "pnpm --filter @huma/pascal-time build && node measure.mjs"
+  },
+  "dependencies": {
+    "@huma/pascal-time": "workspace:*",
+    "@huma/path-creator": "workspace:*",
+    "@pascal-app/core": "1.0.0-beta.4",
+    "@pascal-app/viewer": "1.0.0-beta.4",
+    "@react-three/fiber": "^9.0.0",
+    "react": "^19.0.0",
+    "react-dom": "^19.0.0",
+    "three": "^0.185.0",
+    "zod": "^4.3.5"
+  },
+  "devDependencies": {
+    "@react-three/drei": "^10.7.6",
+    "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
+    "@types/three": "^0.185.0",
+    "@vitejs/plugin-react": "^5.0.2",
+    "playwright": "^1.56.0",
+    "typescript": "^5.9.2",
+    "vite": "^7.1.5"
+  }
+}

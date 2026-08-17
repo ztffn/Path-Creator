@@ -22,7 +22,7 @@ Ordered roughly by priority. "Deferred from" notes where the decision was made.
 > (Tier 1 below) would have been the first entity this library owns outright rather than
 > references. Rather than build it here, the boundary between a scene editor and this library
 > is specified in **`INTEGRATION-DESIGN.md`**, and a spike against the Pascal editor
-> (`examples/pascal-spike/`) has proven the object-binding and frame-loop seams. Read the
+> (`examples/elastiq/`) has proven the object-binding and frame-loop seams. Read the
 > design doc before adding anything with a position, a lifetime, or a clock.
 
 ## Active / next

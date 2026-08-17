@@ -16,14 +16,14 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 
 | Section | Standing |
 |---|---|
-| The model, the ownership rules, the classification test | **Decided.** Change via §11. |
+| The model, the ownership rules, the classification test | **Decided.** Change via §12. |
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
 | Camera ownership | **Proven** — one owner per frame, with a cooperative path. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
 Last revised 2026-08-17, after the Pascal spike answered all five questions
-(`examples/pascal-spike/README.md`).
+(`examples/elastiq/README.md`).
 
 ---
 
@@ -180,7 +180,7 @@ export interface ObjectBindingResolver {
 }
 ```
 
-The adapter is four lines (`examples/pascal-spike/src/pascal-binding.ts`). `resolveAnimation`
+The adapter is four lines (`examples/elastiq/src/render/scene-binding.ts`). `resolveAnimation`
 returns null against Pascal: Pascal has no runtime `AnimationMixer` for its nodes, so every
 transform track over a Pascal node is absolute. **Consequence:** additive transform tracks —
 which exist to layer corrections over mixer output — have nothing to layer over on a Pascal
@@ -190,7 +190,7 @@ node. Skinned GLB clip playback stays this library's job, on objects it register
 > for a technical read (WebGPU, SSGI, inked edges, outlines) and its own canvas for a polished
 > one (HDRI, shadows, bloom, depth of field) — over the SAME document, with the same node kinds
 > and the same timeline, because the kinds ship their own renderers and the look lives in the
-> shell. Demonstrated both ways in `examples/pascal-spike` (`?mode=reading`). The cost is one
+> shell. Demonstrated both ways in `examples/elastiq` (`?mode=reading`). The cost is one
 > discipline: a node renderer must stay renderer-agnostic, or it breaks under the WebGPU shell.
 >
 > **The viewer is also optional entirely.** §5.3 and §5.4 describe
@@ -201,7 +201,7 @@ node. Skinned GLB clip playback stays this library's job, on objects it register
 > that is the right trade: Pascal's renderer is tuned for architectural legibility (SSGI, inked
 > edges, outlines) and has no bloom, depth of field, HDRI environment or transmission. Taking
 > core alone also retires the frame cap and the camera contest below. Demonstrated in
-> `examples/pascal-spike`.
+> `examples/elastiq`.
 
 ### 5.3 The frame loop — **proven, and constrained** (only when Pascal's viewer is mounted)
 
@@ -288,7 +288,7 @@ throw); it does **not** repair the reference.
 
 ## 7. Evidence
 
-From `examples/pascal-spike`, measured in system Chrome on WebGPU against Pascal's real viewer,
+From `examples/elastiq`, measured in system Chrome on WebGPU against Pascal's real viewer,
 probe mounted inside the viewer's frame loop.
 
 | Measurement | Result |
@@ -307,7 +307,7 @@ probe mounted inside the viewer's frame loop.
 | Pascal dirty-node count while driving | 0 |
 | Track directors over a Pascal-shaped registry | 4 tests green, including restore-on-leave |
 
-Reproduce: `pnpm --filter pascal-spike dev`, read the panel or `window.__spike`. Append
+Reproduce: `pnpm --filter elastiq dev`, read the panel or `window.__spike`. Append
 `?pokeDriven` for the R4 failure case.
 
 ---
@@ -345,9 +345,38 @@ Each measured while integrating; each will be paid again by the next person.
   0.185 is not assignable to Matrix4 from 0.181"*. Three is a singleton at the type level too.
 - **`process.env.NODE_ENV` needs a shim outside Next.** Pascal's published bundles read it at
   module scope and throw before first render without it.
-- **`@pascal-app/nodes` is bundler-only** — its dist uses directory imports, which plain Node
-  ESM rejects.
-- **`Viewer` is a named export in the published beta**, a default in the repo source.
+- **`@pascal-app/core` is bundler-only too, not just `/nodes`.** Its `dist/index.js` uses
+  directory imports (`./events/bus`), which plain Node ESM rejects. Under Vitest this is one
+  line — `server: { deps: { inline: [/@pascal-app\//] } }` — and it is worth knowing because it
+  turns Pascal's real store and real registry into things a headless test can drive, which is
+  strictly better evidence than a stand-in. Measured while building `Packages/pascal-time`.
+- **`@pascal-app/nodes` statically reaches `@pascal-app/editor`, which peers `next`.** Taking
+  Pascal's 46 built-in kinds means taking the editor package and Next 16 with them. Measured:
+  `import('@pascal-app/nodes')` executes `@pascal-app/editor/src/components/tools/select/
+  box-select-tool.tsx` before it yields a single export, 190 of the 616 files in its dist
+  import the editor, and adding it to a workspace package pulled in 109 further packages
+  including `next@16.3.1`. It is not tree-shakeable: `column/definition.js` statically imports
+  `./floorplan`, `./floorplan-affordances` and `./floorplan-move`, and all three import the
+  editor. **This contradicts the implementation plan's "a published presentation mounts core +
+  nodes + viewer + the timeline runtime only — no editor package"** — see §11.
+- **Node schemas live in core, definitions live in `/nodes`.** `@pascal-app/core` exports
+  `ColumnNode`, `WallNode` and every other built-in schema, so a genuine Pascal node can be
+  authored into the document without `/nodes` at all. Only its renderer, tool and panel need
+  the heavier package. This is what lets a test drive a real `column` while staying clear of
+  the editor dependency above.
+- **A third-party kind's node id does not type-check against the store.** `AnyNodeId` is a
+  template-literal union of `` `${builtinKind}_${string}` `` over Pascal's own kinds, so every
+  `createNode` / `deleteNode` / `nodes[id]` call from a plugin is a type error. Runtime is
+  unaffected — `BaseNode.id` is a plain `z.string()`, with a comment in Pascal's schema file
+  explaining that a narrower type breaks `.extend()` downstream. Cast once at the boundary;
+  `Packages/pascal-time/src/plugin/scene-ops.ts` is where ours lives. **Worth upstreaming** —
+  widening the store's id parameter to `string` would remove the shim for every plugin author.
+- **Dirty marking is deferred to `requestAnimationFrame`.** `updateNodesAction` batches marks
+  into one frame callback, so headlessly nothing is ever marked and a test asserting "driving
+  left the dirty set alone" passes while measuring nothing. Shim rAF and keep a control that
+  fails when the counters stop moving.
+- **`Viewer` and `useViewer` are named exports in the published beta**, defaults in the repo
+  source.
 - **Only the `1.0.0-beta.4` line is coherent** across core, viewer, and nodes.
 - **Pascal's default scene carries no geometry.** `item` needs a catalog asset; `column` is
   parametric and asset-free, which makes it the cheap thing to drive in a test.
@@ -371,7 +400,77 @@ Each measured while integrating; each will be paid again by the next person.
 
 ---
 
-## 11. Changing this document
+## 11. Recorded reversal — the runtime stack cannot exclude the editor package
+
+**Overturned:** implementation plan §0 principle 7, *"A published presentation mounts core +
+nodes + viewer + the timeline runtime only — no editor package, no gizmos, no placement tools,
+no inspector."*
+
+**What overturned it,** measured 2026-08-17 while building `Packages/pascal-time`:
+
+| Evidence | Result |
+|---|---|
+| `import('@pascal-app/nodes')` under Vitest | executes `@pascal-app/editor` source before returning any export |
+| Files in `@pascal-app/nodes/dist` importing `@pascal-app/editor` | 190 of 616 |
+| Static path from the package entry | `index.js` → `column/definition.js` → `column/floorplan.js` → `@pascal-app/editor` |
+| Packages added by declaring `@pascal-app/nodes` as a dependency | 109, including `next@16.3.1` |
+
+`@pascal-app/editor` also ships raw TypeScript source rather than a build — 438 `.tsx` files,
+`next >= 15` as a peer and imported in 26 of them — so a consumer's bundler compiles it, with
+the automatic JSX runtime, or the import fails.
+
+**Why it is like this, and why lazy-loading cannot help.** A Pascal node definition bundles a
+kind's authoring affordances with its runtime shape — placement tool, floorplan move target,
+inspector parametrics and renderer all hang off one definition object. Importing the kind
+therefore imports the editor. That is coherent for Pascal and hostile to a runtime-only
+consumer, and because the references are static there is nothing to defer.
+
+### The viewer is clean — measured 2026-08-17
+
+The question that decides whether the runtime has a path at all: does `@pascal-app/viewer`
+reach the editor too? **It does not.**
+
+| Measurement | Result |
+|---|---|
+| Files in `@pascal-app/viewer/dist` importing `@pascal-app/editor` | **0** of 92 |
+| Files importing `@pascal-app/nodes` | **0** — the five textual hits are comments and one warning string |
+| Files importing `next` | **0** |
+| Viewer's complete external import surface | `@pascal-app/core`, `@react-three/drei`, `@react-three/fiber`, `react`, `three`, `three-bvh-csg`, `three-mesh-bvh`, `zustand` |
+
+End to end rather than by inspection: `examples/pascal-time-harness` declares only
+`@pascal-app/core` and `@pascal-app/viewer`, resolves neither `@pascal-app/nodes` nor
+`@pascal-app/editor` — and `next` appears nowhere in the lockfile — yet it builds and runs
+Pascal's real `<Viewer>` on WebGPU for 560 frames.
+
+**So `/nodes` is the only offender.** The runtime keeps Pascal's renderer; what it cannot keep
+is Pascal's parametric *kinds*. That confines the problem to the scene vocabulary and, crucially,
+keeps M2 out of it: the "one renderer" premise survives, and the two-renderer fallback is not
+forced by this finding.
+
+*Packaging wart, noted in passing:* the viewer ships 15 `.test.js` files in its dist that import
+`bun:test`. None is reachable from `index.js`, so they are dead weight rather than a load path.
+
+**What stands.** The *intent* behind the principle is sound and unchanged: the timeline runtime
+must not import `@pascal-app/editor`, and `@huma/pascal-time` does not. Its authoring surface
+(the M1.3 panel) goes behind a separate `./editor` entry for exactly this reason.
+
+**What changes.** The claim that a published presentation carrying Pascal's built-in kinds pays
+no editor cost is false at `1.0.0-beta.4`. Three options, none yet chosen:
+
+1. **Don't ship Pascal's built-in kinds in the runtime.** Products whose scene vocabulary is
+   their own — which is what the elastiq prototype already does, and what the pascal-time
+   harness does — never import `/nodes` and pay nothing. Cheapest, and it costs the 46
+   architectural kinds.
+2. **Upstream the split.** Move the authoring-only files (`tool`, `panel`, `floorplan*`,
+   `move-tool`, `preview`) behind lazy boundaries or a separate entry so `/nodes` can be
+   imported for schemas and renderers alone. This is a Pascal-side change and the plan's own
+   working agreement says to upstream what is general rather than carry a patch.
+3. **Accept the bundle.** Measure it before choosing it; nobody has.
+
+Nothing in M1.1 or M1.2 depends on the answer — neither takes `/nodes`. **M1.3 onward does**,
+because a published presentation of a Pascal-authored building needs walls to render.
+
+## 12. Changing this document
 
 The rules in §3 and the test in §4 are the stable part. Change them by recording, here, what new
 evidence overturned the reason attached to the rule — not by editing the rule silently. Sections

@@ -8,11 +8,11 @@ Read ELASTIQ-SYSTEM.md first for what is being built and why; this doc is how.
 
 # elastiq system — implementation plan v1
 
-**Status:** plan. No phase is started.
+**Status:** in progress. M0.4, M1.1 and M1.2 are done (2026-08-17); everything else is plan.
 **Design:** [`../technical/ELASTIQ-SYSTEM.md`](../technical/ELASTIQ-SYSTEM.md) (what and why)
 and [`../technical/INTEGRATION-DESIGN.md`](../technical/INTEGRATION-DESIGN.md) (the ownership
 rules and the measurements behind them).
-**Proof:** `examples/pascal-spike/README.md` — the spike that answered whether any of this works,
+**Proof:** `examples/elastiq/README.md` — the spike that answered whether any of this works,
 with reproducible numbers.
 
 ---
@@ -20,7 +20,7 @@ with reproducible numbers.
 ## 0. Orientation — read this before touching anything
 
 You are building **one system out of three parts**. If you take nothing else from this document,
-take these six things.
+take these seven things.
 
 **1. Three layers, two seams.** Pascal owns *space* (what exists, where). path-creator owns
 *time* (when it moves). elastiq owns *narrative and delivery* (slides, graph, publishing). Space
@@ -55,10 +55,20 @@ called `Cover` collide, and array clones collide with themselves.
 
 **7. Authoring and runtime are different stacks.** The editor is a tool; the presentation is the
 product. Authoring mounts `@pascal-app/core` + `/nodes` + `/viewer` + `/editor` plus our timeline
-plugin and its panel. **A published presentation mounts core + nodes + viewer + the timeline
-*runtime* only** — no editor package, no gizmos, no placement tools, no inspector. Same scene
-document, same renderer, same timeline evaluation; a fraction of the bundle. Every phase below
-must state which stack it touches, and nothing in the runtime path may import from `/editor`.
+plugin and its panel. **Nothing we write in the runtime path may import from `/editor`** —
+`@huma/pascal-time` keeps its authoring surface behind a separate entry for this reason. Every
+phase below must state which stack it touches.
+
+> **Corrected 2026-08-17, M1.2.** This principle originally claimed a published presentation
+> mounts "core + nodes + viewer + the timeline runtime only — no editor package". That is false
+> at `1.0.0-beta.4`: `@pascal-app/nodes` reaches `@pascal-app/editor` through a static import
+> chain, and the editor peers `next`. Measured — `import('@pascal-app/nodes')` executes editor
+> source before yielding an export, 190 of its 616 dist files import the editor, and declaring
+> it as a dependency pulled in 109 packages including `next@16.3.1`. The rule about *our* code
+> stands; the claim about bundle size does not. Options and their costs are recorded in
+> `INTEGRATION-DESIGN.md` §11. **Nothing in M1 before M1.3 is affected** — neither M1.1 nor
+> M1.2 takes `/nodes`, and Pascal's built-in node *schemas* are exported by `core`, so a real
+> Pascal node can be authored and driven without the editor dependency at all.
 
 **This is a deployment boundary, not only an import boundary** — `@pascal-app/editor` ships
 unbuilt TypeScript with a `next >= 15` peer, so authoring runs as a Next app and elastiq's Vite
@@ -86,8 +96,8 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M0.3 security + authoring app auth | **L** | both | — | Blocks external launch. Now also covers the separate editor app's identity — §0b. |
 | M0.4 typecheck gap | S | — | — | Two lines per example. Hid a broken commit for four commits. |
 | M0.5 asset pipeline | M | both | M0.2 | M3.1 cannot ship without it. |
-| M1.1 plugin skeleton | S | authoring | M0.1 | |
-| M1.2 binding + tracks | M | both | M1.1 | Adapter is proven; the work is track coverage. |
+| M1.1 plugin skeleton | S | authoring | M0.1 | **Done** 2026-08-17. |
+| M1.2 binding + tracks | M | both | M1.1 | **Done** 2026-08-17. |
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
 | M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
@@ -152,8 +162,82 @@ pick. We contain the coupling instead.
 Pascal's editor with our plugin loaded through their `setPluginDiscovery` hook — the mechanism
 their plugin docs describe for exactly this — rather than us standing up bespoke Next scaffolding.
 
-**Presentation stays elastiq unchanged.** Vite, mounting core + nodes + viewer + the timeline
-*runtime*. No editor package, therefore no Next, therefore no framework collision.
+**Presentation stays elastiq unchanged** — Vite, mounting the timeline runtime over Pascal's
+renderer.
+
+> **Correction, measured during M1.1.** An earlier version of this section claimed the runtime
+> escapes Next by simply not importing the editor. **It does not.** Importing `@pascal-app/nodes`
+> executes editor source before it returns an export — **190 of its 616 built files import the
+> editor**, the chain is static so no lazy-loading on our side avoids it, and declaring the
+> dependency pulls in 109 packages including Next 16. The cause is by design: a Pascal node
+> definition bundles its authoring affordances (placement tools, floorplan move targets, inspector
+> parametrics) with its runtime shape, so importing a kind imports the editor.
+>
+> **The two-app topology above is unaffected and still correct.** What fails is only the idea that
+> the runtime stays Next-free by keeping the editor out of its own import list.
+>
+> **Unresolved — decided at M1.3, deliberately not before.** Two candidate answers, and the
+> measurement that settles them needs a real baked scene, which needs the nodes package installed,
+> which is M1.3 work. Do not reason about it earlier:
+>
+> - **Bake.** Pascal's GLB export stamps node identity into glTF `name` and `extras` expressly so
+>   *"selection/hover survive the bake with no in-memory registry"*, and it has a `BakePolicy` of
+>   `static | strip | replace` plus a baked-viewer concept. That drops `nodes`, the editor and Next
+>   out of the runtime entirely; the binding adapter resolves ids against a map built from the
+>   baked glTF instead of `sceneRegistry` — same interface, different source. **The cost is that
+>   animation on a baked mesh is limited to transform and visibility.** No parametric animation: a
+>   wall can move into place, but it cannot build itself.
+> - **Ask upstream to split `nodes`** into runtime (schema, renderer, geometry) and authoring
+>   (tools, affordances, parametrics) halves. Same shape as the frame-rate seam, much larger
+>   refactor on their side, real latency.
+>
+> **The product question underneath, and it is Steffen's:** does the vision need parametric
+> animation, or is transform-and-visibility enough? That decides bake versus split.
+>
+> **Also still unmeasured:** whether `@pascal-app/viewer` statically reaches the editor too. If it
+> does, the runtime cannot mount Pascal's renderer at all and this cascades into M2's one-renderer
+> decision, collapsing it toward the two-renderer fallback. Measure it alongside the bake test.
+
+> **This paragraph does not hold as written, measured 2026-08-17 during M1.2.** Mounting
+> `@pascal-app/nodes` *does* bring `@pascal-app/editor`, and therefore Next, into the Vite
+> bundle. `import('@pascal-app/nodes')` executes editor source before yielding a single export;
+> 190 of its 616 dist files import the editor; `column/definition.js` statically imports
+> `./floorplan`, `./floorplan-affordances` and `./floorplan-move`, and all three import the
+> editor; declaring the dependency pulled in 109 packages including `next@16.3.1`. It is a
+> static graph, so no amount of lazy-loading on our side avoids it.
+>
+> The two-app topology above is unaffected — it is still right, and for the reasons given. What
+> fails is only the claim that the *runtime* app escapes the editor dependency by leaving
+> `/editor` out of its own imports. Three ways out, none chosen:
+>
+> 1. **The runtime does not mount `/nodes`.** Correct today for a product whose scene vocabulary
+>    is its own — the elastiq prototype and the pascal-time harness both do exactly this and pay
+>    nothing. It costs Pascal's 46 architectural kinds, so a *Pascal-authored building* would not
+>    render. Fine for M1; not fine for the buildings this system is for.
+> 2. **Publish through Pascal's bake.** Pascal already has a runtime path that does not need the
+>    `/nodes` renderers: `def.bake` (`static` / `strip` / `replace`), `exportSceneToGlb`, and the
+>    `GlbScene` / `buildGlbReferenceNodes` surface `@pascal-app/viewer` exports for exactly this.
+>    The published artifact becomes baked geometry plus live nodes for the kinds that need them.
+>    **This is probably the answer** — it is Pascal's own, it needs no upstream change, and it
+>    suits a presentation runtime better than shipping a parametric editor. It also interacts
+>    with M1.6 and M3.1: what gets baked, and what the timeline still binds to by id afterwards.
+>    Nobody has measured it.
+> 3. **Upstream the split** — move `tool`, `panel`, `floorplan*`, `move-tool` and `preview` in
+>    `/nodes` behind lazy boundaries so schemas and renderers can be imported alone. General
+>    enough to be welcome upstream, but it is a change to someone else's package on their
+>    schedule, so it cannot be depended on.
+>
+> **The viewer is clean — measured, and it bounds the blast radius.** `@pascal-app/viewer`
+> imports the editor in 0 of its 92 dist files, imports `/nodes` in 0 (the textual hits are
+> comments), and imports `next` in 0. Its entire external surface is core, drei, fiber, react,
+> three, two three-mesh libraries and zustand. End to end: `examples/pascal-time-harness`
+> resolves only core and viewer, has no `next` in the lockfile at all, and still runs Pascal's
+> real `<Viewer>` on WebGPU for 560 frames. **`/nodes` is the only offender**, so the runtime
+> keeps Pascal's renderer and loses only Pascal's parametric kinds — which means **M2's "one
+> renderer" premise is not threatened by this** and the two-renderer fallback is not forced.
+>
+> Full evidence in `INTEGRATION-DESIGN.md` §11. **Decide before M3.2**, which is the first phase
+> where a published presentation has to render a Pascal-authored scene.
 
 **In-product, the editor is an iframe — and this is not a compromise.** Elastiq already does it:
 its 3D scene editor opens in a separate tab and rounds its config back over a `BroadcastChannel`
@@ -295,7 +379,8 @@ is wrong, not the rule.
 
 ### Pascal plugin traps — read before writing a single kind
 
-These are measured, and each one fails **silently**. All were hit during the spike.
+These are measured, and each one fails **silently**. 1-9 were hit during the spike; 10-14 were
+found building `Packages/pascal-time` in M1.1/M1.2 and are recorded nowhere else.
 
 1. **`def.renderer` must be a `RendererSource`**, i.e. `{ kind: 'parametric', module: () =>
    import('./x') }` where the module has a **default export**. A direct component reference is
@@ -318,18 +403,55 @@ These are measured, and each one fails **silently**. All were hit during the spi
    with no architectural home does not need one.
 9. If your workspace uses `exactOptionalPropertyTypes`, Pascal's published definition types will
    not satisfy it. Cast once at the boundary and comment why.
+10. **A plugin kind's node id cannot type-check against the store.** `AnyNodeId` is a
+    template-literal union of `` `${builtinKind}_${string}` `` over Pascal's own 46 kinds, so
+    every `createNode` / `deleteNode` / `nodes[id]` call from a plugin is a type error. Runtime
+    is unaffected — `BaseNode.id` is a plain `z.string()`. Cast once; see
+    `Packages/pascal-time/src/plugin/scene-ops.ts`. **Worth upstreaming.**
+11. **`loadPlugin` is declared `async` but registers synchronously** (no `await` before the
+    registration loop), so callers need not await it — but an `apiVersion` mismatch throws
+    *inside the returned promise* and, unawaited, becomes an unhandled rejection pointing
+    nowhere. Attach a handler.
+12. **`setInstalledPlugins` replaces the list; it does not append.** Two plugins that each call
+    it with only their own id leave the first silently uninstalled. Merge.
+13. **`@pascal-app/core` is bundler-only too**, not just `/nodes` — same directory-import
+    problem. Under Vitest, `server: { deps: { inline: [/@pascal-app\//] } }` fixes it, and the
+    payoff is large: tests then run against Pascal's **real** store and registry rather than a
+    stand-in. Take this route; it is strictly better evidence than the spike had.
+14. **Dirty marking is deferred to `requestAnimationFrame`.** Headlessly nothing is ever marked,
+    so "driving left the dirty set alone" passes while measuring nothing. Shim rAF and keep a
+    control assertion that fails when the counters stop moving.
 
-### M1.1 — Plugin skeleton
+### M1.1 — Plugin skeleton — **DONE** (2026-08-17)
 
 Manifest, one trivial node kind, registered and rendering. Proves the loop before anything
-depends on it. Reference implementation: `examples/pascal-spike/src/document/scene-plugin.ts`.
+depends on it. Reference implementation: `examples/elastiq/src/document/scene-plugin.ts`.
 
 **Done when:** the kind appears in Pascal's registry, places, renders, selects and deletes.
+
+**Delivered** as `Packages/pascal-time`, contributing `huma-time:timeline` — the scene's clock.
+It has no position deliberately: under the classification test a node earns a place in space by
+being placed by a person, and a clock is not, so it is an organisational kind in the same class
+as Pascal's own site/building/level (`dirtyTracking: false`, `hitVolume: 'none'`).
+
+*Reading of the done-criterion, agreed with the product owner:* "in Pascal's editor" means the
+lifecycle works through **Pascal's machinery**, not that `@pascal-app/editor` is mounted. That
+package ships raw TSX source (438 files, `next >= 15` peer, imported in 26 of them), so mounting
+it would front-load all of M1.3's integration cost into a phase sized at a day. Exercised
+instead through the scene store and the viewer's selection state, with the capability flags the
+editor's chrome reads asserted directly.
+
+**Evidence** — 15 headless tests against Pascal's real registry and store, plus 13 browser
+checks in `examples/pascal-time-harness` (system Chrome, WebGPU, Pascal's real `<Viewer>`):
+registry contains the kind; the node renders through Pascal's own dispatch (proven by its
+appearance in `sceneRegistry`, which only a mounted renderer writes); `useViewer` selection
+accepts it and resolves 2 live objects; delete unmounts the renderer and clears the registry
+entry; undo remounts it and puts the object back.
 
 ### M1.2 — The binding adapter and track driving
 
 Wrap `sceneRegistry` as path-creator's `ObjectBindingResolver` (four lines — see
-`examples/pascal-spike/src/render/scene-binding.ts`) and drive transform and visibility tracks
+`examples/elastiq/src/render/scene-binding.ts`) and drive transform and visibility tracks
 over Pascal nodes.
 
 **Known and expected:** Pascal has no runtime `AnimationMixer` for its nodes, so
@@ -339,6 +461,29 @@ objects it registers itself.
 
 **Done when:** a keyframed track moves a Pascal-authored object, scrubs deterministically, and
 restores the pre-drive pose on leave. Assert undo depth and dirty-node count are unchanged.
+
+**Delivered.** `pascalObjectBinding` / `pascalSceneBinding` and `PascalNodeDriver`.
+
+| Measurement | Headless | Browser (Pascal's viewer, WebGPU) |
+|---|---|---|
+| Frames driven | 2000 | 560 at 43.8 fps |
+| Undo depth grown by driving | 0 | 0 (5 → 5) |
+| Dirty-node count grown by driving | 0 | 0 (3 → 3) |
+| Frames where our write was overwritten | — | 0 |
+| Worst drift | — | 0.00000 m |
+| Pre-drive pose restored on release | exact | exact (0 m) |
+
+Determinism is asserted directly rather than implied: poses sampled forward across the timeline
+equal poses sampled backward, key for key. A marker named by no track never moved.
+
+Both suites carry a **control** — one ordinary `updateNode` must move undo depth by exactly 1
+and put the node in the dirty set. It is not ceremony: the first version of the dirty assertion
+passed while measuring nothing, because Pascal defers marking to an animation frame that Node
+does not have (trap 14), and the control is what caught it.
+
+The headless suite drives a genuine Pascal `column`, authored from Pascal's own schema. Built-in
+node *schemas* are exported by `@pascal-app/core`; only their renderers and tools live in
+`/nodes`, so a real Pascal kind can be driven without the editor dependency of §0 principle 7.
 
 ### M1.3 — Timeline authoring UI inside the editor
 
@@ -394,7 +539,7 @@ viewport camera does not fight it.
 
 Named timestamps as first-class data, plus the transport that rides the clock between them.
 
-A working implementation with tests exists at `examples/pascal-spike/src/document/cues.ts` —
+A working implementation with tests exists at `examples/elastiq/src/document/cues.ts` —
 cue lookup at, before and after a time, and a ride that lands exactly on the cue, replaces a ride
 in flight **from the current clock rather than the old origin**, and treats zero duration as an
 immediate seek. Promote it into `@huma/path-creator/timeline`.
@@ -702,7 +847,7 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 - **Keep the seams.** If a change requires the time layer to know about a specific node kind, or a
   slide to reference scene contents, stop and escalate — that is the architecture eroding.
 - **Prove it with a measurement, not an assertion.** The spike's pattern: instrument the thing,
-  drive it headlessly in real Chrome, report a number. `examples/pascal-spike` has the harness.
+  drive it headlessly in real Chrome, report a number. `examples/elastiq` has the harness.
 - **Upstream what is general.** Pascal is MIT and moves fast. A patch we carry is a cost forever;
   a merged PR is not.
 - **Record reversals.** If evidence overturns a rule, change the rule *and* write down what
@@ -711,6 +856,27 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 ## Open decisions, owned by the product owner
 
 1. **Clone versus timeline references** (M1.6) — the hardest unsolved problem on the boundary.
+   Pascal's `cloneNodesInto` mints fresh ids, which is what a prefab needs and what a timeline
+   reference cannot survive.
+
+   **Recommendation: remap on clone.** When a subtree is duplicated, duplicate any tracks
+   referencing nodes inside it and rewrite the object ids. Matches naive expectation, adds no new
+   concepts, lives entirely in our plugin. Its weakness arrives late: N copies means N track sets.
+
+   *Upgrade path, not the start:* **binding indirection** — tracks reference a slot, instances map
+   slots to ids, one track set drives N instances. Correct at scale, more machinery than the
+   problem currently justifies, and remapping does not block moving here later.
+
+   *Ruled out on principle:* **relative paths within the subtree**. It resolves clones without
+   remapping and breaks on rename and reparent — name-keying returning through a side door, which
+   is the exact defect this design exists to remove. Least code, wrong answer.
+
+   *Fallback if remapping proves unimplementable:* drop tracks on clone with a warning.
+
+   **Implementation risk to check when M1.6 starts:** whether Pascal's clone is observable to a
+   plugin. `cloneNodesInto` is on `SceneApi` and core depends on `mitt`, so an event may exist. If
+   clone is neither observable nor wrappable, remapping needs an upstream hook, and that latency
+   changes the recommendation.
 2. **Deck schema** (M3.1) — keep React Flow's node/edge shape verbatim, or give the deck its own
    schema with React Flow as a view over it.
 3. **Where the authoring app lives and how it authenticates** (§0b) — subdomain, path, or

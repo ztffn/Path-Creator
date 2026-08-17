@@ -2,7 +2,7 @@
 Purpose: The presentation prototype — a Pascal-owned scene of GLBs and hotspots driven by
 a path-creator timeline where slides are timestamps — plus the findings log from the spike
 that established the boundary it is built on.
-Scope: examples/pascal-spike. The scene kinds, the cue transport and the binding adapter
+Scope: examples/elastiq. The scene kinds, the cue transport and the binding adapter
 have promotion paths; the probe harness that answered Q1-Q5 has been removed now that the
 answers are recorded below.
 -->
@@ -11,7 +11,7 @@ answers are recorded below.
 
 ## What this runs
 
-`pnpm --filter pascal-spike dev`. Three GLBs placed in a Pascal scene, a hotspot marker beside
+`pnpm --filter elastiq dev`. Three GLBs placed in a Pascal scene, a hotspot marker beside
 each, and four cues. **Arrow keys or the buttons move between slides; clicking a marker jumps to
 its slide.**
 
@@ -24,10 +24,10 @@ camera and everything else for free. There is no separate transition system to b
 |---|---|
 | `scene-kinds.ts` | The product's node vocabulary: a GLB at a transform, and a hotspot. |
 | `scene-plugin.ts` | Those kinds as one Pascal plugin manifest. |
-| `glb-model-renderer.tsx` / `hotspot-renderer.tsx` | Their renderers; `useRegistry` is what makes them timeline-drivable. |
+| `model-renderer.tsx` / `hotspot-renderer.tsx` | Their renderers; `useRegistry` is what makes them timeline-drivable. |
 | `cues.ts` | Slides as timestamps, and the ride that animates the clock between them. |
-| `presentation-scene.ts` | The authored content — scene above the line, cues and shots below it. |
-| `pascal-binding.ts` | Pascal's registry as a path-creator `ObjectBindingResolver`. |
+| `presentation.ts` | The authored content — scene above the line, cues and shots below it. |
+| `src/render/scene-binding.ts` | Pascal's registry as a path-creator `ObjectBindingResolver`. |
 
 ## Two shells, one document — `?mode=reading`
 
@@ -114,7 +114,7 @@ export interface ObjectBindingResolver {
 }
 ```
 
-So the adapter is nearly trivial (`src/pascal-binding.ts`). The spike is not about whether
+So the adapter is nearly trivial (`src/render/scene-binding.ts`). The spike is not about whether
 that adapter compiles — it is about whether the two systems can write to the same objects
 without fighting.
 
@@ -125,7 +125,7 @@ Each is falsifiable. Record the answer in **Findings** below, including the ones
 - **Q1 — Does the binding hold?** Can `TransformTrackDirector` and
   `ActivationTrackDirector` drive objects registered in `sceneRegistry`, including
   restoring the pre-drive pose on leave? *Headless, cheap, decisive.*
-  Run: `pnpm --filter pascal-spike test`.
+  Run: `pnpm --filter elastiq test`.
 
 - **Q2 — Does Pascal fight us?** With the real viewer mounted, does writing an
   `Object3D`'s transform every frame survive Pascal's own render pass, and does it leave
@@ -174,14 +174,14 @@ the cost of one aligned version bump. **Neither kill criterion fired.**
 
 ### Q1 — Does the binding hold? **Yes.** (2026-08-17)
 
-The adapter is four lines (`src/pascal-binding.ts`). Against a registry with Pascal's exact
+The adapter is four lines (`src/render/scene-binding.ts`). Against a registry with Pascal's exact
 contract, `TransformTrackDirector` and `ActivationTrackDirector` both drive objects by node
 id, and both hand the pose back untouched when the timeline is left — which matters, because
 otherwise scrubbing would silently rewrite the scene editor's idea of where things sit. A
 node deleted out from under a live track does not throw, which it must not: the scene editor
 owns the lifecycle, so nodes can vanish under tracks that still reference them.
 
-Four tests, `pnpm --filter pascal-spike test`. Note this proves the *contract*, not
+Four tests, `pnpm --filter elastiq test`. Note this proves the *contract*, not
 coexistence — it runs against a stand-in map, so nothing else is competing for the objects.
 
 **Caveat found while writing it:** Pascal has no runtime `AnimationMixer` for its nodes (its
@@ -211,7 +211,7 @@ library's declared support changed. That bump is applied on this branch.
 ### Q2 — Does Pascal fight us? **No. 1 drifted frame in 2220.** (2026-08-17)
 
 Measured against the real `<Viewer>` in system Chrome on WebGPU, with the probe mounted as a
-Viewer child so it shares Pascal's own frame loop. `pnpm --filter pascal-spike dev`, then
+Viewer child so it shares Pascal's own frame loop. `pnpm --filter elastiq dev`, then
 read the panel or `window.__spike`.
 
 | | |
@@ -294,8 +294,8 @@ a conflict.
 
 ### Q4 — Can a hotspot be a Pascal plugin node kind? **Yes, end to end.** (2026-08-17)
 
-Built as a real third-party plugin (`src/hotspot-plugin.ts`, `hotspot-schema.ts`,
-`hotspot-renderer.tsx`) — its own manifest, its own Zod schema extending `BaseNode`, its own
+Built as a real third-party plugin (`src/document/scene-plugin.ts`, `scene-kinds.ts`,
+`src/render/hotspot-renderer.tsx`) — its own manifest, its own Zod schema extending `BaseNode`, its own
 renderer — loaded through the documented `loadPlugin`, not a shortcut. Measured in the running
 viewer:
 

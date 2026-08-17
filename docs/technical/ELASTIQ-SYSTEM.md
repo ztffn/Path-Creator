@@ -10,7 +10,7 @@ the detailed ownership rules this doc summarises. Scope: cross-repo product arch
 
 **Status:** design, agreed in outline. Sections marked *decided* are settled; *open* means it
 needs a call before the work it gates. Written 2026-08-17 after a spike that measured the
-Pascal/path-creator seams end to end (`examples/pascal-spike`) and a survey of elastiq's current
+Pascal/path-creator seams end to end (`examples/elastiq`) and a survey of elastiq's current
 implementation and docs.
 
 ---
@@ -333,7 +333,7 @@ plays back deterministically.
 
 *Already proven:* the object binding (a four-line adapter over Pascal's registry), per-frame
 driving without touching undo, camera ownership, and a working custom node kind end to end. See
-`examples/pascal-spike`.
+`examples/elastiq`.
 
 ### Phase 2 — Rendering
 
