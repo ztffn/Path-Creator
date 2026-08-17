@@ -3,13 +3,21 @@
 // the numbers that matter are on `window.__pascalTime`, which `measure.mjs` reads headlessly.
 // Nothing here is product code — this exists to make M1.1 and M1.2 measurable.
 // Scope: harness shell.
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Viewer } from "@pascal-app/viewer";
+import { CameraControls } from "@react-three/drei";
+import type { CameraControlsLike } from "@huma/pascal-time";
 import { buildHarnessScene } from "./scene";
 import { Probe, type HarnessReport } from "./probe";
 
 export default function App() {
   const [ready, setReady] = useState(false);
+  /**
+   * The real drei `CameraControls`, mounted deliberately. R9 is a rule about what happens when
+   * a controller is present, so measuring it against a stand-in would measure the stand-in.
+   * Pascal's own editor mounts this same component, which is what makes this the real contest.
+   */
+  const controls = useRef<CameraControlsLike | null>(null);
   const [report, setReport] = useState<HarnessReport | null>(null);
 
   useEffect(() => {
@@ -26,7 +34,10 @@ export default function App() {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0e1116" }}>
-      <Viewer>{ready ? <Probe /> : null}</Viewer>
+      <Viewer>
+        <CameraControls ref={controls as never} makeDefault />
+        {ready ? <Probe controls={controls} /> : null}
+      </Viewer>
 
       <div
         style={{

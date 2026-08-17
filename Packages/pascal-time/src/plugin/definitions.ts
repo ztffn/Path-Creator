@@ -4,7 +4,9 @@
 // `loadPlugin`, the plugin id must be installed on the scene, and the whole thing must run at
 // module import time. Scope: the Pascal-facing boundary; nothing in here knows about time.
 import type { NodeDefinition, Plugin } from "@pascal-app/core";
-import { CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, TIMELINE_KIND, TimelineNode } from "./kinds";
+import {
+  CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, SHOT_KIND, ShotNode, TIMELINE_KIND, TimelineNode
+} from "./kinds";
 
 /**
  * Cast at the boundary, once, deliberately. This workspace compiles with
@@ -80,10 +82,49 @@ export const cueDefinition = {
 } as unknown as NodeDefinition<typeof CueNode>;
 
 /**
+ * The shot: the one kind here an author places, so the one with a position, a renderer, a
+ * gizmo and ordinary spatial capabilities. It parents where spatial things parent — not under
+ * the timeline — which is both correct under the classification test and the reason it dodges
+ * the container problem in trap 11.
+ */
+export const shotDefinition = {
+  kind: SHOT_KIND,
+  schemaVersion: 1,
+  schema: ShotNode,
+  category: "analysis",
+  defaults: () => ({
+    object: "node" as const,
+    parentId: null,
+    visible: true,
+    metadata: {},
+    timelineId: "",
+    timeSeconds: 0,
+    blendSeconds: 1,
+    body: "static" as const,
+    position: [0, 2, 6] as [number, number, number],
+    rotationDeg: [0, 0, 0] as [number, number, number],
+    targetNodeId: "",
+    targetPoint: [0, 0, 0] as [number, number, number],
+    azimuthDeg: 25,
+    elevationDeg: 18,
+    radius: 8,
+    fov: 50
+  }),
+  renderer: { kind: "parametric", module: () => import("../render/shot-renderer") },
+  capabilities: {
+    selectable: { hitVolume: "bbox" },
+    movable: { axes: ["x", "y", "z"] as const },
+    rotatable: {},
+    deletable: true,
+    duplicable: true
+  }
+} as unknown as NodeDefinition<typeof ShotNode>;
+
+/**
  * The manifest. `apiVersion` is Pascal's plugin contract version, not ours.
  */
 export const pascalTimePlugin: Plugin = {
   id: PASCAL_TIME_PLUGIN_ID,
   apiVersion: 1,
-  nodes: [timelineDefinition as never, cueDefinition as never]
+  nodes: [timelineDefinition as never, cueDefinition as never, shotDefinition as never]
 };

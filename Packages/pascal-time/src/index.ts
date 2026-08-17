@@ -6,22 +6,30 @@
 export {
   CUE_KIND,
   CueNode,
+  SHOT_KIND,
+  ShotNode,
   PASCAL_TIME_PLUGIN_ID,
   TIMELINE_KIND,
   TimelineNode,
   type CueNodeType,
+  type ShotNodeType,
   type TimelineNodeType
 } from "./plugin/kinds";
-export { cueDefinition, pascalTimePlugin, timelineDefinition } from "./plugin/definitions";
+export {
+  cueDefinition, pascalTimePlugin, shotDefinition, timelineDefinition
+} from "./plugin/definitions";
 export { installPascalTimeOnScene, registerPascalTimeKinds } from "./plugin/install";
 export {
   buildCueNode,
+  buildShotNode,
   buildTimelineNode,
   createPluginNode,
   deletePluginNode,
   newPascalTimeNodeId,
   readCues,
-  readPluginNode
+  readPluginNode,
+  readShots,
+  type Shot
 } from "./plugin/scene-ops";
 export {
   pascalObjectBinding,
@@ -29,3 +37,11 @@ export {
   type PascalSceneRegistryLike
 } from "./bind/scene-binding";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
+export {
+  PascalCameraDirector,
+  pascalTargetContext,
+  resolveShotAt,
+  type CameraControlsLike,
+  type CameraSyncOptions,
+  type ShotResolution
+} from "./drive/camera-director";

@@ -5,7 +5,8 @@
 // the cast, explain it, and mint ids in the shape Pascal's own kinds use.
 import { generateId, nodeRegistry, useScene } from "@pascal-app/core";
 import type { Cue } from "@huma/path-creator/timeline";
-import { CUE_KIND, TIMELINE_KIND } from "./kinds";
+import type { VirtualCameraDefinition } from "@huma/path-creator/core";
+import { CUE_KIND, SHOT_KIND, TIMELINE_KIND } from "./kinds";
 
 /**
  * `BaseNode.id` is a plain `z.string()` at runtime — Pascal's own schema file says so, with a
@@ -115,3 +116,107 @@ export function readCues(timelineId?: string): Cue[] {
   }
   return cues;
 }
+
+/** A shot node with this plugin's defaults. */
+export function buildShotNode(
+  overrides: Record<string, unknown> & { id?: string } = {}
+): SceneNodeInput {
+  const definition = nodeRegistry.get(SHOT_KIND);
+  if (!definition) {
+    throw new Error(
+      `[pascal-time] ${SHOT_KIND} is not registered — call registerPascalTimeKinds() at module import time`
+    );
+  }
+  return {
+    ...definition.defaults(),
+    id: overrides.id ?? newPascalTimeNodeId(),
+    type: SHOT_KIND,
+    ...overrides
+  } as SceneNodeInput;
+}
+
+/** A shot as the time layer sees it: a camera, when it takes over, and how long it takes. */
+export interface Shot {
+  id: string;
+  name: string;
+  time: number;
+  blendSeconds: number;
+  definition: VirtualCameraDefinition;
+}
+
+const degToRad = (degrees: number): number => (degrees * Math.PI) / 180;
+
+/**
+ * Euler degrees to a quaternion, in three.js's default YXZ-free XYZ order. Written out rather
+ * than pulled from three so this module stays free of a runtime three import — the package's
+ * only three usage is in renderers, and keeping it that way means the document layer can be
+ * read on a server.
+ */
+function quaternionFromEulerDeg(
+  [x, y, z]: readonly [number, number, number]
+): [number, number, number, number] {
+  const [cx, cy, cz] = [Math.cos(degToRad(x) / 2), Math.cos(degToRad(y) / 2), Math.cos(degToRad(z) / 2)];
+  const [sx, sy, sz] = [Math.sin(degToRad(x) / 2), Math.sin(degToRad(y) / 2), Math.sin(degToRad(z) / 2)];
+  return [
+    sx * cy * cz + cx * sy * sz,
+    cx * sy * cz - sx * cy * sz,
+    cx * cy * sz + sx * sy * cz,
+    cx * cy * cz - sx * sy * sz
+  ];
+}
+
+/**
+ * The scene document's shots, as the time layer's camera definitions.
+ *
+ * The virtual camera's id is the node id — so a shot is addressed exactly like every other
+ * node, and an orbit body that names `targetNodeId` is naming a node id too. That is the whole
+ * seam: the camera frames a thing by identity, so moving the thing re-frames the shot with no
+ * timeline edit at all.
+ *
+ * Returned in document order; the director sorts by time itself.
+ */
+export function readShots(timelineId?: string): Shot[] {
+  const nodes = useScene.getState().nodes as Record<string, Record<string, unknown>>;
+  const shots: Shot[] = [];
+
+  for (const node of Object.values(nodes)) {
+    if (node.type !== SHOT_KIND) continue;
+    if (timelineId !== undefined && node.timelineId !== timelineId) continue;
+
+    const id = node.id as string;
+    const position = node.position as [number, number, number];
+    const fov = node.fov as number;
+
+    const body: VirtualCameraDefinition["body"] =
+      node.body === "orbit"
+        ? {
+            type: "orbit",
+            target:
+              (node.targetNodeId as string)
+                ? { targetId: node.targetNodeId as string }
+                : vec3Of(node.targetPoint as [number, number, number]),
+            azimuthDeg: node.azimuthDeg as number,
+            elevationDeg: node.elevationDeg as number,
+            radius: node.radius as number,
+            binding: "world"
+          }
+        : {
+            type: "static",
+            position: vec3Of(position),
+            quaternion: quatOf(quaternionFromEulerDeg(node.rotationDeg as [number, number, number]))
+          };
+
+    shots.push({
+      id,
+      name: (node.name as string | undefined) ?? id,
+      time: (node.timeSeconds as number | undefined) ?? 0,
+      blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
+      definition: { id, body, aim: { type: "body" }, lens: { fov } }
+    });
+  }
+
+  return shots;
+}
+
+const vec3Of = ([x, y, z]: readonly [number, number, number]) => ({ x, y, z });
+const quatOf = ([x, y, z, w]: readonly [number, number, number, number]) => ({ x, y, z, w });

@@ -38,6 +38,11 @@ Three cues, authored as Pascal nodes parented to the clock: `start`, `peak` and 
 sits at t=4, where the transform track has the driven marker at the top of its arc — which is
 what makes riding to it a falsifiable claim rather than a demonstration.
 
+Two shots, also authored as nodes: a static `wide`, and a `close` that **orbits the driven
+marker by node id** and blends in over two seconds. And drei's real `CameraControls` is mounted
+— the same component Pascal's editor uses — because R9 is a rule about what happens when a
+controller is present, so measuring it against a stand-in would measure the stand-in.
+
 ## What it measures
 
 The probe mounts **inside** `<Viewer>`, so it shares Pascal's frame loop rather than racing it
@@ -45,29 +50,32 @@ from a separate animation callback. It then walks the whole lifecycle and record
 `window.__pascalTime`:
 
 ```
-drive 12s → release → ride to a cue → select → delete → undo → done
+drive 12s → release → ride to a cue → sweep the shots → select → delete → undo → done
 ```
 
 Last run:
 
 ```
-frames sampled            396
-sustained rate            43 fps
-registered node kinds     3
-nodes in the document     7
-objects in sceneRegistry  4
+frames sampled            1112
+sustained rate            47.8 fps
+registered node kinds     4
+nodes in the document     9
+objects in sceneRegistry  6
 frames our write was lost 0
 worst drift               0.00000 m
-undo depth                8 -> 8
-dirty nodes               3 -> 3
+undo depth                10 -> 10
+dirty nodes               5 -> 5
 restored on release       true (0 m)
 cues in the document      3
-rode to cue_peak in       46 frames -> t=4, marker y=3.4
+rode to cue_peak in       76 frames -> t=4, marker y=3.4
+shots in the document     2 (saw 2 while sweeping)
+camera contested frames   0 of 451, worst 0 m
+orbit radius held         5 (authored 5.0)
 selection resolved to     2 object(s)
 delete / undo in registry left / returned
 ```
 
-18 checks, all passing. The ones worth understanding:
+22 checks, all passing. The ones worth understanding:
 
 - **"renders" is measured as presence in `sceneRegistry`.** That map is written by
   `useRegistry`, which only runs from a mounted renderer — so an entry proves Pascal's dispatch
@@ -86,12 +94,19 @@ delete / undo in registry left / returned
   transform track specifies for that instant. A ride that moved the number without moving the
   world would pass a weaker check and fail this one. It also takes ~46 frames, so "it landed"
   cannot be a single-frame snap that skipped the ease.
-- **7 nodes, 4 objects.** The difference is the clock and its three cues, none of which have
-  geometry. It is checked rather than merely reported, because it is also the visible symptom
-  of a real constraint: Pascal's `<NodeRenderer>` does not dispatch children, so anything
-  parented to the timeline node mounts only if the timeline's own renderer dispatches it. That
-  costs nothing while the children are moments; it is a decision M1.4 has to make when a shot
-  wants to draw something. See the package README, trap 11.
+- **9 nodes, 6 objects.** One clock, three cues, two shots, three markers in the document; the
+  same less the cues in the scene, because a cue is a moment rather than a thing and ships no
+  renderer. The shots *do* render — they are placed, so they are spatial. This is checked rather
+  than reported, and it earned that: adding the shots moved the counts and the check caught it,
+  which is exactly what it is for.
+- **The camera check runs against the real controller.** 0 contested frames of 451 means the
+  camera held the pose the shot resolved to on every frame while drei's `CameraControls` was
+  mounted and updating. The spike's contested mode — writing past the same controller — lost
+  1229 frames of 1230 and settled the camera on a different shot entirely, so this number is
+  the difference between the rule being obeyed and being ignored.
+- **The orbit radius is the id-binding claim.** The `close` shot names the driven marker rather
+  than storing coordinates, and holds exactly 5.0 from it. Move the marker and the shot
+  re-frames it with no timeline edit.
 
 ## Frame rate, and one flake worth knowing about
 

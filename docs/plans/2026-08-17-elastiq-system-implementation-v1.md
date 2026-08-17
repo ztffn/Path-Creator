@@ -8,7 +8,8 @@ Read ELASTIQ-SYSTEM.md first for what is being built and why; this doc is how.
 
 # elastiq system — implementation plan v1
 
-**Status:** in progress. M0.4, M1.1, M1.2 and M1.5 are done (2026-08-17); everything else is plan.
+**Status:** in progress. M0.4, M1.1, M1.2, M1.4 and M1.5 are done (2026-08-17). M1.3 and M1.6
+remain in M1; everything after is plan.
 **Design:** [`../technical/ELASTIQ-SYSTEM.md`](../technical/ELASTIQ-SYSTEM.md) (what and why)
 and [`../technical/INTEGRATION-DESIGN.md`](../technical/INTEGRATION-DESIGN.md) (the ownership
 rules and the measurements behind them).
@@ -99,7 +100,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.1 plugin skeleton | S | authoring | M0.1 | **Done** 2026-08-17. |
 | M1.2 binding + tracks | M | both | M1.1 | **Done** 2026-08-17. |
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
-| M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
+| M1.4 camera + shots | M | both | M1.2 | **Done** 2026-08-17. R9 re-measured against drei's real CameraControls. |
 | M1.5 cues | S | both | M1.2 | **Done** 2026-08-17. |
 | M1.6 persistence | M | both | M1.2 | Unblocked — clone identity decided (remap on clone). |
 | M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
@@ -519,7 +520,7 @@ carry the patch or drive `advance` yourself. Do not design around 60fps until it
 
 **Done when:** an author can keyframe from the timeline panel and see it play in the viewport.
 
-### M1.4 — Camera and shot kinds
+### M1.4 — Camera and shot kinds — **DONE** (2026-08-17)
 
 Virtual cameras as node kinds — path-creator already has the bodies (static, cart, orbit), blends,
 and manual override.
@@ -534,6 +535,40 @@ own state every update; there is no middle ground.
 
 **Done when:** a shot is authorable in the editor, plays back through the timeline, and the
 viewport camera does not fight it.
+
+**Delivered.** `huma-time:shot` is a node kind carrying a camera and the moment it takes over,
+with two bodies: `static`, and `orbit` which **names the node it frames**. `readShots()` turns
+those into `@huma/path-creator` virtual camera definitions; `PascalCameraDirector` resolves which
+shot is in force and applies it. A shot holds until the next takes over and takes over across its
+own `blendSeconds`, so a cut is `blendSeconds: 0` and there is one code path rather than two.
+Before the first shot the director writes nothing at all, leaving the host's camera alone rather
+than snapping it.
+
+**R9, re-measured against the real controller.** drei's `CameraControls` — the same component
+Pascal's editor mounts — was mounted in the harness, because a rule about what happens when a
+controller is present cannot be tested against a stand-in.
+
+| | |
+|---|---|
+| Frames the camera did not hold the resolved pose | **0 of 451** |
+| Worst positional error | **0 m** |
+| Orbit radius held against the framed node (authored 5.0) | **5.0** |
+
+The headless suite carries the control that gives those zeros meaning: a direct write past the
+same controller is shown to be lost on its next update. Without it, "feeding the controller
+works" would be equally true of a controller that did nothing.
+
+**This also answers M1.5's open container question.** A kind that draws something is a kind an
+author places, and a placed thing is spatial under the classification test — so it parents where
+spatial things parent and names its clock with a `timelineId` field rather than by `parentId`.
+The timeline renderer stays a leaf, and the hole Pascal leaves for container kinds is real but
+has nothing in it. Revisit only if a time kind ever needs to both draw and be non-spatial.
+
+**Carried limitation, for M1.6.** `timeSeconds` lives on the shot, so one shot cannot be reused
+at two times. The alternative is a camera track referencing shots by id — which is what
+`@huma/path-creator` already models and what a shot list eventually wants — but tracks are not
+persisted until M1.6, and inventing a second unpersisted concept to avoid this would be the
+worse trade today.
 
 ### M1.5 — Cues — **DONE** (2026-08-17)
 

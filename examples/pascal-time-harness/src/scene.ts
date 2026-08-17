@@ -4,7 +4,9 @@
 // site/building/level hierarchy is simply unused. Idempotent, because strict mode mounts twice.
 // Scope: harness fixture. Ids here are the contract with the timeline below.
 import { nodeRegistry, useScene } from "@pascal-app/core";
-import { buildCueNode, buildTimelineNode, PASCAL_TIME_PLUGIN_ID } from "@huma/pascal-time";
+import {
+  buildCueNode, buildShotNode, buildTimelineNode, PASCAL_TIME_PLUGIN_ID
+} from "@huma/pascal-time";
 import { createTimeline, type Timeline } from "@huma/path-creator/core";
 import { HARNESS_PLUGIN_ID, MARKER_KIND } from "./kinds";
 
@@ -35,6 +37,37 @@ export const CUES: Array<{ id: string; name: string; time: number }> = [
 
 /** Where the driven marker sits at `cue_peak`, per the track below. The ride must reproduce it. */
 export const PEAK_Y = 3.4;
+
+/**
+ * Two shots. `wide` is static; `close` orbits the driven marker BY NODE ID, which is the seam
+ * paying for itself — the shot frames the subject wherever the subject is, with no timeline
+ * edit. `close` blends in over 2 seconds, so a cut and a blend are the same code path with
+ * different numbers.
+ */
+export const SHOTS = [
+  {
+    id: "shot_wide",
+    name: "Wide",
+    timeSeconds: 0,
+    blendSeconds: 0,
+    body: "static" as const,
+    position: [0, 4, 14] as [number, number, number],
+    rotationDeg: [-8, 0, 0] as [number, number, number],
+    fov: 50
+  },
+  {
+    id: "shot_close",
+    name: "Close on the driven marker",
+    timeSeconds: 4,
+    blendSeconds: 2,
+    body: "orbit" as const,
+    targetNodeId: DRIVEN_ID,
+    azimuthDeg: 35,
+    elevationDeg: 14,
+    radius: 5,
+    fov: 38
+  }
+];
 
 /**
  * The timeline. A transform track lifts and returns one marker, an activation track reveals
@@ -101,6 +134,11 @@ export function buildHarnessScene(): void {
         timeSeconds: cue.time
       })
     );
+  }
+
+  for (const shot of SHOTS) {
+    if (scene.nodes[shot.id]) continue;
+    scene.createNode(buildShotNode({ ...shot, timelineId: TIMELINE_NODE_ID }));
   }
 
   const markerDefaults = nodeRegistry.get(MARKER_KIND)?.defaults();

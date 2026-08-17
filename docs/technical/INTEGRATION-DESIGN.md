@@ -18,7 +18,7 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 |---|---|
 | The model, the ownership rules, the classification test | **Decided.** Change via §12. |
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
-| Camera ownership | **Proven** — one owner per frame, with a cooperative path. §5.4, R9. |
+| Camera ownership | **Proven, and implemented** — one owner per frame; re-measured against the shipped director. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
 | Clone identity versus track references | **Decided** — remap on clone. §10 decision 1, R8. |
 | Time as a Pascal plugin | **Built and measured** — M1.1, M1.2. `Packages/pascal-time`. |
@@ -237,6 +237,13 @@ Measured over 1230 frames per configuration: writing directly with a controller 
 jitter, a different shot. Going through the controller is indistinguishable from owning the
 camera outright: same drift, same radius, to the digit. `camera-controls` re-derives the pose
 from its own position/target state every update, which is why there is no middle ground.
+
+**Re-measured 2026-08-17 against the shipped implementation** (`PascalCameraDirector`, M1.4),
+with drei's real `CameraControls` mounted inside Pascal's viewer on WebGPU: **0 of 451 frames**
+failed to hold the pose the shot resolved to, worst positional error 0 m, and an orbit shot held
+its authored radius of 5.0 against the node it frames. The rule holds in code, not only in
+principle. The director sets the lens on both paths, because a camera controller has no opinion
+about field of view.
 
 ### 5.5 Input and triggers — **proven**
 

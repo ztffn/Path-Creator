@@ -4,10 +4,20 @@
 // `window.__pascalTime` for a headless run to read — the verification standard here is a
 // measured number, not an assertion. Scope: harness instrumentation.
 import { useEffect, useMemo, useRef } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { nodeRegistry, sceneRegistry, useScene } from "@pascal-app/core";
 import { useViewer } from "@pascal-app/viewer";
-import { PascalNodeDriver, pascalSceneBinding, readCues, TIMELINE_KIND } from "@huma/pascal-time";
+import {
+  PascalCameraDirector,
+  PascalNodeDriver,
+  pascalSceneBinding,
+  pascalTargetContext,
+  readCues,
+  readShots,
+  resolveShotAt,
+  TIMELINE_KIND,
+  type CameraControlsLike
+} from "@huma/pascal-time";
 import {
   createCueTransport, createTimelinePlayer, rideToCue, stepCueTransport
 } from "@huma/path-creator/timeline";
@@ -26,7 +36,7 @@ import { MARKER_KIND } from "./kinds";
 export interface HarnessReport {
   /** Set once the probe has run at least one frame. */
   ready: boolean;
-  phase: "driving" | "released" | "cued" | "selected" | "deleted" | "undone" | "done";
+  phase: "driving" | "released" | "cued" | "camera" | "selected" | "deleted" | "undone" | "done";
 
   // --- M1.1: the kind exists and renders through Pascal's own dispatch.
   kindRegistered: boolean;
@@ -71,6 +81,17 @@ export interface HarnessReport {
   /** Frames the ride took, so "it landed" cannot be a single-frame snap that skipped the ease. */
   cueRideFrames: number | null;
 
+  // --- M1.4: shots drive the viewport camera, with a real controller mounted.
+  shotsInDocument: number;
+  /** Frames the camera did NOT hold the pose the shot resolved to. R9's whole point. */
+  cameraContestedFrames: number;
+  cameraWorstErrorMetres: number;
+  cameraFramesChecked: number;
+  /** Shots actually seen while sweeping the clock — a blend that never ran proves nothing. */
+  shotsSeen: number;
+  /** The orbit shot frames a node by id; this is the distance it actually held from it. */
+  orbitRadiusHeld: number | null;
+
   // --- M1.1: select and delete, through the viewer rather than only the store.
   /** The viewer's own selection state accepted our plugin kind's node id. */
   selectionRoundTripped: boolean | null;
@@ -90,13 +111,23 @@ const DRIVE_SECONDS = 12;
 /** Frames to let React commit a store change and mount or unmount the affected renderer. */
 const SETTLE_FRAMES = 10;
 
+/** Seconds to sweep the clock across the shot list, long enough to cross the blend. */
+const CAMERA_SWEEP_SECONDS = 9;
+
+/** A camera holding its shot should be exact; this only absorbs float noise. */
+const CAMERA_EPSILON = 1e-3;
+
 declare global {
   interface Window {
     __pascalTime?: HarnessReport;
   }
 }
 
-export function Probe() {
+export function Probe({ controls }: { controls: { current: CameraControlsLike | null } }) {
+  const camera = useThree((state) => state.camera);
+  const cameraDirector = useMemo(() => new PascalCameraDirector(), []);
+  const cameraClock = useRef(0);
+  const seenShots = useRef(new Set<string>());
   const timeline = useMemo(() => harnessTimeline(), []);
   const driver = useMemo(() => new PascalNodeDriver(pascalSceneBinding()), []);
   const report = useRef<HarnessReport>({
@@ -123,6 +154,12 @@ export function Probe() {
     dirtyCountNow: 0,
     restoredExactly: null,
     restoredOffsetMetres: null,
+    shotsInDocument: 0,
+    cameraContestedFrames: 0,
+    cameraWorstErrorMetres: 0,
+    cameraFramesChecked: 0,
+    shotsSeen: 0,
+    orbitRadiusHeld: null,
     cuesInDocument: 0,
     cueLandedTime: null,
     cueLandedDrivenY: null,
@@ -228,7 +265,48 @@ export function Probe() {
         state.cueLandedTime = cuePlayer.current.time;
         state.cueLandedDrivenY = sceneRegistry.nodes.get(DRIVEN_ID)?.position.y ?? null;
         driver.release();
+        cameraClock.current = 0;
+        state.shotsInDocument = readShots(TIMELINE_NODE_ID).length;
+        state.phase = "camera";
+      }
+    } else if (state.phase === "camera") {
+      // Sweep the clock across the shot list with a REAL camera-controls mounted. R9 says the
+      // controller owns the camera and the time layer feeds it, so the check is whether the
+      // camera actually holds the pose the shot resolved to — the spike's contested mode lost
+      // 1229 frames of 1230 here, and parked on a different shot entirely.
+      cameraClock.current += delta;
+      const shots = readShots(TIMELINE_NODE_ID);
+      const targetContext = pascalTargetContext(sceneRegistry);
+      const resolved = cameraDirector.sync(camera, shots, cameraClock.current, {
+        controls: controls.current,
+        context: targetContext
+      });
 
+      if (resolved) {
+        seenShots.current.add(resolved.shot.id);
+        state.shotsSeen = seenShots.current.size;
+        const wanted = resolved.snapshot.position;
+        const error = Math.hypot(
+          camera.position.x - wanted.x,
+          camera.position.y - wanted.y,
+          camera.position.z - wanted.z
+        );
+        state.cameraFramesChecked += 1;
+        if (error > CAMERA_EPSILON) {
+          state.cameraContestedFrames += 1;
+          state.cameraWorstErrorMetres = Math.max(state.cameraWorstErrorMetres, error);
+        }
+        // While the orbit shot is live, record how far the camera actually sat from the node
+        // it frames. Authored radius is 5; a contested camera settles somewhere else entirely.
+        if (resolved.shot.definition.body.type === "orbit" && resolved.alpha >= 1) {
+          const subject = sceneRegistry.nodes.get(DRIVEN_ID);
+          if (subject) {
+            state.orbitRadiusHeld = camera.position.distanceTo(subject.position);
+          }
+        }
+      }
+
+      if (cameraClock.current >= CAMERA_SWEEP_SECONDS) {
         // Selection, through the viewer's own state — the thing Pascal's editor chrome reads.
         // Asserting `isRegistrySelectable` proves the kind declares the capability; this proves
         // the viewer actually accepts the node and resolves it to a live object in the scene.

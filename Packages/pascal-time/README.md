@@ -16,7 +16,7 @@ touching Pascal's document.
 It depends on both sides. **`@huma/path-creator` must never depend on Pascal** — if that rule
 ever needs breaking, the design is wrong.
 
-Status: **M1.1, M1.2 and M1.5 complete.** Workspace-only (`private: true`) until the API settles;
+Status: **M1.1, M1.2, M1.4 and M1.5 complete.** Workspace-only (`private: true`) until the API settles;
 extraction to its own repo is expected, and it is a leaf package with two clean dependencies so
 that stays cheap.
 
@@ -58,8 +58,16 @@ driver.release();   // every object it touched goes back to its pre-drive pose
 |---|---|
 | `huma-time:timeline` | The scene's clock — duration, loop, autoplay. One per scene. |
 | `huma-time:cue` | A named moment on that clock. Parented to the timeline it is measured on. |
+| `huma-time:shot` | A camera, and the moment it takes over. Static or orbiting a node by id. |
 
-Neither has a position, deliberately: under the integration design's classification test a node
+**The shot is the exception, and the exception is the rule working.** A shot *is* placed — an
+author drags it, aims it and expects to see where it looks from — so under the same
+classification test it is an ordinary spatial node. It therefore parents where spatial things
+parent rather than under the timeline (it names its clock with a `timelineId` field instead),
+carries `movable` and `rotatable`, and is the one kind here that draws anything. It is also why
+the shot never meets trap 11: renderable time kinds are spatial, and spatial nodes have a home.
+
+The clock and the cue have no position, deliberately: under the integration design's classification test a node
 earns a place in space by being *placed by a person*, and neither a clock nor a moment is. They
 are organisational nodes of the same class as Pascal's own site, building, level and zone, which
 is why both declare `dirtyTracking: false` and a `hitVolume` of `none`.
@@ -131,6 +139,11 @@ found building this package and are not written down anywhere else.
     children (which means depending on `@pascal-app/viewer` for `<NodeRenderer>`, or
     reimplementing its install gate and lazy-module contract), or renderable time kinds are
     parented at the scene root instead.
+    **Resolved in M1.4: the second.** A kind that draws something is a kind an author places, and
+    a placed thing is spatial under the classification test — so it parents where spatial things
+    parent and names its clock with a field. `huma-time:shot` does exactly that and renders
+    normally. The container hole is real but nothing needs to sit in it, so the timeline renderer
+    stays a leaf. Revisit only if a time kind ever needs to both draw and be non-spatial.
 
 ## The ownership rule this package exists to keep
 
@@ -150,6 +163,39 @@ Both suites include a **control**: one ordinary `updateNode` must move undo dept
 and put the node in the dirty set. Without it the zeros above are indistinguishable from a
 broken instrument, which is not hypothetical — the first version of the dirty assertion passed
 for that exact reason.
+
+## Shots, and the camera rule
+
+`readShots(timelineId?)` turns authored shot nodes into `@huma/path-creator` virtual camera
+definitions. `PascalCameraDirector.sync(camera, shots, time, options)` resolves which shot is in
+force and applies it. A shot holds until the next takes over, and takes over across its own
+`blendSeconds` — so a cut is `blendSeconds: 0` and there is one code path, not a cut path and a
+blend path. Before the first shot it writes **nothing**, leaving the host's camera alone rather
+than snapping it somewhere.
+
+An orbit shot names the node it frames. **That is the seam paying for itself:** move the subject
+and the shot re-frames it, with no timeline edit at all. Covered headlessly, and measured in the
+browser as an orbit radius of exactly 5.0 held against the node it tracks.
+
+**R9 — the camera has exactly one owner per frame.** With no controller mounted the director
+writes the camera outright. With one mounted, the *controller* owns the camera and the director
+feeds it the same resolved pose through `setLookAt` followed by `update(0)`; `camera-controls`
+re-derives its pose from its own state on every update, so a pose handed to it without an update
+is a pose it has not applied. The director still sets the lens either way, because a camera
+controller has no opinion about field of view.
+
+Measured against drei's **real** `CameraControls` — the same component Pascal's editor mounts —
+in system Chrome on WebGPU:
+
+| | |
+|---|---|
+| Frames where the camera did not hold the resolved pose | **0 of 451** |
+| Worst positional error | **0 m** |
+| Orbit radius held against the framed node (authored 5.0) | **5.0** |
+
+The headless suite carries the control that makes those zeros mean something: a direct write
+past the same controller is shown to be *lost* on its next update. Without that, "feeding the
+controller works" would also be true of a controller that did nothing.
 
 ## Cues, and what the ride demonstrates
 

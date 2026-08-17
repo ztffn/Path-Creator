@@ -11,6 +11,7 @@ export const PASCAL_TIME_PLUGIN_ID = "huma-time";
 
 export const TIMELINE_KIND = "huma-time:timeline";
 export const CUE_KIND = "huma-time:cue";
+export const SHOT_KIND = "huma-time:shot";
 
 /**
  * The scene's clock. One per scene document: it is what tracks, cues and shots hang off, and
@@ -54,3 +55,52 @@ export const CueNode = BaseNode.extend({
   timeSeconds: z.number().min(0).default(0)
 });
 export type CueNodeType = z.infer<typeof CueNode>;
+
+const Vec3Tuple = z.tuple([z.number(), z.number(), z.number()]);
+
+/**
+ * A camera, and the moment it takes over.
+ *
+ * Unlike the clock and the cue, a shot IS placed — an author drags it, aims it, and expects to
+ * see where it is looking from. Under the classification test that makes it an ordinary spatial
+ * scene node, so it parents wherever spatial things parent (the root, a level) rather than under
+ * the timeline. That is also why it is the one kind here that renders something.
+ *
+ * Two bodies, both already implemented in `@huma/path-creator`:
+ * - `static` — the camera sits at `position` looking along `rotationDeg`.
+ * - `orbit`  — the camera orbits `targetNodeId` (or `targetPoint` when no node is named) at
+ *   `radius`, `azimuthDeg`, `elevationDeg`. **This is where binding by id pays for itself:** the
+ *   shot names the node it frames, so moving that node re-frames the shot with no timeline edit.
+ *
+ * **Accepted limitation, to revisit at M1.6:** `timeSeconds` puts the shot's moment on the shot,
+ * so one shot cannot be reused at two different times. The alternative is a camera track that
+ * references shots by id — which is what `@huma/path-creator` models and what a shot list
+ * eventually wants — but tracks are not persisted until M1.6, and inventing a second unpersisted
+ * concept to avoid this would be the worse trade today.
+ */
+export const ShotNode = BaseNode.extend({
+  type: z.literal(SHOT_KIND).default(SHOT_KIND),
+  /** Which clock `timeSeconds` is measured on. A field, not `parentId` — `parentId` is spatial. */
+  timelineId: z.string().default(""),
+  /** When this shot takes over. */
+  timeSeconds: z.number().min(0).default(0),
+  /** Seconds to blend in from the previous shot. 0 is a cut. */
+  blendSeconds: z.number().min(0).default(1),
+
+  body: z.enum(["static", "orbit"]).default("static"),
+  /** Static body: where the camera is. Also where the gizmo draws, for both bodies. */
+  position: Vec3Tuple.default([0, 2, 6]),
+  /** Static body: where it looks, as Euler degrees. */
+  rotationDeg: Vec3Tuple.default([0, 0, 0]),
+
+  /** Orbit body: the node to frame. Empty means use `targetPoint` instead. */
+  targetNodeId: z.string().default(""),
+  targetPoint: Vec3Tuple.default([0, 0, 0]),
+  azimuthDeg: z.number().default(25),
+  elevationDeg: z.number().default(18),
+  radius: z.number().min(0).default(8),
+
+  /** Vertical field of view in degrees. */
+  fov: z.number().min(1).max(179).default(50)
+});
+export type ShotNodeType = z.infer<typeof ShotNode>;

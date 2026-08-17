@@ -49,8 +49,12 @@ function evaluate(report) {
       `${report.restoredExactly} (${report.restoredOffsetMetres} m)`
     ],
     [
-      "M1.5 non-spatial kinds are in the document but mount nothing (7 nodes, 4 objects)",
-      report.nodesInDocument === 7 && report.sceneRegistrySize === 4,
+      // 9 document nodes: 1 clock + 3 cues + 2 shots + 3 markers.
+      // 6 rendered objects: the same, less the 3 cues, which ship no renderer because a cue is
+      // a moment rather than a thing. The shots DO render — they are placed, so they are
+      // spatial. This is checked rather than reported so the distinction cannot drift silently.
+      "M1.5/M1.4 only the cues mount nothing (9 nodes, 6 objects)",
+      report.nodesInDocument === 9 && report.sceneRegistrySize === 6,
       `${report.nodesInDocument} nodes / ${report.sceneRegistrySize} objects`
     ],
     [
@@ -72,6 +76,26 @@ function evaluate(report) {
       "M1.5 and the scene looked like that moment — the marker was at its peak",
       Math.abs(report.cueLandedDrivenY - 3.4) < 1e-4,
       report.cueLandedDrivenY
+    ],
+    [
+      "M1.4 shots are authored in the scene document",
+      report.shotsInDocument === 2,
+      report.shotsInDocument
+    ],
+    [
+      "M1.4 the sweep crossed both shots, so the blend really ran",
+      report.shotsSeen === 2,
+      report.shotsSeen
+    ],
+    [
+      "M1.4 R9 — with drei CameraControls mounted, the camera held every resolved pose",
+      report.cameraContestedFrames === 0,
+      `${report.cameraContestedFrames} of ${report.cameraFramesChecked} frames, worst ${report.cameraWorstErrorMetres}m`
+    ],
+    [
+      "M1.4 the orbit shot held its authored radius from the node it frames (5.0)",
+      Math.abs(report.orbitRadiusHeld - 5) < 1e-3,
+      report.orbitRadiusHeld
     ],
     [
       "M1.1 the viewer's selection state accepts the plugin kind",
@@ -168,6 +192,11 @@ try {
   console.log(
     `  rode to cue_peak in       ${report.cueRideFrames} frames -> t=${report.cueLandedTime}, marker y=${report.cueLandedDrivenY}`
   );
+  console.log(`  shots in the document     ${report.shotsInDocument} (saw ${report.shotsSeen} while sweeping)`);
+  console.log(
+    `  camera contested frames   ${report.cameraContestedFrames} of ${report.cameraFramesChecked}, worst ${report.cameraWorstErrorMetres} m`
+  );
+  console.log(`  orbit radius held         ${report.orbitRadiusHeld} (authored 5.0)`);
   console.log(`  selection resolved to     ${report.selectedObjectsResolved} object(s)`);
   console.log(
     `  delete / undo in registry ${report.deletedLeftRegistry ? "left" : "STAYED"} / ${report.undoRestoredToRegistry ? "returned" : "MISSING"}\n`
