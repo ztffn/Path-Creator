@@ -15,10 +15,10 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 | The model, the ownership rules, the classification test | **Decided.** Change via §11. |
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
 | Camera ownership | **Proven** — one owner per frame, with a cooperative path. §5.4, R9. |
-| Hotspots as plugin node kinds | **Proposed**, not yet built. §5.5, §10. |
+| Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
-Last revised 2026-08-17, after the Pascal spike answered Q1, Q2, Q3 and Q5
+Last revised 2026-08-17, after the Pascal spike answered all five questions
 (`examples/pascal-spike/README.md`).
 
 ---
@@ -214,12 +214,31 @@ jitter, a different shot. Going through the controller is indistinguishable from
 camera outright: same drift, same radius, to the digit. `camera-controls` re-derives the pose
 from its own position/target state every update, which is why there is no middle ground.
 
-### 5.5 Input and triggers — **proposed**
+### 5.5 Input and triggers — **proven**
 
-Pascal has `SceneActionCapability`: a per-kind `resolveTarget` / `activate` pair driven by the
-editor's generic pointer dispatch. That is the natural home for the *hit* half of a trigger. The
-*effect* half — seek, play, enter scene, start inspection — is a timeline action and stays ours.
-Proposed, not built.
+Built and measured: a hotspot ships as a third-party plugin node kind with its own manifest,
+schema and renderer, registers through `loadPlugin`, renders through Pascal's generic dispatch,
+lands in `sceneRegistry` (so the object binding of §5.2 applies unchanged), is driven by a
+transform track, and dispatches its action payload on click.
+
+**The action payload is the boundary in one object.** Pascal stores it as opaque node data, the
+same way it stores a wall's thickness, and never interprets it. Only the time layer reads it. That
+is what lets space and time live in separate documents while a single authored object carries both
+halves.
+
+Four contract details, each of which fails silently if missed:
+
+- `def.renderer` must be `{ kind: 'parametric', module: () => import('./x') }` with a **default
+  export**. A direct component reference is dropped without a warning.
+- Namespaced kinds are gated per project by `installedPlugins`. The kind-to-plugin mapping is
+  recorded by `loadPlugin`, not `registerNode` — registering directly bypasses the gate instead of
+  satisfying it.
+- Registration must run at module import time, before any React tree renders.
+- `category` is one of five architectural buckets; a hotspot fits none of them well. Cosmetic.
+
+**The hierarchy objection was wrong.** Core has no parent-kind validation, `parentId` is optional,
+and both the site and level renderers dispatch every child generically. A world-anchored hotspot
+parents straight to the site — no building, no level — and renders. R6 costs nothing structurally.
 
 ### 5.6 Persistence
 
@@ -262,6 +281,7 @@ probe mounted inside the viewer's frame loop.
 | Camera, no controller, direct write (1230 frames) | 1 drifted frame; radius 12.000 as authored |
 | Camera, controller mounted, direct write | 1229 drifted frames; radius 16.76 vs authored 12.0 |
 | Camera, controller mounted, pose via `setLookAt` | 1 drifted frame; radius 12.000 as authored |
+| Hotspot as a third-party plugin kind | registers, renders, binds, is track-driven, dispatches clicks |
 | Pascal undo depth grown by driving | 0 |
 | Pascal dirty-node count while driving | 0 |
 | Track directors over a Pascal-shaped registry | 4 tests green, including restore-on-leave |
@@ -317,18 +337,15 @@ Each measured while integrating; each will be paid again by the next person.
 
 ## 10. Open decisions
 
-1. **Hotspot as a plugin node kind (Q4).** Pascal's hierarchy is site → building → level →
-   item, and a world-anchored hotspot belongs to none of them. Whether the plugin API
-   generalises, or whether hotspots need a parent that does not exist yet, is unknown.
-2. **Prefab instancing versus timeline references (R8).** `cloneNodesInto` mints fresh ids —
+1. **Prefab instancing versus timeline references (R8).** `cloneNodesInto` mints fresh ids —
    correct for a prefab, fatal for a timeline that references the originals. Options not yet
    evaluated: id remapping on clone, per-instance timeline binding, or relative addressing
    within a subtree. **This is the hardest unsolved problem on the boundary**, and it only
    appears once prefabs and timelines are used together, which is the intended end state.
-3. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
+2. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
    [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671). Until it merges, 50 fps
    is the design constraint. Fallback if declined: drive R3F's `advance` ourselves.
-4. **Where the product layer lives.** elastiq composing two libraries, versus a thin shared
+3. **Where the product layer lives.** elastiq composing two libraries, versus a thin shared
    host package both products consume. Not urgent until the second product is real.
 
 ---

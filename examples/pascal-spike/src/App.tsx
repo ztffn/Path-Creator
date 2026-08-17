@@ -4,7 +4,7 @@
 // separate rAF. Results are mirrored onto window.__spike so a headless browser can read the
 // numbers without screenshots. Scope: throwaway spike harness — see README.md.
 import { useEffect, useMemo, useRef, useState } from "react";
-import { useFrame } from "@react-three/fiber";
+import { useFrame, useThree } from "@react-three/fiber";
 import { Vector3, type Object3D } from "three";
 import { Viewer } from "@pascal-app/viewer";
 import { nodeRegistry, sceneRegistry, useScene } from "@pascal-app/core";
@@ -13,6 +13,8 @@ import type { TransformTrack } from "@huma/path-creator/core";
 import { loadPascalBuiltins } from "./pascal-bootstrap";
 import { pascalObjectBinding } from "./pascal-binding";
 import { CameraProbe, type CameraMode, type CameraReport } from "./CameraProbe";
+import { hotspotClicks } from "./hotspot-schema";
+import { HOTSPOT_PLUGIN_ID } from "./hotspot-plugin";
 
 // `?pokeDriven` edits the node being driven, mid-playback — the one case that makes Pascal
 // reapply its own position over ours. Off by default so the baseline measures the clean path.
@@ -37,15 +39,24 @@ export interface SpikeReport {
   undoDepth: number;
   dirtyNodes: number;
   probeMounted: boolean;
+  hotspotRegistered: boolean;
+  hotspotRendered: boolean;
+  hotspotDriven: boolean;
+  hotspotClicks: number;
   driftFrames: number[];
   perturbedAt: number[];
   error: string | null;
 }
 
+const projectScratch = new Vector3();
+const worldScratch = new Vector3();
+const parentScratch = new Vector3();
+
 const report: SpikeReport = {
   kinds: 0, nodeIds: [], registered: [], target: null, frames: 0, fps: 0,
   driftWorst: 0, driftLast: 0, driftNonZeroFrames: 0, undoDepth: 0, dirtyNodes: 0,
-  probeMounted: false, driftFrames: [], perturbedAt: [], error: null
+  probeMounted: false, hotspotRegistered: false, hotspotRendered: false,
+  hotspotDriven: false, hotspotClicks: 0, driftFrames: [], perturbedAt: [], error: null
 };
 declare global { interface Window { __spike?: SpikeReport; __camera?: CameraReport } }
 
@@ -59,6 +70,12 @@ function undoDepth(): number {
 /** Rides Pascal's frame loop: read what the object holds, then write what the timeline says. */
 function DriftProbe({ onReport }: { onReport: (r: SpikeReport) => void }) {
   useEffect(() => { report.probeMounted = true; }, []);
+  const camera = useThree((st) => st.camera);
+  const size = useThree((st) => st.size);
+  // Pascal's <ViewerCamera> is a drei camera with a position and no target, so with no camera
+  // controls mounted it looks down -Z and the scene sits out of frame. Aiming it is legitimate
+  // here: with no controller mounted the time layer owns the camera (integration design R9).
+  useEffect(() => { camera.lookAt(0, 1, 0); camera.updateMatrixWorld(); }, [camera]);
   const binding = useMemo(() => pascalObjectBinding(sceneRegistry), []);
   const director = useMemo(() => new TransformTrackDirector(), []);
   const written = useRef<Vector3 | null>(null);
@@ -132,6 +149,38 @@ function DriftProbe({ onReport }: { onReport: (r: SpikeReport) => void }) {
     report.undoDepth = undoDepth();
     report.dirtyNodes = useScene.getState().dirtyNodes?.size ?? -1;
     report.registered = [...sceneRegistry.nodes.keys()];
+    report.hotspotRendered = sceneRegistry.nodes.has("spike_hotspot_1");
+    // Project the hotspot to screen so a headless driver can click it exactly rather than
+    // sweeping the canvas and hoping.
+    const hs = sceneRegistry.nodes.get("spike_hotspot_1");
+    if (hs) {
+      const v = hs.getWorldPosition(projectScratch).project(camera);
+      (window as unknown as { __hotspotScreen?: unknown }).__hotspotScreen = {
+        x: (v.x * 0.5 + 0.5) * size.width,
+        y: (-v.y * 0.5 + 0.5) * size.height,
+        local: hs.position.toArray(),
+        world: hs.getWorldPosition(worldScratch).toArray(),
+        parent: hs.parent?.name || hs.parent?.type || null,
+        parentWorldY: hs.parent ? hs.parent.getWorldPosition(parentScratch).y : null
+      };
+    }
+    report.hotspotClicks = hotspotClicks.length;
+    // Drive the plugin-contributed node with a track, exactly as for a built-in kind.
+    const hotspot = sceneRegistry.nodes.get("spike_hotspot_1");
+    if (hotspot) {
+      const before = hotspot.position.y;
+      director.sync(binding, [{ tracks: [{
+        type: "transform", id: "hotspot-bob", objectId: "spike_hotspot_1",
+        position: [
+          { time: 0, value: [3, 1.5, 0] },
+          { time: CYCLE_SECONDS / 2, value: [3, 2.5, 0] },
+          { time: CYCLE_SECONDS, value: [3, 1.5, 0] }
+        ]
+      }], time: elapsed.current }], true);
+      if (Math.abs(hotspot.position.y - before) > 1e-9 || hotspot.position.y !== 1.5) {
+        report.hotspotDriven = true;
+      }
+    }
     if (report.frames % 30 === 0) onReport({ ...report });
   });
 
@@ -162,11 +211,34 @@ export default function App() {
           levelId as never
         );
       }
+      // Q4: place a hotspot from the third-party plugin, parented to the site. A hotspot has
+      // no building and no level, which is the hierarchy objection — see whether it survives.
+      const site = Object.values(useScene.getState().nodes).find(
+        (n) => (n as { type?: string }).type === "site"
+      ) as { id: string } | undefined;
+      const hotspotDef = nodeRegistry.get("huma:hotspot");
+      report.hotspotRegistered = Boolean(hotspotDef);
+      // A namespaced plugin kind is gated per project: unless its plugin id is installed,
+      // NodeRenderer refuses it. Built-in kinds skip the gate.
+      useScene.getState().setInstalledPlugins([HOTSPOT_PLUGIN_ID], { explicit: true });
+      if (site && hotspotDef && !useScene.getState().nodes["spike_hotspot_1" as never]) {
+        useScene.getState().createNode(
+          {
+            ...(hotspotDef.defaults?.() ?? {}),
+            id: "spike_hotspot_1", type: "huma:hotspot", parentId: site.id,
+            position: [3, 1.5, 0], label: "Inspect the column",
+            action: { type: "seek", seconds: 2.5 }
+          } as never,
+          site.id as never
+        );
+      }
       report.nodeIds = Object.keys(useScene.getState().nodes);
       report.undoDepth = undoDepth();
     } catch (error) {
       report.error = error instanceof Error ? error.message : String(error);
     }
+    // Diagnostics hook for the headless driver.
+    (window as unknown as { __scene?: unknown }).__scene = useScene;
     window.__spike = report;
     setView({ ...report });
   }, []);
@@ -199,6 +271,12 @@ dirty nodes      : ${view.dirtyNodes}
 probe mounted    : ${view.probeMounted}
 drift at frames  : ${view.driftFrames.join(", ") || "—"}
 perturbed at     : ${view.perturbedAt.join(", ") || "—"}
+
+Q4 — hotspot as a Pascal plugin node kind
+registered kind  : ${view.hotspotRegistered}
+rendered in 3D   : ${view.hotspotRendered}
+driven by track  : ${view.hotspotDriven}
+clicks captured  : ${view.hotspotClicks}
 error            : ${view.error ?? "none"}
 ${cam ? `
 Q3 — who owns the camera?   mode: ${cam.mode}

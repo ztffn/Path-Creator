@@ -3,8 +3,9 @@
 // external plugin discovery (which hits the network). Without this every NodeRenderer
 // resolves to null and the scene is silently empty.
 // Scope: spike harness only.
-import { nodeRegistry, registerNode, type AnyNodeDefinition } from "@pascal-app/core";
+import { loadPlugin, nodeRegistry, registerNode, type AnyNodeDefinition } from "@pascal-app/core";
 import { builtinPlugin } from "@pascal-app/nodes";
+import { humaHotspotPlugin } from "./hotspot-plugin";
 
 let loaded = false;
 
@@ -17,6 +18,10 @@ export function loadPascalBuiltins(): string[] {
       // and registerNode throws on a duplicate kind.
       if (!nodeRegistry.has(node.kind)) registerNode(node);
     }
+    // Q4: the third-party pack goes through `loadPlugin`, the documented path. That is what
+    // records kind -> plugin id, which in turn is what makes the per-project install gate
+    // (`isNodeKindEnabled`) apply to it. Registering the definition directly bypasses the gate.
+    if (!nodeRegistry.has("huma:hotspot")) loadPlugin(humaHotspotPlugin);
   }
   return Array.from(nodeRegistry.entries(), ([kind]) => kind);
 }

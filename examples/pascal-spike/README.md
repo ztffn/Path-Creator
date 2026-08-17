@@ -81,8 +81,7 @@ Each is falsifiable. Record the answer in **Findings** below, including the ones
 - **Q4 — Can a hotspot be a Pascal plugin node kind?** This is the question that started the
   spike. Pascal's vocabulary is architectural (site, building, level, wall, slab), so
   whether its plugin API generalises to "a clickable annotated point bound to a timeline
-  action" is an assumption, not a fact. Pascal's `SceneActionCapability` (per-kind
-  `resolveTarget` / `activate` on click) looks like the right hook.
+  action" is an assumption, not a fact. **Answered: yes** — see Findings.
 
 - **Q5 — Do the dependencies reconcile?** Pascal peers `three@^0.185`; this workspace is on
   `0.181.2`. Three must be a singleton, so two copies in one app will break. Either the
@@ -105,6 +104,11 @@ Q3 and Q5 are cost, not viability — they change how much work this is, not whe
 Migrating elastiq, the mission editor for the Delta Force project, replacing the demo, and
 anything about persistence or multiplayer. Those depend on the answers, and one of them is
 "do not do this".
+
+## Status — all five questions answered
+
+Q1 yes · Q2 yes (1 drifted frame in 2220) · Q3 yes with a rule · Q4 yes end to end · Q5 yes at
+the cost of one aligned version bump. **Neither kill criterion fired.**
 
 ## Findings
 
@@ -228,10 +232,53 @@ The one drifted frame in the clean modes is frame 1, where the camera moves from
 default `[10, 10, 10]` to the first resolved pose of the shot. That is the shot taking over, not
 a conflict.
 
-### Q4 — not yet run
+### Q4 — Can a hotspot be a Pascal plugin node kind? **Yes, end to end.** (2026-08-17)
 
-Unchanged, with one wrinkle: Pascal's hierarchy is site → building → level → item, and a
-world-anchored hotspot belongs to none of them.
+Built as a real third-party plugin (`src/hotspot-plugin.ts`, `hotspot-schema.ts`,
+`hotspot-renderer.tsx`) — its own manifest, its own Zod schema extending `BaseNode`, its own
+renderer — loaded through the documented `loadPlugin`, not a shortcut. Measured in the running
+viewer:
+
+| | |
+|---|---|
+| Registered as a kind | **yes** — 47 kinds, 46 built-in plus `huma:hotspot` |
+| Rendered by Pascal's generic dispatch | **yes** |
+| Present in `sceneRegistry.nodes` | **yes** — so the object binding applies unchanged |
+| Driven by a path-creator transform track | **yes** |
+| Click dispatches its action payload | **yes** — 5 clicks captured |
+
+**The hierarchy objection was wrong.** There is no parent-kind validation anywhere in core;
+`parentId` is optional and the hierarchy is convention, not schema. The hotspot parents straight
+to the **site** — no building, no level — lands in the site's `children`, and both the site and
+level renderers dispatch every child generically without filtering on kind. A world-anchored node
+is not a special case.
+
+**The `action` field is the boundary in one object.** Pascal round-trips it as opaque node data,
+exactly as it round-trips a wall's thickness. Only the time layer reads it. Space and time stay in
+separate documents while one object carries both halves.
+
+#### Contract details that cost time, and would again
+
+- **`def.renderer` must be a `RendererSource`**, i.e. `{ kind: 'parametric', module: () =>
+  import('./x') }` with a **default export**. A plain component reference is dropped silently by
+  `getRegistryRenderer` — the node registers, the scene stays empty, and nothing warns.
+- **Namespaced kinds are gated per project.** `isNodeKindEnabled` refuses a plugin kind unless its
+  plugin id is in the scene's `installedPlugins`. The mapping from kind to plugin id is recorded
+  by `loadPlugin`, *not* by `registerNode` — so registering a definition directly bypasses the
+  gate rather than satisfying it. Use `loadPlugin` plus `setInstalledPlugins`.
+- **Registration must happen at module import time**, before any React tree renders. Doing it in
+  an effect leaves the viewer resolving every node to null on first render; it warns, clearly.
+- **`category` is one of five architectural buckets** (`site`, `structure`, `furnish`,
+  `analysis`, `utility`). A hotspot is not really any of them; `analysis` is the closest fit.
+  Cosmetic, but it is where the domain mismatch shows.
+- **`exactOptionalPropertyTypes`** in this workspace rejects Pascal's published definition types.
+  The shapes match exactly at runtime; one cast at the boundary, documented in place.
+
+#### Not a finding, but worth knowing
+
+Pascal's `<ViewerCamera>` sets a position and no target, so with no camera controls mounted it
+looks down −Z and the scene sits out of frame. That is consistent with Q3: camera motion lives in
+the editor package. The harness aims the camera itself, which R9 permits when nothing else owns it.
 
 ### Context gathered while scaffolding
 
