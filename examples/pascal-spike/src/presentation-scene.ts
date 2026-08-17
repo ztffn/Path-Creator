@@ -75,22 +75,17 @@ interface SceneStoreLike {
   nodes: Record<string, unknown>;
   createNode: (node: unknown, parentId?: unknown) => void;
   setInstalledPlugins: (ids: string[], options?: { explicit?: boolean }) => void;
-  loadScene: () => void;
 }
 
 /**
  * Builds the scene in Pascal's store: the models, and a hotspot beside each one wired to that
- * model's cue. Idempotent — React strict mode mounts effects twice.
+ * model's cue. Nodes are created as ROOTS — Pascal's site/building/level hierarchy is
+ * architectural and this product has no use for it; `parentId` is optional and nothing in core
+ * validates parent kinds. Idempotent, because strict mode mounts effects twice.
  */
 export function buildPresentationScene(store: SceneStoreLike, registry: NodeRegistry): void {
-  if (Object.keys(store.nodes).length === 0) store.loadScene();
-  // A namespaced kind is gated per project; without this the renderer refuses it silently.
+  // A namespaced kind is gated per project; without this a kind-aware renderer refuses it.
   store.setInstalledPlugins([SCENE_PLUGIN_ID], { explicit: true });
-
-  const site = Object.values(store.nodes).find(
-    (n) => (n as { type?: string }).type === "site"
-  ) as { id: string } | undefined;
-  if (!site) return;
 
   const glb = registry.get("huma:glb");
   const hotspot = registry.get("huma:hotspot");
@@ -100,19 +95,18 @@ export function buildPresentationScene(store: SceneStoreLike, registry: NodeRegi
     if (!store.nodes[model.id]) {
       store.createNode({
         ...(glb.defaults?.() ?? {}),
-        id: model.id, type: "huma:glb", parentId: site.id, name: model.name,
+        id: model.id, type: "huma:glb", name: model.name,
         url: MODEL_URL, position: model.position, scale: [0.04, 0.04, 0.04]
-      }, site.id);
+      });
     }
     const markerId = `${model.id}_marker`;
     if (!store.nodes[markerId]) {
       store.createNode({
         ...(hotspot.defaults?.() ?? {}),
-        id: markerId, type: "huma:hotspot", parentId: site.id,
-        label: model.name,
+        id: markerId, type: "huma:hotspot", label: model.name,
         position: [model.position[0], 1.8, model.position[2]] as [number, number, number],
         action: { cueId: CUES[index + 1]?.id ?? "overview", transitionSeconds: TRANSITION_SECONDS }
-      }, site.id);
+      });
     }
   });
 }

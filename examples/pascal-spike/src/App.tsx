@@ -5,6 +5,8 @@
 // app supplies the vocabulary. Scope: prototype; see README.md for what it is demonstrating.
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useFrame, useThree } from "@react-three/fiber";
+import { Canvas } from "@react-three/fiber";
+import { ContactShadows, Environment } from "@react-three/drei";
 import { Viewer } from "@pascal-app/viewer";
 import { nodeRegistry, sceneRegistry, useScene } from "@pascal-app/core";
 import {
@@ -19,7 +21,17 @@ import {
   createCueTransport, currentCue, rideTo, rideToNext, rideToPrevious, stepCueTransport, type Cue
 } from "./cues";
 import { hotspotClicks } from "./scene-kinds";
+import { PresentationScene } from "./scene-renderer";
 import { buildPresentationScene, CUES, SHOTS, TRANSITION_SECONDS } from "./presentation-scene";
+
+// Two shells over ONE document. `?mode=reading` mounts Pascal's WebGPU viewer — SSGI, inked
+// edges, merged outlines, tuned for reading geometry clearly. Anything else mounts our own
+// canvas — HDRI environment, contact shadows, and whatever cinematic post the product wants.
+// The scene, the node kinds, their renderers and the timeline are identical in both; only the
+// shell around them differs, which is the whole reason the document is renderer-agnostic.
+const MODE = (typeof window !== "undefined"
+  ? new URLSearchParams(window.location.search).get("mode")
+  : null) === "reading" ? "reading" : "polished";
 
 function CameraDirector({ onSlide }: { onSlide: (name: string, t: number) => void }) {
   const camera = useThree((s) => s.camera);
@@ -109,7 +121,21 @@ export default function App() {
 
   return (
     <div style={{ position: "fixed", inset: 0, background: "#0e1116" }}>
-      <Viewer>{ready ? <CameraDirector onSlide={(name, t) => setSlide({ name, t })} /> : null}</Viewer>
+      {MODE === "reading" ? (
+        // Pascal's viewer renders the same document through its own dispatch, using the very
+        // same node renderers our plugin ships. It brings the shell: WebGPU, SSGI, outlines.
+        <Viewer>{ready ? <CameraDirector onSlide={(name, t) => setSlide({ name, t })} /> : null}</Viewer>
+      ) : (
+        <Canvas camera={{ position: [10, 6, 10], fov: 50 }} dpr={[1, 2]} shadows>
+          <color args={["#0e1116"]} attach="background" />
+          <Environment preset="city" />
+          <directionalLight castShadow intensity={2.2} position={[6, 10, 6]} />
+          <ambientLight intensity={0.35} />
+          <ContactShadows blur={2.4} far={12} opacity={0.5} position={[0, 0.01, 0]} scale={30} />
+          <PresentationScene />
+          {ready ? <CameraDirector onSlide={(name, t) => setSlide({ name, t })} /> : null}
+        </Canvas>
+      )}
 
       {/* The HTML layer. In the product this is the slide deck; here it only proves the two
           halves stay in step, because both read the same clock. */}
@@ -125,6 +151,9 @@ export default function App() {
         <div style={{ opacity: 0.7, marginTop: 8 }}>
           Slides are timestamps on one timeline. Next does not cut — it rides the clock, and the
           camera follows because it is a function of t. Click a marker to jump to its slide.
+        </div>
+        <div style={{ opacity: 0.45, marginTop: 6, font: "11px ui-monospace, monospace" }}>
+          shell: {MODE} · {MODE === "polished" ? "?mode=reading for Pascal's viewer" : "drop ?mode for the polished shell"}
         </div>
         <div style={{ display: "flex", gap: 8, marginTop: 14 }}>
           <button onClick={() => go(-1)} style={btn}>← Prev</button>

@@ -29,12 +29,40 @@ camera and everything else for free. There is no separate transition system to b
 | `presentation-scene.ts` | The authored content — scene above the line, cues and shots below it. |
 | `pascal-binding.ts` | Pascal's registry as a path-creator `ObjectBindingResolver`. |
 
-Pascal contributes **none** of its 46 architectural kinds here. It contributes the node registry,
-schemas with migrations, the store, undo, hierarchy, and the id-to-object registry the timeline
-binds to. The vocabulary is ours.
+## Two shells, one document — `?mode=reading`
 
-Shots bind to models **by node id**, so moving a model in the scene re-frames its slide with no
-timeline edit. That is the boundary paying for itself.
+The product wants a polished look sometimes and clear visual reading other times. Those are two
+renderers, not one renderer with a switch, and the scene document does not care which is mounted.
+Both are running:
+
+| Shell | What it is | For |
+|---|---|---|
+| **polished** (default) | Our own R3F canvas — HDRI environment, contact shadows, room for bloom and depth of field | Presentation |
+| **reading** (`?mode=reading`) | Pascal's `<Viewer>` — WebGPU, SSGI, denoise, inked edges, merged outlines | Inspection, technical read |
+
+**Identical in both:** the scene document, the node kinds, *their renderers*, the cues, the shots
+and the timeline. Verified — six nodes, six rendered, same navigation, no errors either way. Only
+the shell around them differs.
+
+That works because our node renderers are contributed by the plugin, so Pascal's dispatch and our
+twenty-line `scene-renderer.tsx` both mount the same components. The look comes from the shell —
+lights, environment, post — not from the kinds.
+
+**The discipline this imposes:** node renderers must stay renderer-agnostic. No WebGL-only
+materials inside a kind, or it breaks under the WebGPU shell. That is the same lesson this
+library already learned the hard way, and why it ships `RigLine`, `RigLabel` and `TransformGizmo`.
+
+**What Pascal contributes either way, and it is the valuable half:** the node registry, Zod
+schemas with migrations, the store, undo, hierarchy, plugin kinds with their install gate, and
+the id-to-`Object3D` registry the timeline binds to. That is the part you would otherwise build
+by accretion — exactly how this library grew an entity system nobody designed.
+
+**What it does not contribute:** any of its 46 architectural kinds. Nodes are created as roots;
+`parentId` is optional and nothing in core validates parent kinds, so site/building/level is
+simply unused. The scene is six nodes, all of them ours.
+
+Shots bind to models **by node id**, so moving a model re-frames its slide with no timeline edit.
+That is the boundary paying for itself rather than just being documented.
 
 ---
 

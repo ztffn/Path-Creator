@@ -182,7 +182,24 @@ transform track over a Pascal node is absolute. **Consequence:** additive transf
 which exist to layer corrections over mixer output — have nothing to layer over on a Pascal
 node. Skinned GLB clip playback stays this library's job, on objects it registers itself.
 
-### 5.3 The frame loop — **proven, and constrained**
+> **The viewer is one shell of two, not a requirement.** A host can mount Pascal's `<Viewer>`
+> for a technical read (WebGPU, SSGI, inked edges, outlines) and its own canvas for a polished
+> one (HDRI, shadows, bloom, depth of field) — over the SAME document, with the same node kinds
+> and the same timeline, because the kinds ship their own renderers and the look lives in the
+> shell. Demonstrated both ways in `examples/pascal-spike` (`?mode=reading`). The cost is one
+> discipline: a node renderer must stay renderer-agnostic, or it breaks under the WebGPU shell.
+>
+> **The viewer is also optional entirely.** §5.3 and §5.4 describe
+> what happens when a host mounts Pascal's `<Viewer>`. It does not have to. `@pascal-app/core`
+> carries the registry, schemas, store, undo, hierarchy and the id-to-object map with no WebGPU
+> and no viewer dependency, so a host can render the document itself — about twenty lines of
+> dispatch — and keep its own renderer, frame loop, camera and look. For a presentation product
+> that is the right trade: Pascal's renderer is tuned for architectural legibility (SSGI, inked
+> edges, outlines) and has no bloom, depth of field, HDRI environment or transmission. Taking
+> core alone also retires the frame cap and the camera contest below. Demonstrated in
+> `examples/pascal-spike`.
+
+### 5.3 The frame loop — **proven, and constrained** (only when Pascal's viewer is mounted)
 
 Pascal's viewer owns the canvas, runs `frameloop="never"`, and advances frames itself. A driver
 must mount **inside** the viewer (it accepts `children`) and use `useFrame`, so it shares that
@@ -194,7 +211,7 @@ in [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671) (default
 changes nothing until asked). Until that merges, treat 50 as the ceiling and do not design
 around 60; if it is rejected, the fallback is driving `advance` ourselves.
 
-### 5.4 The camera — **proven**
+### 5.4 The camera — **proven** (contest applies only when a controller is mounted)
 
 The viewer does *not* contest the camera: `<ViewerCamera>` is a drei camera with `makeDefault`
 and a fixed initial position, and writes nothing per frame. Camera **motion** lives in
