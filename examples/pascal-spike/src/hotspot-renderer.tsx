@@ -1,12 +1,12 @@
-// The hotspot's 3D renderer, in its own module because Pascal's dispatch requires a
-// `RendererSource` of kind 'parametric' whose `module` is a lazy import with a DEFAULT export —
-// a plain component reference is silently dropped by `getRegistryRenderer`. Registering its
-// group through `useRegistry` is what puts the hotspot into `sceneRegistry.nodes`, and so what
-// makes a plugin-contributed node drivable by a path-creator track. Scope: spike harness.
+// Renderer for the `huma:hotspot` node kind. Registers under the node id like every other kind,
+// so a hotspot is drivable by the timeline exactly as a model is, and pushes its opaque action
+// payload on click for the product layer to interpret. Default export + lazy import are required
+// by Pascal's renderer dispatch — a direct component reference is dropped silently.
+// Scope: prototype scene layer.
 import { useRef } from "react";
 import { useRegistry } from "@pascal-app/core";
 import type { Object3D } from "three";
-import { hotspotClicks, type HotspotNodeType } from "./hotspot-schema";
+import { hotspotClicks, type HotspotNodeType } from "./scene-kinds";
 
 export default function HotspotRenderer({ node }: { node: HotspotNodeType }) {
   const ref = useRef<Object3D>(null!);
@@ -20,7 +20,7 @@ export default function HotspotRenderer({ node }: { node: HotspotNodeType }) {
           hotspotClicks.push({ id: node.id, action: node.action });
         }}
       >
-        <sphereGeometry args={[0.35, 20, 20]} />
+        <sphereGeometry args={[0.3, 20, 20]} />
         <meshStandardMaterial color="#ffb454" emissive="#7a4a10" roughness={0.4} />
       </mesh>
     </group>

@@ -5,7 +5,7 @@
 // Scope: spike harness only.
 import { loadPlugin, nodeRegistry, registerNode, type AnyNodeDefinition } from "@pascal-app/core";
 import { builtinPlugin } from "@pascal-app/nodes";
-import { humaHotspotPlugin } from "./hotspot-plugin";
+import { presentationScenePlugin } from "./scene-plugin";
 
 let loaded = false;
 
@@ -18,10 +18,10 @@ export function loadPascalBuiltins(): string[] {
       // and registerNode throws on a duplicate kind.
       if (!nodeRegistry.has(node.kind)) registerNode(node);
     }
-    // Q4: the third-party pack goes through `loadPlugin`, the documented path. That is what
-    // records kind -> plugin id, which in turn is what makes the per-project install gate
-    // (`isNodeKindEnabled`) apply to it. Registering the definition directly bypasses the gate.
-    if (!nodeRegistry.has("huma:hotspot")) loadPlugin(humaHotspotPlugin);
+    // Our own kinds go through `loadPlugin`, the documented path — that is what records
+    // kind -> plugin id, which is what makes the per-project install gate (`isNodeKindEnabled`)
+    // apply. Registering a definition directly bypasses the gate instead of satisfying it.
+    if (!nodeRegistry.has("huma:glb")) loadPlugin(presentationScenePlugin);
   }
   return Array.from(nodeRegistry.entries(), ([kind]) => kind);
 }

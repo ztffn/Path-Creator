@@ -1,12 +1,44 @@
 <!--
-Purpose: Charter and findings log for the Pascal spike — testing whether the Pascal
-editor can own the scene ("what exists, where") while @huma/path-creator owns time
-("when, and what happens"), instead of this library growing its own scene editor.
-Scope: examples/pascal-spike only. Throwaway on purpose; the adapter is the one part
-with a promotion path. Update the Findings section as each question is answered.
+Purpose: The presentation prototype — a Pascal-owned scene of GLBs and hotspots driven by
+a path-creator timeline where slides are timestamps — plus the findings log from the spike
+that established the boundary it is built on.
+Scope: examples/pascal-spike. The scene kinds, the cue transport and the binding adapter
+have promotion paths; the probe harness that answered Q1-Q5 has been removed now that the
+answers are recorded below.
 -->
 
-# Pascal spike — can someone else own the scene graph?
+# Presentation prototype, on the scene/time boundary
+
+## What this runs
+
+`pnpm --filter pascal-spike dev`. Three GLBs placed in a Pascal scene, a hotspot marker beside
+each, and four cues. **Arrow keys or the buttons move between slides; clicking a marker jumps to
+its slide.**
+
+The interaction model is the whole point: a presentation is ONE timeline, a slide is a named
+timestamp on it, and "next slide" is not a cut — it **rides the clock** from where it is to where
+the cue sits, eased. Because the timeline is a pure function of `t`, animating `t` moves the
+camera and everything else for free. There is no separate transition system to build.
+
+| File | What it holds |
+|---|---|
+| `scene-kinds.ts` | The product's node vocabulary: a GLB at a transform, and a hotspot. |
+| `scene-plugin.ts` | Those kinds as one Pascal plugin manifest. |
+| `glb-model-renderer.tsx` / `hotspot-renderer.tsx` | Their renderers; `useRegistry` is what makes them timeline-drivable. |
+| `cues.ts` | Slides as timestamps, and the ride that animates the clock between them. |
+| `presentation-scene.ts` | The authored content — scene above the line, cues and shots below it. |
+| `pascal-binding.ts` | Pascal's registry as a path-creator `ObjectBindingResolver`. |
+
+Pascal contributes **none** of its 46 architectural kinds here. It contributes the node registry,
+schemas with migrations, the store, undo, hierarchy, and the id-to-object registry the timeline
+binds to. The vocabulary is ours.
+
+Shots bind to models **by node id**, so moving a model in the scene re-frames its slide with no
+timeline edit. That is the boundary paying for itself.
+
+---
+
+# The spike that established this — can someone else own the scene graph?
 
 ## Why this exists
 
