@@ -315,6 +315,11 @@ no stable identity to grant permissions against. This system supplies both.
 
 ## 8. Build sequence
 
+> Executed in detail by
+> [`../plans/2026-08-17-elastiq-system-implementation-v1.md`](../plans/2026-08-17-elastiq-system-implementation-v1.md),
+> which carries the traps, measurements and done-criteria for agents who did not take part in
+> this design. The four phases below are its four milestones.
+
 Four phases, in dependency order. Each is independently useful.
 
 ### Phase 1 — Time, as a Pascal plugin
