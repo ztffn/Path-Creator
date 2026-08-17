@@ -182,9 +182,10 @@ must mount **inside** the viewer (it accepts `children`) and use `useFrame`, so 
 loop rather than racing it from a separate animation callback.
 
 **The cap:** the viewer renders `<FrameLimiter fps={50} />` with 50 hardcoded, not exposed as a
-prop. A timeline hosted in Pascal's viewer is therefore capped at 50 fps. Resolution is being
-upstreamed as a configurable prop; until that lands, treat 50 as the ceiling and do not design
-around 60.
+prop, so a timeline hosted in Pascal's viewer is capped at 50 fps. Upstreamed as a `maxFps` prop
+in [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671) (defaults to 50, so it
+changes nothing until asked). Until that merges, treat 50 as the ceiling and do not design
+around 60; if it is rejected, the fallback is driving `advance` ourselves.
 
 ### 5.4 The camera — **OPEN**
 
@@ -301,7 +302,9 @@ Each measured while integrating; each will be paid again by the next person.
    evaluated: id remapping on clone, per-instance timeline binding, or relative addressing
    within a subtree. **This is the hardest unsolved problem on the boundary**, and it only
    appears once prefabs and timelines are used together, which is the intended end state.
-4. **Frame-rate ceiling.** Being upstreamed; until merged, 50 fps is the design constraint.
+4. **Frame-rate ceiling.** `maxFps` prop proposed upstream as
+   [pascalorg/editor#671](https://github.com/pascalorg/editor/pull/671). Until it merges, 50 fps
+   is the design constraint. Fallback if declined: drive R3F's `advance` ourselves.
 5. **Where the product layer lives.** elastiq composing two libraries, versus a thin shared
    host package both products consume. Not urgent until the second product is real.
 
