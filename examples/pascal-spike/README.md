@@ -144,13 +144,63 @@ demo tests, 4 spike tests all pass, and the package plus all three examples buil
 The runtime peer range (`>=0.181.0 <0.190.0`) already allowed 0.185, so nothing about the
 library's declared support changed. That bump is applied on this branch.
 
-### Q2, Q3, Q4 — not yet run
+### Q2 — Does Pascal fight us? **No. 1 drifted frame in 2220.** (2026-08-17)
 
-`src/App.tsx` is the Q2 harness and runs today against the stand-in registry as a control,
-reporting per-frame drift between what the timeline wrote and what the object holds on the
-next frame. Against the stand-in that number must be zero; against Pascal, a non-zero worst
-drift is the two systems fighting. Swapping `useRegistry` for Pascal's exported
-`sceneRegistry` is the intended one-line change.
+Measured against the real `<Viewer>` in system Chrome on WebGPU, with the probe mounted as a
+Viewer child so it shares Pascal's own frame loop. `pnpm --filter pascal-spike dev`, then
+read the panel or `window.__spike`.
+
+| | |
+|---|---|
+| frames sampled | 2220 (~45s) |
+| sustained rate | 49.7 fps |
+| frames where our write was overwritten | **1** — frame 1, the mount |
+| worst drift on the clean path | 0.02 m, self-healed the next frame |
+| mid-playback edits to *other* nodes (frames 200/400/600) | **0** drift |
+| Pascal undo depth grown by driving | **0** (only explicit edits moved it) |
+| Pascal dirty-node count while driving | **0** |
+
+Writing straight to the `Object3D` that `sceneRegistry` hands back survives Pascal's render
+loop, costs no React render, and leaves its document and undo history untouched. Both kill
+criteria for Q2 are clear.
+
+**The one conflict, and it is narrow.** Run with `?pokeDriven` and the harness updates *the
+node being driven* mid-playback. That forces the React commit which reapplies `position` from
+node data, and the object snaps back to its authored pose for exactly one frame (1.98 m of
+drift, recovered on the next frame). Editing any *other* node never does this. So the rule is:
+a node under timeline control should not be edited in Pascal's store while the timeline runs —
+and if that becomes necessary, `useLiveNodeOverrides` is Pascal's sanctioned path for it.
+
+**The real constraint is the frame rate, not the conflict.** The Viewer runs
+`frameloop="never"` and advances frames itself through `<FrameLimiter fps={50} />` — and that
+50 is **hardcoded, not a prop**. So a timeline hosted in Pascal's viewer is capped at 50 fps
+today. Fixing it means upstreaming an `fps` prop (small, plausibly welcome) or driving
+`advance` ourselves. Worth deciding early; it is a product-visible ceiling.
+
+### Integration costs found while getting there
+
+Each of these cost real time and would cost it again:
+
+- **Three must be 0.185 everywhere, `@types/three` included.** Already applied — see Q5.
+- **`process.env.NODE_ENV` needs a shim outside Next.** Pascal's published bundles read it at
+  module scope; without the shim in `index.html` the viewer throws before first render.
+- **`@pascal-app/nodes` is bundler-only.** Its dist uses directory imports, which plain Node
+  ESM rejects, so it cannot be probed headlessly outside Vite.
+- **`Viewer` is a named export in the published beta**, not a default, unlike the repo source.
+- **The published line is `1.0.0-beta.4`.** `@pascal-app/nodes` latest-stable is 0.1.1 while
+  core/viewer are 0.9.2; only the beta line is coherent across all three.
+- **The viewer owns its Canvas** but accepts `children` inside it, which is what lets a driver
+  share its frame loop rather than race it from a separate animation callback.
+- **Pascal's default scene is site/building/level only** — no geometry. Content has to be
+  created. `item` needs a catalog asset; `column` is parametric and asset-free, so it is the
+  cheap thing to drive in a test.
+
+### Q3, Q4 — not yet run
+
+Q3 (camera ownership) is now the more interesting of the two: the viewer owns the frame loop
+as well as the camera, so the same question about `<FrameLimiter>` applies to `<ViewerCamera>`.
+Q4 (hotspot as a plugin node kind) is unchanged, with one new wrinkle — Pascal's hierarchy is
+site → building → level → item, and a world-anchored hotspot belongs to none of them.
 
 ### Context gathered while scaffolding
 
