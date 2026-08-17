@@ -8,7 +8,7 @@ Read ELASTIQ-SYSTEM.md first for what is being built and why; this doc is how.
 
 # elastiq system — implementation plan v1
 
-**Status:** in progress. M0.4, M1.1 and M1.2 are done (2026-08-17); everything else is plan.
+**Status:** in progress. M0.4, M1.1, M1.2 and M1.5 are done (2026-08-17); everything else is plan.
 **Design:** [`../technical/ELASTIQ-SYSTEM.md`](../technical/ELASTIQ-SYSTEM.md) (what and why)
 and [`../technical/INTEGRATION-DESIGN.md`](../technical/INTEGRATION-DESIGN.md) (the ownership
 rules and the measurements behind them).
@@ -100,7 +100,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.2 binding + tracks | M | both | M1.1 | **Done** 2026-08-17. |
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
-| M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
+| M1.5 cues | S | both | M1.2 | **Done** 2026-08-17. |
 | M1.6 persistence | M | both | M1.2 | Unblocked — clone identity decided (remap on clone). |
 | M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
 | M2.1 post-processing | M | both | M0.1, M2.0 | Mechanical. Direct TSL equivalents. Includes seam PRs if (c). |
@@ -535,16 +535,56 @@ own state every update; there is no middle ground.
 **Done when:** a shot is authorable in the editor, plays back through the timeline, and the
 viewport camera does not fight it.
 
-### M1.5 — Cues
+### M1.5 — Cues — **DONE** (2026-08-17)
 
 Named timestamps as first-class data, plus the transport that rides the clock between them.
 
-A working implementation with tests exists at `examples/elastiq/src/document/cues.ts` —
+A working implementation with tests existed at `examples/elastiq/src/document/cues.ts` (now
+promoted, and deleted from the example) —
 cue lookup at, before and after a time, and a ride that lands exactly on the cue, replaces a ride
 in flight **from the current clock rather than the old origin**, and treats zero duration as an
 immediate seek. Promote it into `@huma/path-creator/timeline`.
 
 **Done when:** cues are authorable, navigable, and the ride is covered by tests at those edges.
+
+**Delivered in three parts.**
+
+*The library* now owns cues (`@huma/path-creator/timeline`): `Cue`, the three lookups, the
+transport, and `rideTo` / `rideToNext` / `rideToPrevious` / `rideToCue`. The spike's nine tests
+became **19**, adding the edges the phase names plus: no cue before the first; reversing
+mid-ride turns around from where it is; a ride never seeks below zero; the same total delta
+lands in the same place however many frames it arrived in; and — the one that states what a ride
+*is* — **a ride does not fire the events it passed over**, because it seeks rather than plays.
+Skipping to slide five must not trigger every sound between here and there.
+
+The lookups are generic over the cue type, so a product's own per-cue fields survive the round
+trip. The elastiq example proves it: its cues carry a `renderMode` the timeline layer knows
+nothing about, and it now consumes the library rather than its own copy.
+
+*The plugin* makes cues **authorable**: `huma-time:cue` is a Pascal node kind, parented to the
+timeline whose clock its `timeSeconds` is measured on. A cue is timeline data, so the reason it
+is a scene node is worth stating — an author creates, names, retimes, deletes and undoes it, and
+Pascal already does all of that for any registered kind. `readCues()` hands the time layer plain
+`{ id, name, time }`. **The node id is the cue id**, so a hotspot's reference is a node
+reference like every other in the system.
+
+*The harness* proves it in Pascal's real viewer. It rides to a cue named `peak` over ~46 frames
+and checks not only that the clock landed on 4.0 exactly but that **the driven marker was at
+y=3.4** — the pose the transform track specifies for that instant. That is the phase's whole
+thesis made falsifiable: animating `t` moves everything, and there is no separate transition
+system.
+
+**Found while building it, and M1.4 has to decide it.** Pascal's `<NodeRenderer>` renders a
+node's *own* renderer and does **not** dispatch children — which is why its site and level
+renderers dispatch theirs explicitly. A container kind that does not is a silent hole: children
+exist in the document, behave correctly in the store, and never mount. Measured: three cues
+under the timeline node leave the scene at 7 document nodes and 4 registered objects. It costs
+nothing while the children are moments, so `huma-time:cue` ships **no renderer** rather than an
+unreachable one. A shot or camera parented to the timeline in M1.4 will want to draw something,
+and then it is a real choice: dispatch children from the timeline renderer (depending on
+`@pascal-app/viewer` for `<NodeRenderer>`, or reimplementing its install gate and lazy-module
+contract), or parent renderable time kinds at the scene root. Recorded as trap 11 in
+`Packages/pascal-time/README.md`.
 
 ### M1.6 — Persistence
 
