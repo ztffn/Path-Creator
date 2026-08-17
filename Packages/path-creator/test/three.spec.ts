@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { Group, Matrix4, PerspectiveCamera, Quaternion, Vector3 } from "three";
+import { AnimationClip, AnimationMixer, Group, Matrix4, NumberKeyframeTrack, PerspectiveCamera, Quaternion, Vector3 } from "three";
 import {
   DEFAULT_COMPOSER_SETTINGS,
   VertexPath,
@@ -11,6 +11,8 @@ import {
 } from "../src/core";
 import {
   activateVirtualCameraBrain,
+  ActivationTrackDirector,
+  AnimationTrackDirector,
   applyScreenComposerAim,
   applyVirtualCameraBrain,
   applyVirtualCameraSnapshot,
@@ -36,9 +38,11 @@ import {
   markEditorHelpers,
   orbitOffset,
   orbitParamsFromLocalOffset,
+  ObjectBindingRegistry,
   createOverrideInputAccumulator,
   resolveCameraPivot,
   stepCameraOverride,
+  TransformTrackDirector,
   setVirtualCameraBrainLive,
   showEditorHelpers,
   resolveVirtualCameraDefinition,
@@ -1459,6 +1463,258 @@ describe("driveActivation", () => {
     expect(result.activeVcamId).toBeNull();
     expect(result.cameraSnapshot?.position.x).toBeCloseTo(10);
     expect(state.activation.vcamId).toBeNull();
+  });
+});
+
+describe("portable object track directors", () => {
+  it("stops and restores an animation binding when its track is removed", () => {
+    const object = new Group();
+    const mixer = new AnimationMixer(object);
+    const clip = new AnimationClip("Walk", 2, [new NumberKeyframeTrack(".position[x]", [0, 2], [0, 2])]);
+    const action = mixer.clipAction(clip);
+    let restored = 0;
+    const registry = new ObjectBindingRegistry();
+    registry.register("fox", object, {
+      mixer,
+      actions: new Map([["Walk", action]]),
+      clips: ["Walk"],
+      resetToRest: () => { restored += 1; }
+    });
+    const director = new AnimationTrackDirector();
+    director.sync(registry, [{ tracks: [{
+      type: "animation",
+      id: "track",
+      objectId: "fox",
+      clips: [{ id: "clip", clipName: "Walk", start: 0, end: 2 }]
+    }], time: 1 }], true);
+    expect(action.isRunning()).toBe(true);
+    director.sync(registry, [], true);
+    expect(action.isRunning()).toBe(false);
+    expect(restored).toBe(1);
+  });
+
+  it("wraps a looping clip's local time into [0, duration) (mixer.update(0) never wraps)", () => {
+    const object = new Group();
+    const mixer = new AnimationMixer(object);
+    const clip = new AnimationClip("Run", 2, [new NumberKeyframeTrack(".position[x]", [0, 2], [0, 2])]);
+    const action = mixer.clipAction(clip);
+    const registry = new ObjectBindingRegistry();
+    registry.register("fox", object, { mixer, actions: new Map([["Run", action]]), clips: ["Run"], resetToRest: () => {} });
+    const director = new AnimationTrackDirector();
+    // Window 0..8 is longer than the 2s clip, so at t=5 the native local time (5)
+    // runs past the clip; a looping action must keep cycling, not clamp to the end.
+    director.sync(registry, [{ tracks: [{ type: "animation", id: "track", objectId: "fox", clips: [{ id: "clip", clipName: "Run", start: 0, end: 8 }] }], time: 5 }], true);
+    expect(action.isRunning()).toBe(true);
+    expect(action.time).toBeCloseTo(1, 6); // 5 % 2
+  });
+
+  it("restores a transform after timeline driving ends", () => {
+    const object = new Group();
+    object.position.set(4, 5, 6);
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "track",
+      objectId: "prop",
+      position: [{ time: 0, value: [1, 2, 3] as [number, number, number] }]
+    }];
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([1, 2, 3]);
+    director.sync(registry, [{ tracks, time: 0 }], false);
+    expect(object.position.toArray()).toEqual([4, 5, 6]);
+  });
+
+  it("additive transforms offset the pose already on the object instead of replacing it", () => {
+    const object = new Group();
+    const mixer = new AnimationMixer(object);
+    const registry = new ObjectBindingRegistry();
+    // The binding is what tells the director a mixer rewrites this object every frame, and
+    // so that the pose on it now is the base to offset rather than one to remember.
+    registry.register("bone", object, { mixer, actions: new Map(), clips: [], resetToRest: () => {} });
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "bone",
+      additive: true,
+      position: [{ time: 0, value: [0.5, 0, 0] as [number, number, number] }],
+      scale: [{ time: 0, value: [2, 1, 1] as [number, number, number] }]
+    }];
+    // Stand in for the mixer having just written this frame's animated pose.
+    object.position.set(10, 0, 0);
+    object.scale.set(3, 3, 3);
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([10.5, 0, 0]); // added, not replaced
+    expect(object.scale.toArray()).toEqual([6, 3, 3]); // scale composes by multiply
+
+    // Next frame the mixer writes a new pose; the same offset applies to THAT pose,
+    // rather than accumulating on the one it already offset.
+    object.position.set(20, 0, 0);
+    object.scale.set(3, 3, 3);
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([20.5, 0, 0]);
+    expect(object.scale.toArray()).toEqual([6, 3, 3]);
+  });
+
+  it("holds an additive offset steady on an object no mixer drives, and restores it on leave", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object); // no animation binding: nothing else writes this pose
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "prop",
+      additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }],
+      scale: [{ time: 0, value: [2, 1, 1] as [number, number, number] }]
+    }];
+    object.position.set(1, 1, 1);
+    object.scale.set(1, 1, 1);
+    // Nothing resets this object between frames, so re-reading its pose as the base would
+    // compound the offset every frame and send it off to infinity.
+    for (let frame = 0; frame < 4; frame += 1) director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([6, 1, 1]);
+    expect(object.scale.toArray()).toEqual([2, 1, 1]);
+    director.sync(registry, [{ tracks, time: 0 }], false);
+    expect(object.position.toArray()).toEqual([1, 1, 1]); // the pose we started from, not a drifted one
+    expect(object.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it("re-reads the base each frame when an absolute track shares the object", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const absolute = {
+      type: "transform" as const, id: "drive", objectId: "prop",
+      position: [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 10, value: [10, 0, 0] as [number, number, number] }]
+    };
+    const additive = {
+      type: "transform" as const, id: "correction", objectId: "prop", additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }]
+    };
+    director.sync(registry, [{ tracks: [absolute, additive], time: 0 }], true);
+    expect(object.position.toArray()).toEqual([5, 0, 0]);
+    // The absolute track rewrites the pose every frame, so the offset rides it rather than
+    // being pinned to a base captured on the first frame.
+    director.sync(registry, [{ tracks: [absolute, additive], time: 10 }], true);
+    expect(object.position.toArray()).toEqual([15, 0, 0]);
+  });
+
+  it("additive rotation composes in the object's own space", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("bone", object);
+    const director = new TransformTrackDirector();
+    object.rotation.set(0, Math.PI / 2, 0); // the baked animation's pose
+    director.sync(registry, [{ tracks: [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "bone",
+      additive: true,
+      rotation: [{ time: 0, value: [0, 90, 0] as [number, number, number] }]
+    }], time: 0 }], true);
+    // 90 degrees of animation plus 90 degrees of correction about the same axis is a
+    // half turn. Checked by where the object's forward axis ends up rather than by Euler
+    // angles, which decompose a half turn onto whichever axes they please.
+    const forward = new Vector3(0, 0, 1).applyQuaternion(object.quaternion);
+    expect(forward.x).toBeCloseTo(0, 5);
+    expect(forward.z).toBeCloseTo(-1, 5);
+  });
+
+  it("an additive track on an un-animated object restores the pose it offset", () => {
+    const object = new Group();
+    object.position.set(1, 1, 1);
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "offset",
+      objectId: "prop",
+      additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }]
+    }];
+    director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([6, 1, 1]);
+    director.sync(registry, [{ tracks, time: 0 }], false);
+    expect(object.position.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it("absolute and additive tracks on one object compose, absolute first", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    director.sync(registry, [{ tracks: [
+      { type: "transform" as const, id: "abs", objectId: "prop", position: [{ time: 0, value: [3, 0, 0] as [number, number, number] }] },
+      { type: "transform" as const, id: "add", objectId: "prop", additive: true, position: [{ time: 0, value: [0.25, 0, 0] as [number, number, number] }] }
+    ], time: 0 }], true);
+    expect(object.position.toArray()).toEqual([3.25, 0, 0]);
+  });
+
+  it("applies activation post-playback state", () => {
+    const object = new Group();
+    object.visible = false;
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const layers = [{ tracks: [{
+      type: "activation" as const,
+      id: "track",
+      objectId: "prop",
+      clips: [{ id: "clip", start: 0, end: 2 }],
+      postPlaybackState: "revert" as const
+    }], time: 1 }];
+    director.sync(registry, layers, true, 2, 1, true);
+    expect(object.visible).toBe(true);
+    director.sync(registry, layers, false, 2, 1, false);
+    expect(object.visible).toBe(false);
+  });
+
+  it("reverts an object whose activation track was deleted mid-drive", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const layers = [{ tracks: [{
+      type: "activation" as const,
+      id: "track",
+      objectId: "prop",
+      clips: [{ id: "clip", start: 0, end: 2 }],
+      postPlaybackState: "revert" as const
+    }], time: 5 }];
+    director.sync(registry, layers, true, 10, 5, true);
+    expect(object.visible).toBe(false); // hidden: the playhead sits past the clip window
+    // The author deletes the track while its object is hidden. There is no track left to
+    // carry a postPlaybackState and no UI left to unhide it, so leaving the drive has to
+    // put back what we found or the object is stranded invisible.
+    director.sync(registry, [{ tracks: [], time: 5 }], false, 10, 5, false);
+    expect(object.visible).toBe(true);
+  });
+
+  it("merges layered activation with later layers overriding per object", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const track = (id: string, start: number, end: number) => ({
+      type: "activation" as const, id, objectId: "prop",
+      clips: [{ id: `${id}-clip`, start, end }], postPlaybackState: "revert" as const
+    });
+    // Master says hidden at t=5; the embed layer (local t=1) says visible — the
+    // later (embed) layer wins for the shared object.
+    director.sync(registry, [
+      { tracks: [track("master", 0, 2)], time: 5 },
+      { tracks: [track("embed", 0, 2)], time: 1 }
+    ], true, 10, 5, true);
+    expect(object.visible).toBe(true);
+    // Embed window closed: only the master layer remains and it says hidden.
+    director.sync(registry, [{ tracks: [track("master", 0, 2)], time: 5 }], true, 10, 5, true);
+    expect(object.visible).toBe(false);
   });
 });
 

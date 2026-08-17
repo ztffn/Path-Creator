@@ -114,7 +114,7 @@ const cubic = (t: number, a: number, b: number, c: number, d: number): number =>
   return mt * mt * mt * a + 3 * mt * mt * t * b + 3 * mt * t * t * c + t * t * t * d;
 };
 
-function solveCubicBezierSegment(p0: EasingPoint, c1: EasingPoint, c2: EasingPoint, p3: EasingPoint, x: number): number {
+export function solveCubicBezierSegment(p0: EasingPoint, c1: EasingPoint, c2: EasingPoint, p3: EasingPoint, x: number): number {
   const epsilon = 1e-6;
   let t0 = 0;
   let t1 = 1;

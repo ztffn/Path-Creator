@@ -6,15 +6,12 @@
 import { useLayoutEffect, useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from "react";
 import {
   EASING_PRESETS,
-  clamp,
   convertEasingCurveSpace,
   easingToCurve,
   evaluateEasing,
   isEasingCurve,
-  lerp,
   sampleEasingCurve,
   sampleEasingDerivative,
-  tangentHandles,
   type Easing,
   type EasingCurve,
   type EasingCurveKey,
@@ -22,6 +19,19 @@ import {
   type EasingPoint,
   type TangentMode
 } from "../core";
+import {
+  addAnchor,
+  cloneKeys,
+  dragAnchor,
+  dragHandle,
+  effIn,
+  effOut,
+  insertIndexFor,
+  relink,
+  removeAnchor as removeAnchorAt,
+  type Axis,
+  type DragTarget
+} from "./curve-canvas";
 
 /** Minimal color surface so a host can match its panel; all optional. */
 export interface EasingEditorTheme {
@@ -51,58 +61,6 @@ const PRESET_NAMES = Object.keys(EASING_PRESETS) as EasingPreset[];
 const STANDARD_PRESETS = PRESET_NAMES.filter((n) => !LEGACY.has(n));
 const LEGACY_PRESETS = PRESET_NAMES.filter((n) => LEGACY.has(n));
 const SAMPLES = 40;
-
-// Effective control points: the explicit handle, or the default 1/3-chord point the
-// evaluator uses when a handle is absent — so every anchor shows a grabbable handle.
-const effOut = (keys: EasingCurveKey[], i: number): EasingPoint =>
-  keys[i].out ?? { x: lerp(keys[i].x, keys[i + 1].x, 1 / 3), y: lerp(keys[i].y, keys[i + 1].y, 1 / 3) };
-const effIn = (keys: EasingCurveKey[], i: number): EasingPoint =>
-  keys[i].in ?? { x: lerp(keys[i - 1].x, keys[i].x, 2 / 3), y: lerp(keys[i - 1].y, keys[i].y, 2 / 3) };
-
-const cloneKeys = (keys: EasingCurveKey[]): EasingCurveKey[] =>
-  keys.map((k) => ({ ...k, ...(k.out && { out: { ...k.out } }), ...(k.in && { in: { ...k.in } }) }));
-
-/**
- * Enforce an interior anchor's tangent mode by setting the handle opposite `refSide`
- * from the reference handle: "mirror" makes it the exact opposite, "aligned" keeps it
- * collinear at its own length. Opposite-x is clamped to its segment (curve must stay a
- * function of x), staying collinear by recomputing y. "free" leaves it untouched.
- */
-function relink(keys: EasingCurveKey[], index: number, refSide: "out" | "in", mode: TangentMode): void {
-  if (mode === "free") return;
-  const key = keys[index];
-  const prev = keys[index - 1];
-  const next = keys[index + 1];
-  if (!prev || !next) return;
-  const eff = (side: "out" | "in"): EasingPoint => (side === "out" ? effOut(keys, index) : effIn(keys, index));
-  const oppSide = refSide === "out" ? "in" : "out";
-  const ref = eff(refSide);
-  const oppLoX = oppSide === "out" ? key.x : prev.x;
-  const oppHiX = oppSide === "out" ? next.x : key.x;
-  const vx = ref.x - key.x;
-  const vy = ref.y - key.y;
-  let ox: number;
-  let oy: number;
-  if (mode === "mirror") {
-    ox = -vx;
-    oy = -vy;
-  } else {
-    const curr = eff(oppSide);
-    const curLen = Math.hypot(curr.x - key.x, curr.y - key.y);
-    const vlen = Math.hypot(vx, vy) || 1e-6;
-    ox = (-vx / vlen) * curLen;
-    oy = (-vy / vlen) * curLen;
-  }
-  const hx = key.x + ox;
-  let hy = key.y + oy;
-  const cx = clamp(hx, oppLoX, oppHiX);
-  if (cx !== hx && Math.abs(ox) > 1e-9) hy = key.y + oy * ((cx - key.x) / ox);
-  const opp = { x: cx, y: clamp(hy, -0.5, 1.5) };
-  if (oppSide === "out") key.out = opp;
-  else key.in = opp;
-}
-
-type DragTarget = { kind: "anchor" | "out" | "in"; index: number };
 
 /** Flat full-value curve — the reset/seed for a "value" (automation) editor. */
 const FLAT_ONE: EasingCurve = { type: "curve", keys: [{ x: 0, y: 1 }, { x: 1, y: 1 }] };
@@ -151,6 +109,7 @@ export function EasingEditor({
   // Volume/automation stays within [0,1]; easing curves allow mild over/undershoot.
   const yLo = valueMode ? 0 : -0.5;
   const yHi = valueMode ? 1 : 1.5;
+  const yBounds: Axis = { min: yLo, max: yHi };
 
   // The editable working curve (only when the value is a custom curve; presets preview).
   const editing = isEasingCurve(value) ? value : null;
@@ -214,33 +173,18 @@ export function EasingEditor({
   function onPointerMove(event: ReactPointerEvent<SVGSVGElement>): void {
     if (!drag || !editing || !svgRef.current) return;
     const p = pointerToNorm(event);
-    const keys = cloneKeys(editing.keys);
-    const key = keys[drag.index];
     if (drag.kind === "anchor") {
-      const isFirst = drag.index === 0;
-      const isLast = drag.index === keys.length - 1;
-      const isEnd = isFirst || isLast;
-      const nx = isFirst ? 0 : isLast ? 1 : clamp(p.x, keys[drag.index - 1].x + 1e-3, keys[drag.index + 1].x - 1e-3);
       // Easing position endpoints are pinned to (0,0)/(1,1): easing must map 0->0 and 1->1
       // or the cart stops short of the next key and the segment snaps. Speed space (integral
       // normalized) and value mode (raw automation, e.g. volume fades) leave endpoints free.
-      const ny = isEnd && !speedMode && !valueMode ? (isFirst ? 0 : 1) : clamp(p.y, yLo, yHi);
-      const dx = nx - key.x;
-      const dy = ny - key.y;
-      key.x = nx;
-      key.y = ny;
-      if (key.out) key.out = { x: key.out.x + dx, y: key.out.y + dy };
-      if (key.in) key.in = { x: key.in.x + dx, y: key.in.y + dy };
+      commit(dragAnchor(editing.keys, drag.index, p.x, p.y, {
+        yBounds,
+        pinnedX: (_i, isFirst, isLast) => (isFirst ? 0 : isLast ? 1 : undefined),
+        pinnedY: (_i, isFirst, isLast) => ((isFirst || isLast) && !speedMode && !valueMode ? (isFirst ? 0 : 1) : undefined)
+      }));
     } else {
-      const side = drag.kind;
-      const loX = side === "out" ? key.x : keys[drag.index - 1]!.x;
-      const hiX = side === "out" ? keys[drag.index + 1]!.x : key.x;
-      const h = { x: clamp(p.x, loX, hiX), y: clamp(p.y, yLo, yHi) };
-      if (side === "out") key.out = h;
-      else key.in = h;
-      if (drag.index > 0 && drag.index < keys.length - 1) relink(keys, drag.index, side, key.tangent ?? "aligned");
+      commit(dragHandle(editing.keys, drag.index, drag.kind, p.x, p.y, yBounds));
     }
-    commit(keys);
   }
 
   function startDrag(target: DragTarget, event: ReactPointerEvent<SVGElement>): void {
@@ -252,36 +196,23 @@ export function EasingEditor({
   function addAnchorAt(event: ReactMouseEvent<SVGSVGElement>): void {
     if (!editing) return;
     const p = pointerToNorm(event);
-    const nx = clamp(p.x, 1e-3, 1 - 1e-3);
-    const ny = clamp(p.y, -0.5, 1.5);
-    // Seed smooth tangent handles from the local slope through the bracketing anchors,
-    // so a fresh point has grabbable control points and isn't a hard corner.
-    const sorted = [...editing.keys].sort((a, b) => a.x - b.x);
-    let lo = sorted[0];
-    let hi = sorted[sorted.length - 1];
-    for (let i = 0; i + 1 < sorted.length; i++) {
-      if (sorted[i].x <= nx && nx <= sorted[i + 1].x) {
-        lo = sorted[i];
-        hi = sorted[i + 1];
-        break;
-      }
-    }
-    const key: EasingCurveKey = { x: nx, y: ny, ...tangentHandles({ x: nx, y: ny }, lo, hi) };
-    setSelected(editing.keys.filter((k) => k.x < nx).length);
-    commit([...editing.keys, key].sort((a, b) => a.x - b.x));
+    setSelected(insertIndexFor(editing.keys, p.x));
+    // Interior insert range keeps the endpoints as the pinned bounds; y allows the same
+    // over/undershoot as dragging. Tangent handles are seeded from the local slope.
+    commit(addAnchor(editing.keys, p.x, p.y, { min: 1e-3, max: 1 - 1e-3 }, yBounds));
   }
 
   function removeAnchor(index: number): void {
     if (!editing || index <= 0 || index >= editing.keys.length - 1) return;
     setSelected(null);
-    commit(editing.keys.filter((_, i) => i !== index));
+    commit(removeAnchorAt(editing.keys, index));
   }
 
   function setTangentMode(mode: TangentMode): void {
     if (!editing || selected === null || selected <= 0 || selected >= editing.keys.length - 1) return;
     const keys = cloneKeys(editing.keys);
-    keys[selected].tangent = mode;
-    relink(keys, selected, "out", mode);
+    keys[selected]!.tangent = mode;
+    relink(keys, selected, "out", mode, yBounds);
     commit(keys);
   }
 

@@ -10,3 +10,5 @@ export * from "./rig";
 export * from "./targets";
 export * from "./virtual-camera";
 export * from "./timeline";
+export * from "./audio-peaks";
+export * from "./triggers";

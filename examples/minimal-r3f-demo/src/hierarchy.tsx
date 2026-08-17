@@ -23,6 +23,18 @@ export interface HierarchyProps {
   onViewModeChange: (mode: "edit" | "play") => void;
   selection: Selection;
   onSelect: (kind: EntityKind, id: string) => void;
+  /** The story's scenes: click a row to open it for editing, ▶ to invoke it live. */
+  scenes: Entity[];
+  activeSceneId: string;
+  entrySceneId: string | null;
+  /** The scene the runtime is playing right now (null when none). */
+  liveSceneId: string | null;
+  onSelectScene: (id: string) => void;
+  onAddScene: () => void;
+  onPlayScene: (id: string) => void;
+  onStopScene: () => void;
+  triggers: Entity[];
+  onAddTrigger: () => void;
   paths: Entity[];
   dollies: Entity[];
   cameras: CameraEntity[];
@@ -111,6 +123,40 @@ export function Hierarchy(props: HierarchyProps) {
           <Row selected={isSelected(selection, "scene", SCENE_ID)} onSelect={() => onSelect("scene", SCENE_ID)} label="Scene" />
         </div>
 
+        <Group title="Scenes" onAdd={props.onAddScene}>
+          {props.scenes.map((scene) => (
+            <div key={scene.id} style={{ display: "flex", alignItems: "center", gap: 4 }}>
+              <div style={{ flex: 1, minWidth: 0 }}>
+                <Row
+                  selected={scene.id === props.activeSceneId}
+                  onSelect={() => props.onSelectScene(scene.id)}
+                  label={scene.name}
+                  badge={
+                    scene.id === props.liveSceneId ? (
+                      <LiveBadge />
+                    ) : scene.id === props.entrySceneId ? (
+                      <EntryBadge />
+                    ) : undefined
+                  }
+                />
+              </div>
+              <button
+                title={
+                  scene.id === props.liveSceneId
+                    ? "Stop this scene (blends the camera back)"
+                    : "Play this scene live (blends the camera in and back)"
+                }
+                onClick={() =>
+                  scene.id === props.liveSceneId ? props.onStopScene() : props.onPlayScene(scene.id)
+                }
+                style={{ ...addBtnStyle, flex: "0 0 auto" }}
+              >
+                {scene.id === props.liveSceneId ? "■" : "▶"}
+              </button>
+            </div>
+          ))}
+        </Group>
+
         <Group title="Paths" onAdd={props.onAddPath}>
           {props.paths.length === 0 ? <EmptyHint>No paths.</EmptyHint> : null}
           {props.paths.map((path) => (
@@ -168,7 +214,22 @@ export function Hierarchy(props: HierarchyProps) {
           ))}
         </Group>
 
-        <Group title="Audio" onAdd={props.onAddAudioTrack}>
+        <Group title="Triggers" onAdd={props.onAddTrigger}>
+          {props.triggers.length === 0 ? <EmptyHint>No triggers. Add one to react to proximity, markers, or clicks.</EmptyHint> : null}
+          {props.triggers.map((trigger) => (
+            <Row
+              key={trigger.id}
+              selected={isSelected(selection, "trigger", trigger.id)}
+              onSelect={() => onSelect("trigger", trigger.id)}
+              label={trigger.name}
+            />
+          ))}
+        </Group>
+
+        <Group
+          title="Audio"
+          add={<button title="Add a new audio lane" style={{ ...addBtnStyle, justifySelf: "start", marginTop: 4 }} onClick={props.onAddAudioTrack}>+ Track</button>}
+        >
           {props.audioTracks.length === 0 ? <EmptyHint>No audio tracks.</EmptyHint> : null}
           {props.audioTracks.map((track) => (
             <Row key={track.id} selected={isSelected(selection, "audio", track.id)} onSelect={() => onSelect("audio", track.id)} icon={<IconVolume size={13} />} label={track.name} />
@@ -189,6 +250,10 @@ const addBtnStyle = { height: 22, padding: "0 6px", fontSize: 10 };
 
 function ActiveBadge() {
   return <span style={{ fontSize: 9, color: "#38bdf8", letterSpacing: "0.08em", flex: "0 0 auto" }}>EDIT</span>;
+}
+
+function EntryBadge() {
+  return <span style={{ fontSize: 9, color: "#a78bfa", letterSpacing: "0.08em", flex: "0 0 auto" }}>ENTRY</span>;
 }
 
 function LiveBadge() {

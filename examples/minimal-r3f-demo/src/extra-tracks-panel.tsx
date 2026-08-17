@@ -4,10 +4,11 @@
 // are number-input rows (start/end) like the dolly-runs editor. Controlled — each
 // calls onChange with only the ExtraTracks slice it owns (merged at the App level,
 // so track kinds it doesn't touch survive). The bottom TimelineLanes plays/scrubs it.
-import type { CSSProperties } from "react";
-import { EASING_PRESETS, type Easing, type EasingCurve } from "@huma/path-creator/core";
-import { EasingEditor } from "@huma/path-creator/timeline-ui";
+import { useState, type CSSProperties } from "react";
+import { EASING_PRESETS, type AxisTangent, type Easing, type EasingCurve } from "@huma/path-creator/core";
+import { EasingEditor, KeyframeCurveEditor, type CurveChannelKey } from "@huma/path-creator/timeline-ui";
 import { IconVolume } from "./icons";
+import { downloadAudioMixdown } from "./audio-bake";
 import type { ActivatableInfo } from "./activatables";
 import {
   insertTransformKey,
@@ -43,13 +44,13 @@ export const SAMPLE_AUDIO = [
 export const uid = (prefix: string): string => `${prefix}-${Date.now().toString(36)}-${Math.floor(Math.random() * 1e6).toString(36)}`;
 
 /** A blank activation track bound to `objectId` (shared by the panel + object inspector). */
-export const newActivationTrack = (objectId: string): ActivationTrack => ({ id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
+export const newActivationTrack = (objectId: string): ActivationTrack => ({ type: "activation", id: uid("act"), objectId, clips: [], postPlaybackState: "revert" });
 
 /** A blank animation track bound to `objectId` (shared by the panel + object inspector). */
-export const newAnimationTrack = (objectId: string): AnimationTrack => ({ id: uid("anim"), objectId, clips: [] });
+export const newAnimationTrack = (objectId: string): AnimationTrack => ({ type: "animation", id: uid("anim"), objectId, clips: [] });
 
 /** A blank transform track bound to `objectId` (shared by the panel + object inspector). */
-export const newTransformTrack = (objectId: string): TransformTrack => ({ id: uid("xf"), objectId });
+export const newTransformTrack = (objectId: string): TransformTrack => ({ type: "transform", id: uid("xf"), objectId });
 
 const POST_PLAYBACK_LABELS: Record<PostPlaybackState, string> = {
   revert: "Revert",
@@ -140,6 +141,65 @@ export interface AudioEditorProps {
   peaksFor?: (clip: AudioClip) => number[] | null;
 }
 
+/**
+ * Bakes every audio track on this scene to one WAV, through the same graph the live
+ * preview plays — so the file is what you auditioned. Renders faster than real time,
+ * but a long scene with stretched sources is not instant, hence the busy state.
+ */
+function MixdownButton({ tracks }: { tracks: AudioTrack[] }) {
+  const [state, setState] = useState<"idle" | "busy" | "failed">("idle");
+  const clipCount = tracks.reduce((n, track) => n + (track.mute ? 0 : track.clips.length), 0);
+  if (clipCount === 0) return null;
+  return (
+    <button
+      disabled={state === "busy"}
+      title="Render all audio tracks to a single WAV"
+      onClick={() => {
+        setState("busy");
+        void downloadAudioMixdown(tracks)
+          .then(() => setState("idle"))
+          .catch((error) => {
+            console.warn("[bake] mixdown failed", error);
+            setState("failed");
+          });
+      }}
+    >
+      {state === "busy" ? "Baking…" : state === "failed" ? "Bake failed — see console" : `Bake mixdown (${clipCount} clips)`}
+    </button>
+  );
+}
+
+/**
+ * The clip speed (time-stretch) slider. Every distinct value re-renders the whole source
+ * offline, so committing per slider step would fire dozens of full-file renders during one
+ * drag. The knob and its readout track the pointer locally; the value is committed once, on
+ * release — which is what the tooltip has always promised.
+ */
+function SpeedRow({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? value;
+  const commit = (): void => {
+    if (dragging === null) return;
+    setDragging(null);
+    if (dragging !== value) onCommit(dragging);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+      <span>speed</span>
+      <input
+        type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
+        value={shown}
+        title="Time stretch — same speed change as pitch, but the pitch stays put. Costs an offline re-render of the source, so it lands when you let go."
+        onChange={(e) => setDragging(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      <span>{shown.toFixed(2)}×</span>
+    </div>
+  );
+}
+
 export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
   const emit = (next: AudioTrack[]): void => onChange({ audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
@@ -183,6 +243,18 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
                     onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, gain: Number(e.target.value) } : c)) })} />
                   <span>{(clip.gain ?? 1).toFixed(2)}</span>
                 </div>
+                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+                  <span>pitch</span>
+                  <input type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
+                    value={clip.rate ?? 1}
+                    title="Playback rate — 2 plays twice as fast an octave up. Changes how much of the file the clip covers, so the waveform rewindows as you drag."
+                    onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, rate: Number(e.target.value) } : c)) })} />
+                  <span>{(clip.rate ?? 1).toFixed(2)}×</span>
+                </div>
+                <SpeedRow
+                  value={clip.stretch ?? 1}
+                  onCommit={(stretch) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, stretch } : c)) })}
+                />
                 <EasingEditor
                   mode="value"
                   height={90}
@@ -204,10 +276,11 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
         </div>
       ))}
       {hideAdd ? null : (
-        <button onClick={() => emit([...audioTracks, { id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
+        <button onClick={() => emit([...audioTracks, { type: "audio", id: uid("aud"), name: `Audio ${audioTracks.length + 1}`, clips: [], gain: 1 }])}>
           Add Audio Track
         </button>
       )}
+      <MixdownButton tracks={audioTracks} />
     </div>
   );
 }
@@ -310,6 +383,25 @@ const CHANNELS: { key: "position" | "rotation" | "scale"; label: string; default
   { key: "scale", label: "scale", defaultValue: [1, 1, 1], step: 0.1 }
 ];
 
+// Per-axis curve colors (x = red, y = green, z = blue), matching the timeline block
+// sparkline so the two views read as the same data. Used for every channel; the
+// channel toggles isolate which of position/rotation/scale is on-screen.
+const AXIS_COLORS = ["rgba(248,113,113,0.9)", "rgba(74,222,128,0.9)", "rgba(96,165,250,0.9)"];
+// Accent per channel for its toggle chip border.
+const CHANNEL_ACCENT: Record<"position" | "rotation" | "scale", string> = { position: "#60a5fa", rotation: "#34d399", scale: "#fbbf24" };
+// Distinct stroke style per channel so curves stay tellable apart when several channels
+// share the on-screen graph (they all reuse the same red/green/blue per-axis colors).
+const CHANNEL_DASH: Record<"position" | "rotation" | "scale", string | undefined> = { position: undefined, rotation: "5 4", scale: "1 4" };
+
+/** Coerce the generic curve-editor keys back into the track's [x,y,z] TransformKey shape. */
+const toTransformKeys = (keys: CurveChannelKey[]): TransformKey[] =>
+  keys.map((k) => ({
+    time: k.time,
+    value: [k.value[0] ?? 0, k.value[1] ?? 0, k.value[2] ?? 0] as [number, number, number],
+    ...(k.easing !== undefined && { easing: k.easing }),
+    ...(k.tangentsAxes && { tangentsAxes: [k.tangentsAxes[0] ?? {}, k.tangentsAxes[1] ?? {}, k.tangentsAxes[2] ?? {}] as [AxisTangent, AxisTangent, AxisTangent] })
+  }));
+
 /** A bound object's live local transform (rotation in Euler degrees), for "key pose". */
 export interface ObjectPose {
   position: [number, number, number];
@@ -330,6 +422,20 @@ export interface TransformEditorProps {
 }
 
 export function TransformTracksEditor({ transformTracks, activatables, onChange, hideAdd = false, getPlayhead, readObjectPose }: TransformEditorProps) {
+  // Which tracks have their raw per-axis number tables expanded. Default collapsed:
+  // the primary flow is "◆ key pose @ playhead"; the tables are the fine-tune escape hatch.
+  const [expanded, setExpanded] = useState<Set<string>>(new Set());
+  const toggleExpanded = (id: string): void => setExpanded((prev) => { const next = new Set(prev); if (next.has(id)) next.delete(id); else next.add(id); return next; });
+  // Which channels are drawn in each track's curve graph. Absent => default to the
+  // first keyed channel (position when present); toggles add/remove the rest.
+  const [shownChannels, setShownChannels] = useState<Record<string, Set<string>>>({});
+  const shownFor = (trackId: string, keyed: string[]): Set<string> => shownChannels[trackId] ?? new Set(keyed.slice(0, 1));
+  const toggleChannel = (trackId: string, key: string, keyed: string[]): void =>
+    setShownChannels((prev) => {
+      const cur = new Set(prev[trackId] ?? shownFor(trackId, keyed));
+      if (cur.has(key)) cur.delete(key); else cur.add(key);
+      return { ...prev, [trackId]: cur };
+    });
   const emit = (next: TransformTrack[]): void => onChange({ transformTracks: next });
   const patch = (id: string, p: Partial<TransformTrack>): void => emit(transformTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
   // Snapshot the gizmo-posed transform at the playhead — into the channels the track
@@ -352,7 +458,10 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
 
   return (
     <div style={{ display: "grid", gap: 8 }}>
-      {transformTracks.map((track) => (
+      {transformTracks.map((track) => {
+        const allTimes = [...new Set([...(track.position ?? []), ...(track.rotation ?? []), ...(track.scale ?? [])].map((k) => k.time))].sort((a, b) => a - b);
+        const isExpanded = expanded.has(track.id);
+        return (
         <div key={track.id} style={{ display: "grid", gap: 4 }}>
           <div style={headerRow}>
             <select style={{ flex: 1 }} value={track.objectId} title="Bound object" onChange={(e) => patch(track.id, { objectId: e.target.value })}>
@@ -363,16 +472,75 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 </option>
               ))}
             </select>
-            {readObjectPose && getPlayhead ? (
-              <button style={iconBtn} title="Snapshot the gizmo-posed transform as keys at the playhead" onClick={() => keyPose(track)}>
-                ◆ key pose
-              </button>
-            ) : null}
+            <button
+              style={{ ...iconBtn, width: "auto", padding: "0 6px", opacity: track.additive ? 1 : 0.4 }}
+              title={track.additive
+                ? "Additive: keys offset the pose already on the object, so this layers over baked animation"
+                : "Absolute: keys replace the object's pose, overwriting any animation driving it"}
+              onClick={() => patch(track.id, { additive: !track.additive })}
+            >
+              {track.additive ? "+Δ" : "abs"}
+            </button>
             <button className="pc-danger" style={iconBtn} title="Delete track" onClick={() => emit(transformTracks.filter((t) => t.id !== track.id))}>
               ×
             </button>
           </div>
-          {CHANNELS.map(({ key, label, defaultValue, step }) => {
+          {readObjectPose && getPlayhead ? (
+            <button style={{ justifySelf: "start" }} title="Snapshot the object's current position, rotation and scale as keyframes at the playhead" onClick={() => keyPose(track)}>
+              ◆ Key pose @ playhead
+            </button>
+          ) : null}
+          {(() => {
+            const keyed = CHANNELS.filter((c) => (track[c.key]?.length ?? 0) > 0);
+            if (keyed.length === 0) return null;
+            const keyedKeys = keyed.map((c) => c.key);
+            const shownSet = shownFor(track.id, keyedKeys);
+            const shown = keyed.filter((c) => shownSet.has(c.key));
+            const times = keyed.flatMap((c) => (track[c.key] ?? []).map((k) => k.time));
+            const end = Math.max(2, Math.max(0, ...times) + 2, (getPlayhead?.() ?? 0) + 1);
+            return (
+              <>
+                {keyed.length > 1 ? (
+                  <div style={{ display: "flex", gap: 4, paddingLeft: 10 }}>
+                    {keyed.map((c) => {
+                      const on = shownSet.has(c.key);
+                      return (
+                        <button key={c.key} title={`Show/hide ${c.key} curves`} onClick={() => toggleChannel(track.id, c.key, keyedKeys)}
+                          style={{ fontSize: 10, padding: "1px 7px", opacity: on ? 1 : 0.4, border: `1px solid ${CHANNEL_ACCENT[c.key]}`, borderRadius: 4, background: "transparent", color: "inherit", cursor: "pointer" }}>
+                          {c.key}
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+                <KeyframeCurveEditor
+                  channels={shown.map((c) => ({
+                    id: `${track.id}-${c.key}`,
+                    label: c.label,
+                    colors: AXIS_COLORS,
+                    componentLabels: ["x", "y", "z"],
+                    ...(CHANNEL_DASH[c.key] ? { dash: CHANNEL_DASH[c.key] as string } : {}),
+                    keys: track[c.key] ?? [],
+                    onChange: (next) => setChannel(track, c.key, toTransformKeys(next)),
+                    // Rotation slerps with one shared easing, so per-axis tangents don't apply.
+                    tangents: c.key !== "rotation"
+                  }))}
+                  timeStart={0}
+                  timeEnd={end}
+                  snap={0.25}
+                  {...(getPlayhead && { playhead: getPlayhead() })}
+                  height={150}
+                />
+              </>
+            );
+          })()}
+          <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.42)", paddingLeft: 10 }}>
+            <span>{allTimes.length ? `keys: ${allTimes.map((t) => `${t.toFixed(1)}s`).join(", ")}` : "no keys yet — use ◆ Key pose (or expand to add manually)"}</span>
+            <button style={{ marginLeft: "auto", ...iconBtn }} title="Show/hide the per-axis keyframe values" onClick={() => toggleExpanded(track.id)}>
+              {isExpanded ? "edit values ▴" : "edit values ▾"}
+            </button>
+          </div>
+          {isExpanded ? CHANNELS.map(({ key, label, defaultValue, step }) => {
             const keys = track[key] ?? [];
             // Seed a new key from the object's CURRENT value for this channel (so it
             // doesn't snap to origin/unit-scale on playback — the group carries the
@@ -390,7 +558,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     + key
                   </button>
                   {getPlayhead ? (
-                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), seed()))}>
+                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), seed(), key === "rotation" ? "rotation" : "vector"))}>
                       ◆ now
                     </button>
                   ) : null}
@@ -408,14 +576,18 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                           return { ...k, value };
                         }))} />
                     ))}
-                    <select value={typeof keyframe.easing === "string" ? keyframe.easing : "linear"} title="easing into this key" style={{ width: 92 }}
-                      onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, easing: e.target.value as Easing } : k)))}>
-                      {EASING_OPTIONS.map((p) => (
-                        <option key={p as string} value={p as string}>
-                          {p as string}
-                        </option>
-                      ))}
-                    </select>
+                    {key === "rotation" ? (
+                      // Rotation slerps with this shared easing. Position/scale are shaped by the
+                      // graph's bezier tangent handles instead, so no easing dropdown for them.
+                      <select value={typeof keyframe.easing === "string" ? keyframe.easing : "linear"} title="easing into this key" style={{ width: 92 }}
+                        onChange={(e) => setChannel(track, key, keys.map((k, j) => (j === i ? { ...k, easing: e.target.value as Easing } : k)))}>
+                        {EASING_OPTIONS.map((p) => (
+                          <option key={p as string} value={p as string}>
+                            {p as string}
+                          </option>
+                        ))}
+                      </select>
+                    ) : null}
                     <button className="pc-danger" style={iconBtn} title="Delete key" onClick={() => setChannel(track, key, keys.filter((_, j) => j !== i))}>
                       ×
                     </button>
@@ -423,12 +595,13 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                 ))}
               </div>
             );
-          })}
+          }) : null}
         </div>
-      ))}
+        );
+      })}
       {hideAdd ? null : (
         <button disabled={activatables.length === 0} onClick={() => emit([...transformTracks, newTransformTrack(activatables[0]?.id ?? "")])}>
-          Add Transform Track
+          Add Motion Track
         </button>
       )}
     </div>

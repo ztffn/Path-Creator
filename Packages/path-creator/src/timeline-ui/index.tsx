@@ -23,6 +23,7 @@ import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 import { BlockSeries, type BlockSeriesData } from "./block-series";
 export { BlockSeries, type BlockSeriesData, type BlockSeriesKind } from "./block-series";
 export { EasingEditor, type EasingEditorTheme } from "./easing-editor";
+export { KeyframeCurveEditor, type CurveChannel, type CurveChannelKey, type KeyframeCurveEditorTheme } from "./keyframe-curve-editor";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },
@@ -31,10 +32,39 @@ const SHOT_EFFECTS = {
 };
 const SNAP_SECONDS = 0.25;
 // Cap the visible lane area so a tall show doesn't eat the editing viewport;
-// beyond this the lane block scrolls vertically. 48px time ruler + N×36 lanes.
+// beyond this the lane block scrolls vertically. RULER_HEIGHT must match where the
+// embedded editor actually starts its first lane row (its time ruler + internal gap),
+// so the left icon rail — pinned flex-end to the same total height — lines up row for
+// row with the blocks. Measured against @xzdarcy/react-timeline-editor@1.0.0.
 const MAX_VISIBLE_LANES = 3;
-const RULER_HEIGHT = 48;
+const RULER_HEIGHT = 42;
 const LANE_HEIGHT = 36;
+
+/** One row of the left rail for a host-defined lane (pinned or below). */
+function extraLaneIcon(
+  lane: ExtraLane,
+  selectedLaneId: string | null,
+  onSelectLane?: (laneId: string) => void
+): ReactNode {
+  return (
+    <div
+      key={lane.id}
+      onClick={onSelectLane ? () => onSelectLane(lane.id) : undefined}
+      style={{
+        height: 36,
+        display: "flex",
+        alignItems: "center",
+        justifyContent: "center",
+        cursor: onSelectLane ? "pointer" : "default",
+        background: lane.id === selectedLaneId ? "rgba(249, 115, 22, 0.18)" : "transparent",
+        boxShadow: lane.id === selectedLaneId ? "inset 2px 0 0 #f97316" : "none"
+      }}
+      title={lane.name}
+    >
+      {lane.icon ?? "▮"}
+    </div>
+  );
+}
 
 /** A clip block on a generic extra lane (activation, audio, …). */
 export interface ExtraLaneClip {
@@ -56,6 +86,10 @@ export interface ExtraLane {
   name: string;
   color: string;
   icon?: ReactNode;
+  /** Render overlapping adjacent clips as interlocking crossfade wedges. */
+  crossfade?: boolean;
+  /** Render this lane ABOVE the shot/dolly lanes instead of below them. */
+  pinned?: boolean;
   clips: ExtraLaneClip[];
 }
 
@@ -192,6 +226,8 @@ export interface TimelineLanesProps {
   onCreateDollyRun: (cartId: string, timeSeconds: number) => void;
   /** An extra-lane clip was dragged/resized, or a lane double-clicked to add one. */
   onExtraClipTiming?: (laneId: string, clipId: string, start: number, end: number) => void;
+  /** An extra-lane clip was vertically dropped onto another extra lane. */
+  onExtraClipLaneChange?: (fromLaneId: string, toLaneId: string, clipId: string, start: number, end: number) => void;
   onCreateExtraClip?: (laneId: string, timeSeconds: number) => void;
   /** An extra lane was clicked (its rail icon or a clip) — report it for selection. */
   onSelectLane?: (laneId: string) => void;
@@ -221,6 +257,7 @@ export function TimelineLanes({
   onDollyRunTiming,
   onCreateDollyRun,
   onExtraClipTiming,
+  onExtraClipLaneChange,
   onCreateExtraClip,
   onSelectLane,
   selectedLaneId = null
@@ -234,9 +271,29 @@ export function TimelineLanes({
     dollyId?: string;
   } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
+  const pointerYRef = useRef<number | null>(null);
+  const dragStartLaneRef = useRef<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const rememberPointer = (event: MouseEvent) => { pointerYRef.current = event.clientY; };
+    document.addEventListener("mousemove", rememberPointer);
+    return () => document.removeEventListener("mousemove", rememberPointer);
+  }, []);
+
+  const extraLaneAtPointer = (): string | null => {
+    const target = laneStateRef.current?.target;
+    const pointerY = pointerYRef.current;
+    if (!target || pointerY === null) return null;
+    const area = target.querySelector<HTMLElement>(".timeline-editor-edit-area");
+    const grid = area?.querySelector<HTMLElement>(".ReactVirtualized__Grid");
+    if (!area || !grid) return null;
+    const index = Math.floor((pointerY - area.getBoundingClientRect().top + grid.scrollTop) / LANE_HEIGHT);
+    const row = editorData[index];
+    return row?.id.startsWith("xrow|") ? row.id.slice(5) : null;
+  };
 
   // Clamp the context menu into the viewport (the lane sits at the bottom, so a
   // menu placed at the click point would open off-screen). Runs before paint.
@@ -268,33 +325,13 @@ export function TimelineLanes({
     // eslint-disable-next-line react-hooks/exhaustive-deps
     [timingKey]
   );
+  // Pinned extra lanes render above the shot/dolly lanes (e.g. a Scenes lane
+  // that structures the whole show); the rest sit below as before.
+  const pinnedLanes = extraLanes.filter((lane) => lane.pinned);
+  const unpinnedLanes = extraLanes.filter((lane) => !lane.pinned);
   const editorData = useMemo<TimelineRow[]>(
-    () => [
-      {
-        id: "shot-track",
-        actions: shots.map((shot) => ({
-          id: shot.id,
-          start: shot.start,
-          end: shot.end,
-          effectId: "shot",
-          movable: true,
-          flexible: true
-        }))
-      },
-      // Dolly lanes visualize the per-shot rail moves; they are owned by
-      // their shots, so the lane blocks are read-only.
-      ...dollyLanes.map(([dollyId, lane]) => ({
-        id: `dolly-${dollyId}`,
-        actions: lane.moves.map((move) => ({
-          id: `move-${move.shotId}`,
-          start: move.start,
-          end: move.end,
-          effectId: "move",
-          movable: true,
-          flexible: true
-        }))
-      })),
-      ...extraLanes.map((lane) => ({
+    () => {
+      const extraRow = (lane: ExtraLane): TimelineRow => ({
         id: EXTRA_ROW(lane.id),
         actions: lane.clips.map((clip) => ({
           id: EXTRA_ID(lane.id, clip.id),
@@ -304,8 +341,36 @@ export function TimelineLanes({
           movable: true,
           flexible: true
         }))
-      }))
-    ],
+      });
+      return [
+        ...pinnedLanes.map(extraRow),
+        {
+          id: "shot-track",
+          actions: shots.map((shot) => ({
+            id: shot.id,
+            start: shot.start,
+            end: shot.end,
+            effectId: "shot",
+            movable: true,
+            flexible: true
+          }))
+        },
+        // Dolly lanes visualize the per-shot rail moves; they are owned by
+        // their shots, so the lane blocks are read-only.
+        ...dollyLanes.map(([dollyId, lane]) => ({
+          id: `dolly-${dollyId}`,
+          actions: lane.moves.map((move) => ({
+            id: `move-${move.shotId}`,
+            start: move.start,
+            end: move.end,
+            effectId: "move",
+            movable: true,
+            flexible: true
+          }))
+        })),
+        ...unpinnedLanes.map(extraRow)
+      ];
+    },
     // timingKey covers everything this memo reads except names, which render
     // via the shots prop directly.
     // eslint-disable-next-line react-hooks/exhaustive-deps
@@ -315,7 +380,7 @@ export function TimelineLanes({
   const moveSeries = new Map<string, BlockSeriesData>(
     dollyMoves.flatMap((move) => (move.series ? [[`move-${move.shotId}`, move.series] as [string, BlockSeriesData]] : []))
   );
-  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[] }>();
+  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[]; fadeIn?: number; fadeOut?: number }>();
   for (const lane of extraLanes) {
     for (const clip of lane.clips)
       extraActionStyle.set(EXTRA_ID(lane.id, clip.id), {
@@ -323,6 +388,20 @@ export function TimelineLanes({
         label: clip.label ?? "",
         ...(clip.series && { series: clip.series })
       });
+    if (lane.crossfade) {
+      const ordered = [...lane.clips].sort((a, b) => a.start - b.start);
+      for (let i = 1; i < ordered.length; i += 1) {
+        const outgoing = ordered[i - 1];
+        const incoming = ordered[i];
+        if (!outgoing || !incoming) continue;
+        const overlap = outgoing.end - incoming.start;
+        if (overlap <= 0) continue;
+        const outStyle = extraActionStyle.get(EXTRA_ID(lane.id, outgoing.id));
+        const inStyle = extraActionStyle.get(EXTRA_ID(lane.id, incoming.id));
+        if (outStyle) outStyle.fadeOut = Math.min(1, overlap / Math.max(1e-6, outgoing.end - outgoing.start));
+        if (inStyle) inStyle.fadeIn = Math.min(1, overlap / Math.max(1e-6, incoming.end - incoming.start));
+      }
+    }
   }
 
   // Blend zones: fraction of each clip's width overlapped by the previous
@@ -391,7 +470,12 @@ export function TimelineLanes({
           background: t.panelBackground,
           color: t.text,
           fontFamily: t.fontFamily,
-          border: `1px solid ${t.panelBorder}`
+          border: `1px solid ${t.panelBorder}`,
+          // Text selection anchors at mousedown; making the whole lane
+          // non-selectable means grabbing the scrubber (or dragging a clip)
+          // never starts a page-text selection that fights the drag.
+          userSelect: "none",
+          WebkitUserSelect: "none"
         }}
       >
         <div
@@ -469,6 +553,7 @@ export function TimelineLanes({
                 textAlign: "center"
               }}
             >
+              {pinnedLanes.map((lane) => extraLaneIcon(lane, selectedLaneId, onSelectLane))}
               <div style={{ height: 36, display: "flex", alignItems: "center", justifyContent: "center" }} title="Shot track">
                 {shotIcon}
               </div>
@@ -481,24 +566,7 @@ export function TimelineLanes({
                   {dollyIcon}
                 </div>
               ))}
-              {extraLanes.map((lane) => (
-                <div
-                  key={lane.id}
-                  onClick={onSelectLane ? () => onSelectLane(lane.id) : undefined}
-                  style={{
-                    height: 36,
-                    display: "flex",
-                    alignItems: "center",
-                    justifyContent: "center",
-                    cursor: onSelectLane ? "pointer" : "default",
-                    background: lane.id === selectedLaneId ? "rgba(249, 115, 22, 0.18)" : "transparent",
-                    boxShadow: lane.id === selectedLaneId ? "inset 2px 0 0 #f97316" : "none"
-                  }}
-                  title={lane.name}
-                >
-                  {lane.icon ?? "▮"}
-                </div>
-              ))}
+              {unpinnedLanes.map((lane) => extraLaneIcon(lane, selectedLaneId, onSelectLane))}
             </div>
             <div style={{ flex: 1, minWidth: 0, borderRadius: 6, overflow: "hidden" }}>
               <TimelineLaneEditor
@@ -519,6 +587,22 @@ export function TimelineLanes({
               ? undefined
               : wouldFullyContain(action.id, start, end) ? false : undefined
           }
+          onActionMoveStart={() => { dragStartLaneRef.current = extraLaneAtPointer(); }}
+          onActionMoveEnd={({ action, start, end }) => {
+            const extra = parseExtraId(action.id);
+            const targetLane = extraLaneAtPointer();
+            const startLane = dragStartLaneRef.current;
+            dragStartLaneRef.current = null;
+            // Compare against the row the pointer STARTED in, not the clip's own lane: a
+            // grab near a clip's top edge puts the cursor in the row above, so a purely
+            // horizontal drag would otherwise read as a lane change and move the clip.
+            if (!extra || !targetLane || targetLane === startLane || targetLane === extra.laneId) return;
+            // Snap the start, then carry the original duration across. Re-snapping the end
+            // independently would resize any clip whose length is not a whole number of
+            // snap steps — an imported audio clip, say — as a side effect of moving it.
+            const snappedStart = Math.max(0, Math.round(start / SNAP_SECONDS) * SNAP_SECONDS);
+            onExtraClipLaneChange?.(extra.laneId, targetLane, extra.clipId, snappedStart, snappedStart + Math.max(SNAP_SECONDS, end - start));
+          }}
           onActionResizing={({ action, start, end }) =>
             action.id.startsWith("move-") || action.id.startsWith("x|")
               ? undefined
@@ -592,6 +676,8 @@ export function TimelineLanes({
           getActionRender={(action) => {
             if (action.effectId === "extra") {
               const style = extraActionStyle.get(action.id);
+              const fadeIn = (style?.fadeIn ?? 0) * 100;
+              const fadeOut = (style?.fadeOut ?? 0) * 100;
               return (
                 <div
                   style={{
@@ -606,7 +692,12 @@ export function TimelineLanes({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     borderRadius: 4,
-                    background: style?.color ?? "rgba(148,163,184,0.4)"
+                    background: style?.color ?? "rgba(148,163,184,0.4)",
+                    clipPath:
+                      fadeIn > 0 || fadeOut > 0
+                        ? `polygon(0 ${fadeIn > 0 ? "100%" : "0"}, ${fadeIn}% 0, ${100 - fadeOut}% 0, 100% ${fadeOut > 0 ? "100%" : "0"}, 0 100%)`
+                        : undefined,
+                    border: fadeIn > 0 || fadeOut > 0 ? "1px solid rgba(255,255,255,0.22)" : undefined
                   }}
                 >
                   {style?.series

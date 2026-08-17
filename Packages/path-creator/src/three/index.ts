@@ -25,6 +25,8 @@ import {
   vec3
 } from "../core";
 
+export * from "./object-tracks";
+
 export { DEFAULT_COMPOSER_SETTINGS, evaluateVirtualCameraBlendCurve } from "../core";
 export type {
   ComposerSettings,

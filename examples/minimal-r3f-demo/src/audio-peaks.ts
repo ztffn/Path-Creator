@@ -1,31 +1,11 @@
-// Waveform peak extraction for the demo's Audio tracks. `extractPeaks` downsamples
-// a decoded AudioBuffer to a compact [min,max,…] envelope the timeline's BlockSeries
-// draws. `ensurePeaks` is the lazy bridge for clips whose peaks aren't precomputed:
-// it decodes each src once (via an OfflineAudioContext, no user gesture) into a
-// module cache and notifies on completion. `tone:<freq>` peaks are synthesized.
-// Peaks-at-import (see importAudioFile) is the preferred path; this is the fallback.
+// Host-side waveform plumbing for the demo's Audio tracks: decode-once caching, the
+// lazy bridge for clips whose peaks aren't precomputed, synthesized `tone:` peaks, and
+// file import. The pure math — extractPeaks and slicePeaksToWindow — lives in
+// @huma/path-creator/core and is re-exported here so demo call sites keep one import.
+// Peaks-at-import (see importAudioFile) is the preferred path; ensurePeaks is the fallback.
+import { audioClipSpeed, extractPeaks, slicePeaksToWindow, type AudioClip } from "@huma/path-creator/core";
 
-/** Downsample channel 0 to `buckets` [min,max] pairs (flat array, values in -1..1). */
-export function extractPeaks(buffer: AudioBuffer, buckets = 512): number[] {
-  const data = buffer.getChannelData(0);
-  const n = Math.min(buckets, data.length);
-  const peaks = new Array<number>(n * 2);
-  const step = data.length / n;
-  for (let i = 0; i < n; i++) {
-    const from = Math.floor(i * step);
-    const to = Math.min(data.length, Math.floor((i + 1) * step));
-    let min = 0;
-    let max = 0;
-    for (let j = from; j < to; j++) {
-      const v = data[j]!;
-      if (v < min) min = v;
-      if (v > max) max = v;
-    }
-    peaks[i * 2] = min;
-    peaks[i * 2 + 1] = max;
-  }
-  return peaks;
-}
+export { extractPeaks, slicePeaksToWindow } from "@huma/path-creator/core";
 
 const cache = new Map<string, number[]>();
 const durations = new Map<string, number>();
@@ -76,28 +56,17 @@ export function ensurePeaks(src: string, onReady?: () => void): number[] | null 
 }
 
 /**
- * Peaks for just the slice of the source a clip plays — `[offset, offset+duration]` —
- * so the waveform matches the timeline block / editor window rather than the whole file.
- * Falls back to the full peaks when the source duration isn't known yet (e.g. `tone:`).
+ * Peaks for just the slice of the source a clip plays, so the waveform matches the
+ * timeline block / editor window rather than the whole file. The window is expressed in
+ * SOURCE seconds, so a clip's timeline duration converts by its speed: at rate 2 a
+ * four-second block shows eight seconds of file, squeezed to the block's width. Falls
+ * back to the full peaks when the source duration isn't known yet (e.g. `tone:`).
  */
-export function clipPeaks(src: string, offset: number, duration: number, onReady?: () => void): number[] | null {
-  const peaks = ensurePeaks(src, onReady);
+export function clipPeaks(clip: AudioClip, onReady?: () => void): number[] | null {
+  const peaks = ensurePeaks(clip.src, onReady);
   if (!peaks) return null;
-  return slicePeaksToWindow(peaks, durations.get(src) ?? 0, offset, duration);
-}
-
-/**
- * Slice full-file peaks to the `[offset, offset+duration]` window (fractions of the source
- * duration). Returns the input unchanged when the file duration is unknown (<=0). Pure.
- */
-export function slicePeaksToWindow(peaks: number[], fileDuration: number, offset: number, duration: number): number[] {
-  if (!fileDuration || fileDuration <= 0) return peaks;
-  const n = peaks.length / 2;
-  const from = Math.max(0, Math.min(1, offset / fileDuration));
-  const to = Math.max(from, Math.min(1, (offset + duration) / fileDuration));
-  const i0 = Math.floor(from * n);
-  const i1 = Math.max(i0 + 1, Math.ceil(to * n));
-  return peaks.slice(i0 * 2, i1 * 2);
+  const consumed = clip.duration * audioClipSpeed(clip);
+  return slicePeaksToWindow(peaks, durations.get(clip.src) ?? 0, clip.offset ?? 0, consumed);
 }
 
 /**

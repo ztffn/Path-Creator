@@ -24,6 +24,18 @@ export interface SceneInspectorProps {
   transitionProgress: number;
   liveCameraName: string | null;
   onRelease: () => void;
+  /** The ACTIVE scene's embed clips (other scenes played inside its windows);
+   *  the lane creates/moves them, retarget/offset/blend/delete live here. */
+  embeds: { id: string; sceneId: string; start: number; end: number; offset: number; blendSeconds: number }[];
+  /** The other scenes an embed clip may play. */
+  embedScenes: { id: string; name: string }[];
+  onUpdateEmbed: (clipId: string, patch: { sceneId?: string; offset?: number; blendSeconds?: number }) => void;
+  onDeleteEmbed: (clipId: string) => void;
+  /** The ACTIVE scene's timeline markers (the lane creates/moves them); kind
+   *  is what marker triggers filter on. */
+  markers: { id: string; time: number; kind: string }[];
+  onUpdateMarkerKind: (markerId: string, kind: string) => void;
+  onDeleteMarker: (markerId: string) => void;
 }
 
 export function SceneInspector({
@@ -41,7 +53,14 @@ export function SceneInspector({
   onBlendDurationChange,
   transitionProgress,
   liveCameraName,
-  onRelease
+  onRelease,
+  embeds,
+  embedScenes,
+  onUpdateEmbed,
+  onDeleteEmbed,
+  markers,
+  onUpdateMarkerKind,
+  onDeleteMarker
 }: SceneInspectorProps) {
   return (
     <>
@@ -73,6 +92,70 @@ export function SceneInspector({
           <div style={{ width: `${Math.round(transitionProgress * 100)}%`, height: "100%", background: "#22c55e" }} />
         </div>
       </SettingsSection>
+
+      {embeds.length > 0 ? (
+        <SettingsSection title="Embeds">
+          {embeds.map((embed) => (
+            <div key={embed.id} style={{ display: "grid", gap: 4, fontSize: 12 }}>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <select
+                  title="Which scene this window plays"
+                  value={embed.sceneId}
+                  onChange={(event) => onUpdateEmbed(embed.id, { sceneId: event.target.value })}
+                  style={{ flex: 1, minWidth: 0 }}
+                >
+                  {embedScenes.map((scene) => (
+                    <option key={scene.id} value={scene.id}>{scene.name}</option>
+                  ))}
+                </select>
+                <span style={{ color: "rgba(232, 238, 245, 0.55)", fontSize: 11, flex: "0 0 auto" }}>
+                  {embed.start.toFixed(1)}–{embed.end.toFixed(1)}s
+                </span>
+                <button className="pc-danger" title="Remove this embed clip" onClick={() => onDeleteEmbed(embed.id)}>×</button>
+              </div>
+              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                <label style={{ display: "flex", alignItems: "center", gap: 4, flex: 1 }}>
+                  <span style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)" }}>Offset</span>
+                  <input type="number" min={0} step={0.25} value={embed.offset} title="Scene-local time at the window's start"
+                    onChange={(event) => onUpdateEmbed(embed.id, { offset: Math.max(0, Number(event.target.value)) })} style={{ width: 64 }} />
+                </label>
+                <label style={{ display: "flex", alignItems: "center", gap: 4, flex: 1 }}>
+                  <span style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)" }}>Blend</span>
+                  <input type="number" min={0} step={0.25} value={embed.blendSeconds} title="Camera blend at the window's edges (0 = cut)"
+                    onChange={(event) => onUpdateEmbed(embed.id, { blendSeconds: Math.max(0, Number(event.target.value)) })} style={{ width: 64 }} />
+                </label>
+              </div>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
+            Scenes embedded in this scene's timeline (the "Scenes" lane creates and times them).
+          </div>
+        </SettingsSection>
+      ) : null}
+
+      {markers.length > 0 ? (
+        <SettingsSection title="Markers">
+          {markers.map((marker) => (
+            <div key={marker.id} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 12 }}>
+              <span style={{ color: "rgba(232, 238, 245, 0.55)", fontSize: 11, flex: "0 0 auto", width: 42 }}>
+                {marker.time.toFixed(2)}s
+              </span>
+              <input
+                type="text"
+                value={marker.kind}
+                aria-label="Marker kind"
+                title="Marker kind — marker triggers can filter on it"
+                onChange={(event) => onUpdateMarkerKind(marker.id, event.target.value)}
+                style={{ flex: 1, minWidth: 0, boxSizing: "border-box" }}
+              />
+              <button className="pc-danger" title="Remove this marker" onClick={() => onDeleteMarker(marker.id)}>×</button>
+            </div>
+          ))}
+          <div style={{ fontSize: 11, color: "rgba(232, 238, 245, 0.55)", lineHeight: 1.45 }}>
+            Markers fire marker triggers when playback crosses them (never on scrub). The Markers lane creates and moves them.
+          </div>
+        </SettingsSection>
+      ) : null}
 
       <SettingsSection title="Viewport">
         <CheckRow checked={debugPreview} onChange={onDebugPreviewChange}>Show camera PiP</CheckRow>

@@ -6,11 +6,20 @@
 // with both shots resolved live, mirroring the brain's behavior.
 import {
   TIMELINE_SCHEMA_VERSION,
+  createArmState,
   evaluateEasing,
+  evaluateSceneLayers,
   evaluateVirtualCameraBlendCurve,
   inverseLerp,
   lerp,
   sampleCartFrame,
+  stepArmPolicy,
+  stepProximity,
+  type ActionDefinition,
+  type ArmState,
+  type ProximityState,
+  type TriggerBinding,
+  type TriggerDefinition,
   type CameraBlock,
   type CameraTrack,
   type CartFrame,
@@ -21,6 +30,7 @@ import {
   type Timeline,
   type TimelineEvent,
   type Vec3,
+  type VirtualCameraBlendCurve,
   type VirtualCameraDefinition,
   type VirtualCameraLens,
   type VirtualCameraSnapshot
@@ -41,17 +51,42 @@ import {
 } from "../three";
 
 export type {
+  ActivationClip,
+  ActivationTrack,
+  AnimationClip,
+  AnimationTrack,
+  AudioClip,
+  AudioTrack,
   CameraBlock,
   CameraTrack,
   CartKey,
   CartTrack,
   EventTrack,
+  SceneClip,
+  SceneLayer,
+  SceneTrack,
   Timeline,
   TimelineBlendIn,
   TimelineEvent,
-  TimelineTrack
+  TimelineTrack,
+  TransformKey,
+  TransformTrack
 } from "../core";
-export { TIMELINE_SCHEMA_VERSION, createTimeline } from "../core";
+export {
+  TIMELINE_SCHEMA_VERSION,
+  audioClipSpeed,
+  createTimeline,
+  evaluateActivation,
+  evaluateAnimation,
+  evaluateAudio,
+  evaluateSceneLayers,
+  evaluateTransform,
+  insertTransformKey,
+  snapSeconds,
+  transformKeyTimes,
+  transformSpan,
+  upsertTransformKey
+} from "../core";
 
 export interface TimelineRigContext {
   rig: Pick<RigRuntime, "paths" | "carts" | "cartPaths">;
@@ -59,6 +94,9 @@ export interface TimelineRigContext {
   getTargetPosition?: (targetId: string) => Vec3 | null;
   /** Target world orientation, for target-relative orbit binding (`lockYaw`/`lock`). */
   getTargetOrientation?: (targetId: string) => QuaternionLike | null;
+  /** Resolves a Story scene by id, enabling scene tracks (deterministic
+   *  master-embed). Omit to leave scene tracks inert. */
+  getScene?: (sceneId: string) => Timeline | null;
 }
 
 export interface TimelineSample {
@@ -127,14 +165,49 @@ export function evaluateTimeline(
   let activeBlock: TimelineSample["activeBlock"] = null;
   let blendProgress = 1;
 
-  // Later camera tracks override earlier ones (layering).
+  // Later camera/scene tracks override earlier ones (layering).
   for (const track of timeline.tracks) {
-    if (track.type !== "camera") continue;
-    const result = evaluateCameraTrack(track, t, timeline.gapMode ?? "hold", resolveBlock);
-    if (result) {
-      camera = result.snapshot;
-      activeBlock = { trackId: track.id, block: result.block };
-      blendProgress = result.blendProgress;
+    if (track.type === "camera") {
+      const result = evaluateCameraTrack(track, t, timeline.gapMode ?? "hold", resolveBlock);
+      if (result) {
+        camera = result.snapshot;
+        activeBlock = { trackId: track.id, block: result.block };
+        blendProgress = result.blendProgress;
+      }
+    } else if (track.type === "scene" && context.getScene) {
+      // Deterministic master-embed: evaluate the embedded scene at its mapped
+      // local time. Depth-1 by construction — the sub-evaluation gets no
+      // getScene, so nested (and self-referential) scene tracks are inert.
+      const { getScene, ...subContext } = context;
+      for (const layer of evaluateSceneLayers([track], getScene, t)) {
+        const sub = evaluateTimeline(layer.timeline, subContext, layer.time);
+        // Merge only carts the embedded scene actually TRACKS — its free-running
+        // defaults for other carts must not clobber the master's frames.
+        for (const subTrack of layer.timeline.tracks) {
+          if (subTrack.type !== "cart") continue;
+          const frame = sub.cartFrames.get(subTrack.cartId);
+          if (frame) cartFrames.set(subTrack.cartId, frame);
+        }
+        if (sub.camera) {
+          // Boundary blend: ease between the underlying camera and the embedded
+          // scene's over blendSeconds at each window edge (0 = hard cut). Pure
+          // in t, so scrubbing across the edge stays exact.
+          const blend = layer.clip.blendSeconds ?? 0;
+          let pose = sub.camera;
+          if (blend > 0 && camera) {
+            const factor = Math.max(
+              0,
+              Math.min(1, (t - layer.clip.start) / blend, (layer.clip.end - t) / blend)
+            );
+            if (factor < 1) {
+              pose = blendVirtualCameraSnapshots(camera, sub.camera, factor, { curve: "easeInOut" });
+            }
+          }
+          camera = pose;
+          activeBlock = sub.activeBlock;
+          blendProgress = sub.blendProgress;
+        }
+      }
     }
   }
 
@@ -369,6 +442,446 @@ export function driveRig(
   state.body.vcamId = null;
   state.activation = { key: null, vcamId: null };
   return { ...IDLE_RESULT, cameraSnapshot: state.brain.live ?? null };
+}
+
+// --- Active-scene runtime -----------------------------------------------------
+// The stateful layer above the pure per-scene evaluators: it owns the branch
+// (which scene is invoked, its local clock, the camera take/blend/release
+// handoff) so evaluateTimeline stays a pure f(t). A sibling of the other
+// stateful post-stages (stepCameraOverride, driveActivation): plain mutable
+// state stepped once per frame by the host's drive loop.
+
+/** Invoke a scene as a live branch (the runtime's only entry besides stop). */
+export interface PlaySceneCommand {
+  sceneId: string;
+  /** Scene-local start time (default 0). */
+  fromTime?: number;
+  /** When true (default), user override input cancels the camera takeover and
+   *  blends back early. Only meaningful while the scene owns the camera. */
+  skippable?: boolean;
+  /** Take/release handoff blend (default 1s easeInOut; 0 or "cut" snaps). */
+  blend?: { durationSeconds?: number; curve?: VirtualCameraBlendCurve };
+}
+
+interface ActiveScene {
+  sceneId: string;
+  /** The scene's local clock — independent of the master player. */
+  player: TimelinePlayer;
+  skippable: boolean;
+  blendSeconds: number;
+  blendCurve: VirtualCameraBlendCurve;
+  ownsCamera: boolean;
+  /** take = blending caller→scene, live = scene owns, release = blending back. */
+  phase: "take" | "live" | "release";
+  phaseElapsed: number;
+  /** Caller pose frozen at invocation: take-blend source, and the release
+   *  target when the base intent is idle (the pose the user had). */
+  takeFrom: VirtualCameraSnapshot | null;
+  /** Scene pose frozen at completion/cancel: release-blend source. */
+  releaseFrom: VirtualCameraSnapshot | null;
+  /** The master player was playing at invocation; resume it on return. */
+  resumeMaster: boolean;
+}
+
+export interface SceneRuntimeState {
+  pending: PlaySceneCommand | null;
+  active: ActiveScene | null;
+  /** Set by stopScene; the next drive step begins the release. */
+  stopRequested: boolean;
+}
+
+export function createSceneRuntimeState(): SceneRuntimeState {
+  return { pending: null, active: null, stopRequested: false };
+}
+
+/** Queue a scene invocation; it takes effect on the next drive step (which
+ *  freezes the caller's live pose as the blend source). Replaces any active
+ *  scene. */
+export function playScene(state: SceneRuntimeState, command: PlaySceneCommand): void {
+  state.pending = { ...command };
+  state.stopRequested = false;
+}
+
+/** Request an early return: the active scene blends back (or snaps, for a
+ *  camera-less scene) on the next drive step. */
+export function stopScene(state: SceneRuntimeState): void {
+  state.pending = null;
+  if (state.active) state.stopRequested = true;
+}
+
+export interface SceneDriveParams {
+  camera: Camera;
+  /** Scenes by id (e.g. RigRuntime.timelines). */
+  scenes: ReadonlyMap<string, Timeline>;
+  /** Resolve context the scenes evaluate against (usually the master's). */
+  context: TimelineRigContext;
+  /** Shared frames map the host reads; scene cart tracks publish into it. */
+  cartFrames: Map<string, CartFrame>;
+  /** What drives when no scene is active — and the pose control returns to on
+   *  release. Give it its own overrideInput exactly as for driveRig. */
+  base: RigDriveIntent;
+  /** This frame's user override input, for the skippable cancel edge. Pass the
+   *  same object embedded in `base`. */
+  overrideInput?: CameraOverrideInput;
+  up?: Vec3;
+  rigMatrix?: Matrix4;
+}
+
+export interface SceneDriveResult extends RigDriveResult {
+  /** The invoked scene this frame, or null when the base intent drove. While
+   *  set, hosts feed their non-camera directors (activation/audio/animation/
+   *  transform) from this timeline + local time instead of the master's. */
+  activeScene: { sceneId: string; timeline: Timeline; time: number; playing: boolean } | null;
+  /** Take/release handoff progress (1 outside a handoff blend). */
+  handoffProgress: number;
+}
+
+const freezeSnapshot = (snapshot: VirtualCameraSnapshot): VirtualCameraSnapshot => ({
+  ...snapshot,
+  position: { ...snapshot.position },
+  quaternion: { ...snapshot.quaternion },
+  ...(snapshot.lens && { lens: { ...snapshot.lens } }),
+  ...(snapshot.settings && { settings: { ...snapshot.settings } })
+});
+
+const hasOverrideInput = (input: CameraOverrideInput | undefined): boolean =>
+  input !== undefined &&
+  ((input.azimuthDeltaDeg ?? 0) !== 0 ||
+    (input.elevationDeltaDeg ?? 0) !== 0 ||
+    (input.panXDelta ?? 0) !== 0 ||
+    (input.panYDelta ?? 0) !== 0 ||
+    (input.dollyDelta ?? 0) !== 0);
+
+/** The scene owns the camera iff it has a camera track with blocks (mirrors
+ *  core's sceneOwnsCamera; local so the runtime works on any Timeline). */
+const timelineOwnsCamera = (timeline: Timeline): boolean =>
+  timeline.tracks.some((track) => track.type === "camera" && track.blocks.length > 0);
+
+/** The master player of the base intent, when it has one. */
+const basePlayer = (base: RigDriveIntent): TimelinePlayer | null =>
+  base.mode === "timeline" ? base.player : null;
+
+/** The pose the base intent would show right now — the release-blend target.
+ *  Falls back to the frozen caller pose (idle base, released gaps). */
+function resolveBaseCameraPose(base: RigDriveIntent): VirtualCameraSnapshot | null {
+  if (base.mode === "timeline") {
+    return evaluateTimeline(base.timeline, base.context, base.player.time).camera;
+  }
+  if (base.mode === "activation" && base.activeVcamId) {
+    const definition = base.vcams.get(base.activeVcamId);
+    if (definition) return resolveVirtualCameraDefinition(definition, base.context);
+  }
+  return null;
+}
+
+function finishActiveScene(state: SceneRuntimeState, base: RigDriveIntent): void {
+  const master = basePlayer(base);
+  if (state.active?.resumeMaster && master) master.playing = true;
+  state.active = null;
+  state.stopRequested = false;
+}
+
+/**
+ * Drive dispatch with the active-scene runtime layered on top of driveRig:
+ * with no invoked scene it is exactly driveRig(base); with one, the scene's
+ * local clock advances, its cart tracks publish, and — when the scene owns a
+ * camera — the take/live/release handoff drives the camera (caller pose →
+ * scene camera → back), bypassing composer/override for the takeover's
+ * duration. A camera-less scene leaves the camera entirely to the base intent.
+ * The master player pauses for the branch and resumes on return.
+ */
+export function driveRigWithScenes(
+  scenes: SceneRuntimeState,
+  state: RigDriveState,
+  params: SceneDriveParams,
+  deltaSeconds: number
+): SceneDriveResult {
+  const { camera, base } = params;
+
+  // Activate a pending invocation: freeze the caller pose, pause the master.
+  if (scenes.pending) {
+    const command = scenes.pending;
+    scenes.pending = null;
+    const timeline = params.scenes.get(command.sceneId);
+    if (timeline) {
+      const master = basePlayer(base);
+      const resumeMaster = scenes.active?.resumeMaster ?? Boolean(master?.playing);
+      if (master) master.playing = false;
+      const takeFrom = state.brain.live ? freezeSnapshot(state.brain.live) : null;
+      const ownsCamera = timelineOwnsCamera(timeline);
+      const blendSeconds =
+        command.blend?.curve === "cut" ? 0 : Math.max(0, command.blend?.durationSeconds ?? 1);
+      scenes.active = {
+        sceneId: command.sceneId,
+        player: createTimelinePlayer({ time: Math.max(0, command.fromTime ?? 0), playing: true }),
+        skippable: command.skippable ?? true,
+        blendSeconds,
+        blendCurve: command.blend?.curve ?? "easeInOut",
+        ownsCamera,
+        phase: ownsCamera && takeFrom && blendSeconds > 0 ? "take" : "live",
+        phaseElapsed: 0,
+        takeFrom,
+        releaseFrom: null,
+        resumeMaster
+      };
+      scenes.stopRequested = false;
+    }
+  }
+
+  const active = scenes.active;
+  const timeline = active ? params.scenes.get(active.sceneId) : undefined;
+
+  // Author deleted the scene mid-flight: return control without a blend source.
+  if (active && !timeline) finishActiveScene(scenes, base);
+
+  if (!active || !timeline) {
+    const result = driveRig(state, camera, base, deltaSeconds);
+    return { ...result, activeScene: null, handoffProgress: 1 };
+  }
+
+  // The frame that begins the release spent its dt playing the scene tail (or
+  // detecting the cancel); it renders the frozen pose at progress 0 and the
+  // blend advances from the next frame, so no dt is double-counted.
+  let releaseJustBegan = false;
+  const beginRelease = (): void => {
+    active.phase = "release";
+    active.phaseElapsed = 0;
+    active.releaseFrom = state.brain.live ? freezeSnapshot(state.brain.live) : null;
+    active.player.playing = false;
+    releaseJustBegan = true;
+  };
+
+  // A skippable takeover cancels on the first user gesture; stopScene() ends
+  // any scene. Camera-less scenes stop immediately (nothing to blend back).
+  const cancelled =
+    scenes.stopRequested ||
+    (active.skippable && active.ownsCamera && active.phase !== "release" && hasOverrideInput(params.overrideInput));
+  scenes.stopRequested = false;
+  if (cancelled) {
+    if (active.ownsCamera && active.blendSeconds > 0) beginRelease();
+    else {
+      finishActiveScene(scenes, base);
+      const result = driveRig(state, camera, base, deltaSeconds);
+      return { ...result, activeScene: null, handoffProgress: 1 };
+    }
+  }
+
+  if (active.player.playing) stepTimelinePlayer(active.player, timeline, deltaSeconds);
+
+  // Completion: the local clock reached the end (stepTimelinePlayer paused it).
+  if (!active.player.playing && active.phase !== "release") {
+    if (active.ownsCamera && active.blendSeconds > 0) beginRelease();
+    else if (active.player.time >= timeline.duration) {
+      finishActiveScene(scenes, base);
+      const result = driveRig(state, camera, base, deltaSeconds);
+      return { ...result, activeScene: null, handoffProgress: 1 };
+    }
+  }
+
+  const sample = evaluateTimeline(timeline, params.context, active.player.time);
+  for (const [cartId, frame] of sample.cartFrames) params.cartFrames.set(cartId, frame);
+
+  const activeScene = {
+    sceneId: active.sceneId,
+    timeline,
+    time: active.player.time,
+    playing: active.player.playing
+  };
+
+  // Camera-less scene: the base intent keeps the camera (user piloting intact);
+  // only the local clock + cart frames above belong to the scene.
+  if (!active.ownsCamera) {
+    const result = driveRig(state, camera, base, deltaSeconds);
+    return { ...result, activeScene, handoffProgress: 1 };
+  }
+
+  // Camera handoff. The scene's evaluated shot (with its own block blends) is
+  // the target; take/release wrap it in the invocation blend. While the scene
+  // owns the camera the composer/override stages idle so they reseed cleanly.
+  const held = state.brain.live ?? null;
+  const sceneCam = sample.camera ?? held;
+  let pose: VirtualCameraSnapshot | null = sceneCam;
+  let handoffProgress = 1;
+
+  if (active.phase === "take") {
+    active.phaseElapsed += Math.max(0, deltaSeconds);
+    const progress =
+      active.blendSeconds > 0 ? Math.min(1, active.phaseElapsed / active.blendSeconds) : 1;
+    handoffProgress = progress;
+    if (active.takeFrom && sceneCam && progress < 1) {
+      pose = blendVirtualCameraSnapshots(active.takeFrom, sceneCam, progress, {
+        curve: active.blendCurve
+      });
+    }
+    if (progress >= 1) active.phase = "live";
+  } else if (active.phase === "release") {
+    if (!releaseJustBegan) active.phaseElapsed += Math.max(0, deltaSeconds);
+    const progress =
+      active.blendSeconds > 0 ? Math.min(1, active.phaseElapsed / active.blendSeconds) : 1;
+    handoffProgress = progress;
+    const target = resolveBaseCameraPose(base) ?? active.takeFrom ?? active.releaseFrom;
+    if (active.releaseFrom && target) {
+      pose =
+        progress < 1
+          ? blendVirtualCameraSnapshots(active.releaseFrom, target, progress, {
+              curve: active.blendCurve
+            })
+          : target;
+    } else {
+      pose = target ?? pose;
+    }
+    if (progress >= 1) {
+      finishActiveScene(scenes, base);
+      // Hand the base drivers a clean slate next frame; this frame holds the
+      // landed pose so there is no double-step.
+    }
+  }
+
+  state.composer.vcamId = null;
+  state.body.vcamId = null;
+  if (pose) {
+    setVirtualCameraBrainLive(state.brain, pose);
+    applyVirtualCameraSnapshot(camera, pose, params.rigMatrix);
+  }
+
+  return {
+    cameraSnapshot: pose,
+    activeVcamId: sample.activeBlock?.block.vcamId ?? null,
+    composerTarget: null,
+    blendProgress: sample.blendProgress,
+    blendDone: sample.blendProgress >= 1,
+    activeScene: scenes.active ? activeScene : { ...activeScene, playing: false },
+    handoffProgress
+  };
+}
+
+// --- Reactive trigger runtime ---------------------------------------------------
+// The stateful bridge between live world state and the pure trigger predicates:
+// consumes a per-frame snapshot (camera position, entity resolver, forward-
+// playback windows, clicks), steps each trigger's proximity/arm state through
+// the /core reducers, and emits the bound action commands for the host (and the
+// scene runtime) to execute. Present-mode only; inert (and reset) otherwise.
+
+export interface TriggerWorldSnapshot {
+  /** Present-mode gate: while false (authoring, scrubbing) every trigger is
+   *  inert and volatile state resets, so scrubs can never fire anything. */
+  present: boolean;
+  /** The live camera's world position — the proximity subject. */
+  cameraPosition: Vec3 | null;
+  /** Live world position of a proximity target (target/entity id). */
+  resolvePosition: (id: string) => Vec3 | null;
+  /** Object ids clicked this frame (present-mode pointer). */
+  clicks?: readonly string[];
+  /** Forward-playback windows advanced this frame, one per playing clock:
+   *  marker events in (from, to] fire. Report ONLY real playback steps —
+   *  never scrubs or seeks. */
+  playback?: readonly { sceneId?: string; timeline: Timeline; from: number; to: number }[];
+  /** Freeze proximity state this frame (no edges, no re-arms) — set while a
+   *  runtime takeover drives the camera, so its motion can't churn triggers. */
+  holdProximity?: boolean;
+}
+
+export interface TriggerCommand {
+  triggerId: string;
+  bindingId: string;
+  action: ActionDefinition;
+  priority: number;
+}
+
+export interface TriggerRuntimeState {
+  proximity: Map<string, ProximityState>;
+  arm: Map<string, ArmState>;
+}
+
+export function createTriggerRuntimeState(): TriggerRuntimeState {
+  return { proximity: new Map(), arm: new Map() };
+}
+
+export interface TriggerRuntimeInput {
+  triggers: readonly TriggerDefinition[];
+  actions: readonly ActionDefinition[];
+  bindings: readonly TriggerBinding[];
+}
+
+/** The commands bound to one trigger (also the simulate affordance's path). */
+export function resolveTriggerCommands(defs: TriggerRuntimeInput, triggerId: string): TriggerCommand[] {
+  const commands: TriggerCommand[] = [];
+  for (const binding of defs.bindings) {
+    if (binding.triggerId !== triggerId) continue;
+    const action = defs.actions.find((candidate) => candidate.id === binding.actionId);
+    if (action) {
+      commands.push({ triggerId, bindingId: binding.id, action, priority: binding.priority ?? 0 });
+    }
+  }
+  return commands;
+}
+
+/**
+ * One trigger-runtime step. Deterministic in (state, defs, snapshot, dt):
+ * proximity edges via the hysteresis predicate, marker crossings via
+ * collectTimelineEvents over the reported playback windows (forward-only by
+ * construction), clicks by id — each gated through its trigger's arm-policy
+ * reducer. Conflict rule: at most one playScene command per step (highest
+ * binding priority wins, first authored breaks ties); other verbs all pass.
+ */
+export function stepTriggers(
+  state: TriggerRuntimeState,
+  defs: TriggerRuntimeInput,
+  snapshot: TriggerWorldSnapshot,
+  deltaSeconds: number
+): TriggerCommand[] {
+  if (!snapshot.present) {
+    // Leave present mode ⇒ full reset: a stale "inside" or spent "once" from a
+    // previous run must not leak into the next presentation.
+    state.proximity.clear();
+    state.arm.clear();
+    return [];
+  }
+
+  const commands: TriggerCommand[] = [];
+  for (const trigger of defs.triggers) {
+    if (trigger.enabled === false) continue;
+    const source = trigger.source;
+    let conditionFired = false;
+    let exited = false;
+
+    if (source.type === "proximity") {
+      const target = snapshot.holdProximity ? null : snapshot.resolvePosition(source.targetId);
+      const subject = snapshot.cameraPosition;
+      if (target && subject) {
+        const previous = state.proximity.get(trigger.id) ?? { inside: false };
+        const edge = stepProximity(previous, subject, target, source.radius, source.hysteresis);
+        state.proximity.set(trigger.id, { inside: edge.inside });
+        conditionFired = edge.entered;
+        exited = edge.exited;
+      }
+    } else if (source.type === "marker") {
+      for (const window of snapshot.playback ?? []) {
+        if (source.sceneId !== undefined && window.sceneId !== source.sceneId) continue;
+        conditionFired ||= collectTimelineEvents(window.timeline, window.from, window.to).some(
+          (event) =>
+            (source.eventId === undefined || event.id === source.eventId) &&
+            (source.eventKind === undefined || event.kind === source.eventKind)
+        );
+      }
+    } else {
+      conditionFired = (snapshot.clicks ?? []).includes(source.objectId);
+    }
+
+    const previousArm = state.arm.get(trigger.id) ?? createArmState();
+    const { state: nextArm, fire } = stepArmPolicy(previousArm, trigger.arm, { conditionFired, exited }, deltaSeconds);
+    state.arm.set(trigger.id, nextArm);
+    if (fire) commands.push(...resolveTriggerCommands(defs, trigger.id));
+  }
+
+  const playSceneCommands = commands.filter((command) => command.action.type === "playScene");
+  if (playSceneCommands.length > 1) {
+    const winner = playSceneCommands.reduce((best, command) =>
+      command.priority > best.priority ? command : best
+    );
+    return commands.filter((command) => command.action.type !== "playScene" || command === winner);
+  }
+  return commands;
 }
 
 function evaluateCameraTrack(

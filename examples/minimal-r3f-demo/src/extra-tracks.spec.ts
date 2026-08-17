@@ -10,6 +10,7 @@ import {
 } from "./extra-tracks";
 
 const activation = (objectId: string, clips: [number, number][]): ActivationTrack => ({
+  type: "activation",
   id: `act-${objectId}`,
   objectId,
   postPlaybackState: "revert",
@@ -49,6 +50,7 @@ describe("evaluateActivation", () => {
 });
 
 const audio = (id: string, clips: AudioTrack["clips"], extra: Partial<AudioTrack> = {}): AudioTrack => ({
+  type: "audio",
   id,
   clips,
   ...extra

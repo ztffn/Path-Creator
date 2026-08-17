@@ -2,15 +2,16 @@
 // one SVG <path> in normalized coordinates with preserveAspectRatio="none", so the
 // block's CSS width/height does the time/amplitude scaling — no px-per-second math,
 // and it survives zoom for free. "envelope" draws a symmetric waveform fill from a
-// [min,max,…] peak array; "line" draws a polyline from a 0..1 series. Knows nothing
-// about audio; the host decides what the series means (audio peaks, dolly speed, …).
+// [min,max,…] peak array; "line" draws a polyline from a 0..1 series; "markers" draws
+// a diamond+stem at each 0..1 position (keyframe ticks). Knows nothing about audio;
+// the host decides what the series means (audio peaks, dolly speed, transform keys…).
 import { useMemo, type CSSProperties } from "react";
 
-export type BlockSeriesKind = "envelope" | "line";
+export type BlockSeriesKind = "envelope" | "line" | "markers";
 
 export interface BlockSeriesData {
   kind: BlockSeriesKind;
-  /** envelope: flat [min,max,min,max,…] in -1..1. line: values in 0..1. */
+  /** envelope: flat [min,max,min,max,…] in -1..1. line: values in 0..1. markers: positions in 0..1. */
   points: number[];
   /** Overrides the `color` prop — lets stacked series (e.g. waveform + gain) differ. */
   color?: string;
@@ -50,13 +51,39 @@ function linePath(points: number[]): { d: string; width: number } {
   return { d, width };
 }
 
+/**
+ * Keyframe ticks as HTML (not SVG): a full-height stem plus a centered diamond at
+ * each 0..1 position. HTML keeps the diamond square — an SVG under
+ * preserveAspectRatio="none" would shear it with the block's aspect ratio.
+ */
+function Markers({ points, paint }: { points: number[]; paint: string }) {
+  return (
+    <div style={FILL_STYLE}>
+      {points.map((p, i) => {
+        const left = `${r(Math.min(1, Math.max(0, p)) * 100)}%`;
+        return (
+          <div key={i}>
+            <div style={{ position: "absolute", left, top: 0, bottom: 0, width: 1, background: paint, opacity: 0.5, transform: "translateX(-0.5px)" }} />
+            <div style={{ position: "absolute", left, top: "50%", width: 6, height: 6, background: paint, transform: "translate(-50%, -50%) rotate(45deg)" }} />
+          </div>
+        );
+      })}
+    </div>
+  );
+}
+
 export function BlockSeries({ data, color }: { data: BlockSeriesData; color: string }) {
+  const paint = data.color ?? color;
+  if (data.kind === "markers") return data.points.length ? <Markers points={data.points} paint={paint} /> : null;
+  return <BlockPath data={data} paint={paint} />;
+}
+
+function BlockPath({ data, paint }: { data: BlockSeriesData; paint: string }) {
   const { d, width } = useMemo(
     () => (data.kind === "envelope" ? envelopePath(data.points) : linePath(data.points)),
     [data]
   );
   if (!d) return null;
-  const paint = data.color ?? color;
   return (
     <svg viewBox={`0 0 ${width} 100`} preserveAspectRatio="none" style={FILL_STYLE}>
       {data.kind === "envelope" ? (

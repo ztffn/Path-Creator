@@ -1,51 +1,111 @@
-// Round-trip tests for scene persistence: the demo's extra tracks (activation/audio/
-// animation/transform) survive serializeScene -> deserializeScene, the file stays a
-// valid RigDocument (extra tracks in the x-demo-tracks extension key), and a bare
-// document with no extension deserializes to empty tracks (back-compat).
+// Round-trip tests for story persistence: multi-scene assemble/serialize ->
+// deserialize preserves per-scene content (shot participation, extra tracks) and
+// the entry marker; the file stays a valid RigDocument (schema v7 Story); legacy
+// x-demo-tracks sidecars still load onto the entry scene; a scene without camera
+// timing entries persists with no camera track (composition = ownership).
 import { describe, expect, it } from "vitest";
-import { parseRigDocument } from "@huma/path-creator/core";
-import { serializeScene, deserializeScene, type DemoScene } from "./scene-io";
+import { RIG_SCHEMA_VERSION, parseRigDocument, sceneOwnsCamera, getScene } from "@huma/path-creator/core";
+import {
+  EMPTY_INTERACTIONS,
+  EMPTY_SCENE_CONTENT,
+  serializeStory,
+  deserializeStory,
+  type DemoStory
+} from "./scene-io";
 import { EMPTY_EXTRA_TRACKS, type ExtraTracks } from "./extra-tracks";
 
 const extraTracks: ExtraTracks = {
-  activationTracks: [{ id: "act1", objectId: "turbine", clips: [{ id: "c", start: 0, end: 2 }], postPlaybackState: "revert" }],
-  audioTracks: [{ id: "aud1", name: "VO", clips: [{ id: "a", src: "/audio/x.mp3", start: 1, duration: 3 }], gain: 0.8 }],
-  animationTracks: [{ id: "anim1", objectId: "fox", clips: [{ id: "k", clipName: "Run", start: 0, end: 4, loop: "once" }] }],
-  transformTracks: [{ id: "xf1", objectId: "fox", position: [{ time: 0, value: [3, 0, -2] }, { time: 4, value: [8, 0, -2], easing: "linear" }] }]
+  activationTracks: [{ type: "activation", id: "act1", objectId: "turbine", clips: [{ id: "c", start: 0, end: 2 }], postPlaybackState: "revert" }],
+  audioTracks: [{ type: "audio", id: "aud1", name: "VO", clips: [{ id: "a", src: "/audio/x.mp3", start: 1, duration: 3 }], gain: 0.8 }],
+  animationTracks: [{ type: "animation", id: "anim1", objectId: "fox", clips: [{ id: "k", clipName: "Run", start: 0, end: 4, loop: "once" }] }],
+  transformTracks: [{ type: "transform", id: "xf1", objectId: "fox", position: [{ time: 0, value: [3, 0, -2] }, { time: 4, value: [8, 0, -2], easing: "linear" }] }]
 };
 
-const scene: DemoScene = {
+const story: DemoStory = {
   paths: [],
   activePathId: null,
   dollies: [],
-  vcamDefs: [],
+  vcamDefs: [
+    { id: "vcam-1", name: "Wide", body: { type: "static", position: { x: 0, y: 2, z: 8 }, quaternion: { x: 0, y: 0, z: 0, w: 1 } } }
+  ],
   editorVcams: {},
-  shotTiming: {},
-  dollyRuns: {},
-  fovAnimations: {},
   targets: [],
-  extraTracks
+  scenes: [
+    { id: "show", name: "Show", ...EMPTY_SCENE_CONTENT, shotTiming: { "vcam-1": { start: 0, end: 5 } }, extraTracks },
+    { id: "detail", name: "Detail", ...EMPTY_SCENE_CONTENT }
+  ],
+  entrySceneId: "show",
+  interactions: EMPTY_INTERACTIONS
 };
 
-describe("scene extra-tracks portability", () => {
-  it("round-trips all four extra-track kinds through serialize -> deserialize", () => {
-    const restored = deserializeScene(serializeScene(scene));
-    expect(restored.extraTracks).toEqual(extraTracks);
+describe("story persistence", () => {
+  it("round-trips a multi-scene story with per-scene content and the entry marker", () => {
+    const restored = deserializeStory(serializeStory(story));
+    expect(restored.scenes.map((scene) => scene.id)).toEqual(["show", "detail"]);
+    expect(restored.entrySceneId).toBe("show");
+    expect(restored.scenes[0]?.extraTracks).toEqual(extraTracks);
+    expect(restored.scenes[0]?.shotTiming).toEqual({ "vcam-1": { start: 0, end: 5 } });
+    expect(restored.scenes[1]?.shotTiming).toEqual({});
+    expect(restored.scenes[1]?.extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
   });
 
-  it("keeps the file a valid RigDocument (extra tracks in a namespaced key)", () => {
-    const json = serializeScene(scene);
-    // The core parser accepts it and ignores the extension key.
-    expect(() => parseRigDocument(json)).not.toThrow();
+  it("persists a valid current-schema document; a scene without shots has no camera track", () => {
+    const json = serializeStory(story);
+    const document = parseRigDocument(json);
+    expect(document.schemaVersion).toBe(RIG_SCHEMA_VERSION);
+    expect(document.entrySceneId).toBe("show");
+    expect(sceneOwnsCamera(getScene(document, "show")!)).toBe(true);
+    expect(sceneOwnsCamera(getScene(document, "detail")!)).toBe(false);
+    expect(document.timelines?.[0]?.tracks.some((track) => track.type === "audio")).toBe(true);
     const raw = JSON.parse(json) as Record<string, unknown>;
-    expect(typeof raw.schemaVersion).toBe("number");
-    expect(raw["x-demo-tracks"]).toBeTruthy();
+    expect(raw["x-demo-tracks"]).toBeUndefined();
   });
 
-  it("deserializes a bare RigDocument (no extension) to empty tracks", () => {
-    const bare = serializeScene({ ...scene, extraTracks: EMPTY_EXTRA_TRACKS });
-    const stripped = JSON.parse(bare) as Record<string, unknown>;
-    delete stripped["x-demo-tracks"];
-    expect(deserializeScene(JSON.stringify(stripped)).extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
+  it("loads a legacy single-timeline document as a one-scene story", () => {
+    const legacy = JSON.parse(serializeStory({ ...story, scenes: [story.scenes[0]!], entrySceneId: null })) as Record<string, unknown>;
+    legacy.schemaVersion = 6;
+    delete legacy.entrySceneId;
+    const restored = deserializeStory(JSON.stringify(legacy));
+    expect(restored.scenes).toHaveLength(1);
+    expect(restored.entrySceneId).toBe("show");
+  });
+
+  it("round-trips scene embeds (sceneClips) as a scene track", () => {
+    const withEmbed: DemoStory = {
+      ...story,
+      scenes: [
+        { ...story.scenes[0]!, sceneClips: [{ id: "e1", sceneId: "detail", start: 2, end: 6, offset: 0.5 }] },
+        story.scenes[1]!
+      ]
+    };
+    const restored = deserializeStory(serializeStory(withEmbed));
+    expect(restored.scenes[0]?.sceneClips).toEqual([{ id: "e1", sceneId: "detail", start: 2, end: 6, offset: 0.5 }]);
+    const document = parseRigDocument(serializeStory(withEmbed));
+    expect(getScene(document, "show")?.tracks.some((track) => track.type === "scene")).toBe(true);
+  });
+
+  it("round-trips the interaction layer (trigger + action + binding)", () => {
+    const withTriggers: DemoStory = {
+      ...story,
+      interactions: {
+        triggers: [{ id: "t1", name: "Near crate", source: { type: "proximity", targetId: "crate", radius: 3, hysteresis: 1 }, arm: { type: "rearm-on-exit" } }],
+        actions: [{ id: "a1", type: "playScene", sceneId: "detail", skippable: true }],
+        bindings: [{ id: "b1", triggerId: "t1", actionId: "a1", priority: 2 }]
+      }
+    };
+    const restored = deserializeStory(serializeStory(withTriggers));
+    expect(restored.interactions).toEqual(withTriggers.interactions);
+    // A legacy document without the fields loads as empty interactions.
+    expect(deserializeStory(serializeStory(story)).interactions).toEqual(EMPTY_INTERACTIONS);
+  });
+
+  it("imports legacy x-demo-tracks sidecars onto the entry scene", () => {
+    const bare = JSON.parse(
+      serializeStory({ ...story, scenes: story.scenes.map((scene) => ({ ...scene, extraTracks: EMPTY_EXTRA_TRACKS })) })
+    ) as Record<string, unknown>;
+    bare["x-demo-tracks"] = extraTracks;
+    const restored = deserializeStory(JSON.stringify(bare));
+    expect(restored.scenes[0]?.extraTracks).toEqual(extraTracks);
+    expect(restored.scenes[1]?.extraTracks).toEqual(EMPTY_EXTRA_TRACKS);
   });
 });

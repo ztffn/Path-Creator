@@ -4,17 +4,13 @@
 // An <Activatable id name> wrapper registers its group on mount; useActivatables
 // lists the bound objects for the authoring UI. Purely demo scaffolding.
 import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from "react";
-import { TransformControls } from "@react-three/drei";
+import { TransformGizmo } from "@huma/path-creator/r3f";
 import { Box3, BoxGeometry, EdgesGeometry, Matrix4, Vector3, type AnimationAction, type AnimationMixer, type Group, type Object3D } from "three";
-import { evaluateActivation, type ActivationTrack } from "./extra-tracks";
-
-/** Gizmo manipulation mode for the transform handles, or null for no gizmo. */
-export type GizmoMode = "translate" | "rotate" | "scale" | null;
 
 /**
  * The animation side of an activatable: a GLB model's mixer plus its baked clips,
  * keyed by clip name. Present only for objects loaded from an animated GLB; the
- * MixerDirector reads it to drive clips by time. Primitives register without it.
+ * AnimationTrackDirector reads it to drive clips by time. Primitives omit it.
  */
 export interface AnimationFacet {
   mixer: AnimationMixer;
@@ -75,97 +71,6 @@ export class ActivatablesRegistry {
   }
 }
 
-/** Snapshots the current .visible of each bound object, so "revert" can restore it. */
-export function captureVisibility(
-  registry: ActivatablesRegistry,
-  tracks: readonly ActivationTrack[]
-): Map<string, boolean> {
-  const original = new Map<string, boolean>();
-  for (const track of tracks) {
-    const object = registry.resolve(track.objectId);
-    if (object && !original.has(track.objectId)) original.set(track.objectId, object.visible);
-  }
-  return original;
-}
-
-/** Writes desired visibility onto each bound object (unregistered ids are skipped). */
-export function applyVisibility(registry: ActivatablesRegistry, visibility: Map<string, boolean>): void {
-  for (const [id, visible] of visibility) {
-    const object = registry.resolve(id);
-    if (object) object.visible = visible;
-  }
-}
-
-/** Applies each track's Unity Post-Playback State when the director stops/leaves. */
-export function applyPostPlayback(
-  registry: ActivatablesRegistry,
-  tracks: readonly ActivationTrack[],
-  original: Map<string, boolean>
-): void {
-  for (const track of tracks) {
-    const object = registry.resolve(track.objectId);
-    if (!object) continue;
-    switch (track.postPlaybackState) {
-      case "active":
-        object.visible = true;
-        break;
-      case "inactive":
-        object.visible = false;
-        break;
-      case "revert":
-        object.visible = original.get(track.objectId) ?? true;
-        break;
-      case "leaveAsIs":
-        break;
-    }
-  }
-}
-
-/**
- * Owns the per-frame activation state machine (the demo's PlayableDirector): on
- * entry it captures original visibility; while the director controls (play or
- * scrub) it shows objects per their clip windows; and once playback reaches the
- * end — or the director is left — it applies and holds the Post-Playback State
- * until the user scrubs/plays again. All mutating; call sync() once per frame.
- */
-export class ActivationDirector {
-  private original = new Map<string, boolean>();
-  private wasDriving = false;
-  private held = false;
-  private lastPlaying = false;
-  private lastTime = 0;
-
-  sync(
-    registry: ActivatablesRegistry,
-    tracks: readonly ActivationTrack[],
-    driving: boolean,
-    duration: number,
-    time: number,
-    playing: boolean
-  ): void {
-    if (driving) {
-      if (!this.wasDriving) {
-        this.original = captureVisibility(registry, tracks);
-        this.held = false;
-        this.wasDriving = true;
-      }
-      const atEnd = duration > 0 && time >= duration - 1e-3;
-      // Playing, or scrubbing away from the end, resumes clip evaluation.
-      if (playing || time !== this.lastTime) this.held = false;
-      // Playback reached the end this frame → hold the Post-Playback State.
-      if (this.lastPlaying && !playing && atEnd) this.held = true;
-      if (this.held) applyPostPlayback(registry, tracks, this.original);
-      else applyVisibility(registry, evaluateActivation(tracks, time));
-    } else if (this.wasDriving) {
-      applyPostPlayback(registry, tracks, this.original);
-      this.wasDriving = false;
-      this.held = false;
-    }
-    this.lastPlaying = playing;
-    this.lastTime = time;
-  }
-}
-
 const ActivatablesContext = createContext<ActivatablesRegistry | null>(null);
 
 export function ActivatablesProvider({
@@ -203,7 +108,7 @@ export function Activatable({
   position,
   rotation,
   scale,
-  gizmoMode = null,
+  gizmoEnabled = false,
   onTransformingChange,
   children
 }: {
@@ -218,8 +123,8 @@ export function Activatable({
   position?: [number, number, number];
   rotation?: [number, number, number];
   scale?: number | [number, number, number];
-  /** When set (and selected), a transform gizmo controls the group directly. */
-  gizmoMode?: GizmoMode;
+  /** Show the combined move/rotate/scale gizmo while this object is selected. */
+  gizmoEnabled?: boolean;
   /** Fired on gizmo drag start/end so the host can suspend orbit controls. */
   onTransformingChange?: (transforming: boolean) => void;
   children: ReactNode;
@@ -227,6 +132,9 @@ export function Activatable({
   const registry = useActivatablesRegistry();
   const groupRef = useRef<Group>(null);
   const [bounds, setBounds] = useState<{ center: [number, number, number]; size: [number, number, number] } | null>(null);
+  // Whether this object contains a SkinnedMesh — such meshes don't reliably register
+  // raycast clicks, so they get an invisible box collider (independent of any track).
+  const [hasSkinned, setHasSkinned] = useState(false);
   // Placement values arrive as fresh arrays each render; key by value so the effect
   // re-applies only on a real change (never clobbering a gizmo/director pose).
   const placeKey = JSON.stringify({ position, rotation, scale });
@@ -237,10 +145,20 @@ export function Activatable({
     if (rotation) group.rotation.set(rotation[0], rotation[1], rotation[2]);
     if (scale !== undefined) typeof scale === "number" ? group.scale.setScalar(scale) : group.scale.set(scale[0], scale[1], scale[2]);
     group.updateWorldMatrix(true, true);
+    // Pose the skeleton before measuring: skeleton.update() normally runs in the render
+    // loop, so on mount a GLB's bones are unset and its vertices collapse to the origin.
+    let sawSkinned = false;
+    group.traverse((node) => {
+      const skinned = node as { isSkinnedMesh?: boolean; skeleton?: { update: () => void } };
+      if (skinned.isSkinnedMesh) { sawSkinned = true; skinned.skeleton?.update(); }
+    });
+    if (sawSkinned) setHasSkinned(true);
     const unregister = registry.register(id, group, name ?? id, animation);
     // Measure in the group's LOCAL frame (world box mapped back through the group's
-    // inverse), so a placed/scaled group still outlines correctly as a child.
-    const box = new Box3().setFromObject(group);
+    // inverse), so a placed/scaled group still outlines correctly as a child. precise=true
+    // walks getVertexPosition (bone-transformed on SkinnedMesh) so a posed GLB measures its
+    // real extent, not the degenerate un-skinned box.
+    const box = new Box3().setFromObject(group, true);
     if (!box.isEmpty()) {
       box.applyMatrix4(new Matrix4().copy(group.matrixWorld).invert());
       const c = box.getCenter(new Vector3());
@@ -250,10 +168,9 @@ export function Activatable({
     return unregister;
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [registry, id, name, animation, placeKey]);
-  // TransformControls only fires onMouseUp on a real pointer release; if it unmounts
-  // mid-drag (e.g. the timeline starts driving), that never fires, so re-enable orbit
-  // on unmount to avoid leaving the editor's OrbitControls stuck disabled.
-  const gizmoActive = selected && !!gizmoMode;
+  // A gizmo can unmount mid-drag when timeline playback starts. Always release the
+  // host's orbit lock in that case.
+  const gizmoActive = selected && gizmoEnabled;
   useEffect(() => {
     if (!gizmoActive) return;
     return () => onTransformingChange?.(false);
@@ -263,17 +180,37 @@ export function Activatable({
     <>
     <group ref={groupRef} {...(onSelect && { onPointerDown: (event: { stopPropagation: () => void }) => { event.stopPropagation(); onSelect(); } })}>
       {children}
+      {/* A GLB's SkinnedMesh doesn't reliably register raycast clicks, so animated
+          models get an invisible box collider at their bounds — the reliable click
+          target the plain box-mesh objects already have. Bubbles onPointerDown up. */}
+      {hasSkinned && bounds ? <HitProxy center={bounds.center} size={bounds.size} /> : null}
       {selected && bounds ? <SelectionBox center={bounds.center} size={bounds.size} /> : null}
     </group>
-    {selected && gizmoMode && groupRef.current ? (
-      <TransformControls
-        object={groupRef.current}
-        mode={gizmoMode}
-        onMouseDown={() => onTransformingChange?.(true)}
-        onMouseUp={() => onTransformingChange?.(false)}
+    {gizmoActive && groupRef.current ? (
+      <TransformGizmo
+        matrix={groupRef.current.matrix.clone()}
+        onDrag={(local) => {
+          const group = groupRef.current;
+          if (!group) return;
+          local.decompose(group.position, group.quaternion, group.scale);
+          group.updateMatrix();
+          group.updateWorldMatrix(true, true);
+        }}
+        onDragStart={() => onTransformingChange?.(true)}
+        onDragEnd={() => onTransformingChange?.(false)}
       />
     ) : null}
     </>
+  );
+}
+
+/** Invisible-but-raycastable box collider so GLB models are click-selectable. */
+function HitProxy({ center, size }: { center: [number, number, number]; size: [number, number, number] }) {
+  return (
+    <mesh position={center}>
+      <boxGeometry args={size} />
+      <meshBasicMaterial transparent opacity={0} depthWrite={false} />
+    </mesh>
   );
 }
 

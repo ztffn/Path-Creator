@@ -13,6 +13,8 @@ import { CameraInspector, type CameraInspectorProps } from "./inspector-camera";
 import { TargetInspector, type TargetInspectorProps } from "./inspector-target";
 import { ObjectInspector, type ObjectInspectorProps } from "./inspector-object";
 import { AudioInspector, type AudioInspectorProps } from "./inspector-audio";
+import { TriggerInspector, type TriggerInspectorProps } from "./inspector-trigger";
+import { StorySceneInspector, type StorySceneInspectorProps } from "./inspector-story-scene";
 
 const KIND_LABEL: Record<NonNullable<Selection>["kind"], string> = {
   scene: "Scene",
@@ -21,7 +23,9 @@ const KIND_LABEL: Record<NonNullable<Selection>["kind"], string> = {
   camera: "Camera",
   target: "Target",
   object: "Object",
-  audio: "Audio"
+  audio: "Audio",
+  trigger: "Trigger",
+  storyScene: "Scene"
 };
 
 export interface InspectorProps {
@@ -34,6 +38,8 @@ export interface InspectorProps {
   target: TargetInspectorProps | null;
   object: ObjectInspectorProps | null;
   audio: AudioInspectorProps | null;
+  trigger: TriggerInspectorProps | null;
+  storyScene: StorySceneInspectorProps | null;
 }
 
 function Shell({ title, subtitle, children }: { title: string; subtitle?: string; children: ReactNode }) {
@@ -91,5 +97,9 @@ export function Inspector(props: InspectorProps) {
       return <Shell {...header}>{props.object ? <ObjectInspector {...props.object} /> : MISSING}</Shell>;
     case "audio":
       return <Shell {...header}>{props.audio ? <AudioInspector {...props.audio} /> : MISSING}</Shell>;
+    case "trigger":
+      return <Shell {...header}>{props.trigger ? <TriggerInspector {...props.trigger} /> : MISSING}</Shell>;
+    case "storyScene":
+      return <Shell {...header}>{props.storyScene ? <StorySceneInspector {...props.storyScene} /> : MISSING}</Shell>;
   }
 }
