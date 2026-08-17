@@ -39,7 +39,9 @@ R7 in the integration design and it is not negotiable.
 **4. Write to objects, never to node data.** The time layer drives live `Object3D`s each frame.
 It must not write into Pascal's store — measured, 2220 frames of driving moved Pascal's undo
 depth and dirty-node count by exactly zero, and that property is what keeps playback out of the
-undo history. See §9 for the one narrow exception.
+undo history. The one narrow exception — a node edited *while it is being driven* snaps back for
+a frame — is rule R4 in `INTEGRATION-DESIGN.md`, with `useLiveNodeOverrides` as the sanctioned
+route if editing during playback ever becomes a requirement.
 
 **5. Restoration is mandatory.** When a drive ends, every object it touched goes back to the pose
 it had before. Otherwise scrubbing silently rewrites the scene document and the author's world
@@ -51,13 +53,68 @@ or a position. The single worst defect in elastiq's current 3D prototype is that
 visibility by *mesh name* in a flat namespace shared across all models — two models with a mesh
 called `Cover` collide, and array clones collide with themselves.
 
+**7. Authoring and runtime are different stacks.** The editor is a tool; the presentation is the
+product. Authoring mounts `@pascal-app/core` + `/nodes` + `/viewer` + `/editor` plus our timeline
+plugin and its panel. **A published presentation mounts core + nodes + viewer + the timeline
+*runtime* only** — no editor package, no gizmos, no placement tools, no inspector. Same scene
+document, same renderer, same timeline evaluation; a fraction of the bundle. Every phase below
+must state which stack it touches, and nothing in the runtime path may import from `/editor`.
+
 ### The repositories
 
 | Repo | Role | Notes |
 |---|---|---|
-| `pascalorg/editor` (Pascal) | the 3D editor | MIT, pre-1.0, commits daily. Fork for our plugin; upstream what is generally useful. |
+| `pascalorg/editor` (Pascal) | the 3D editor | MIT, pre-1.0, commits daily. **Consume as packages, do not fork** — our work ships as a plugin. A fork exists only to carry the frame-rate patch until [#671](https://github.com/pascalorg/editor/pull/671) merges, and is retired when it does. |
 | `Path-Creator` (`@huma/path-creator`) | the time layer | Ours. Timeline schema v10, rig schema v12. |
 | `humatopia-frontend` (elastiq) | the product | Ours. Presentation system under `src/features/presentation/` and `src/routes/elastiq/`. |
+
+---
+
+## 0a. Sizing and dependencies — read this to schedule the work
+
+Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a week or so,
+**L** = multiple weeks, **XL** = a month or more with real unknowns.
+
+| Phase | Size | Stack | Blocked by | Notes |
+|---|---|---|---|---|
+| M0.1 three alignment | S | both | — | Do first; everything installs behind it. |
+| M0.2 version field | S | runtime | — | An hour. Expensive to retrofit. |
+| M0.3 security | M | runtime | — | Independent. Blocks external launch. |
+| M0.4 asset pipeline | M | both | M0.2 | M3.1 cannot ship without it. |
+| M1.1 plugin skeleton | S | authoring | M0.1 | |
+| M1.2 binding + tracks | M | both | M1.1 | Adapter is proven; the work is track coverage. |
+| M1.3 timeline UI | **L** | authoring | M1.2 | **The largest single chunk in the plan.** |
+| M1.4 camera + shots | M | both | M1.2 | Camera rule is measured; obey it. |
+| M1.5 cues | S | both | M1.2 | Implementation with tests already exists. |
+| M1.6 persistence | M | both | M1.2 | Gated on the clone-id decision. |
+| M2.1 post-processing | M | both | M0.1 | Mechanical. Direct TSL equivalents. |
+| M2.2 environment + lighting | **XL** | both | M2.1 | A re-authoring. The biggest risk in the plan. |
+| M2.3 materials | **L** | both | M2.1 | |
+| M2.4 shadows | M | both | M2.2 | |
+| M2.5 splats | M | both | M2.1 | Implementation exists elsewhere; integrate. |
+| M2.6 look authorable | M | both | M2.2, and an open decision | See §M2.6 — schema question first. |
+| M3.1 document format | M | runtime | M0.2, M0.4 | |
+| M3.2 worlds + one canvas | M | runtime | M3.1, M1.6 | |
+| M3.3 riding on navigation | S | runtime | M3.2, M1.5 | Small, because the ride already exists. |
+| M3.4 embedded authoring | L | authoring | M1.3, M3.2 | |
+| M3.5 steps as sub-cues | S | runtime | M3.3 | |
+| M3.6 AI schema doc | S | — | M3.1 | Otherwise AI decks stay 2D forever. |
+| M4.0 transport | **L** | runtime | M0.3 | Backend. Not free. |
+| M4.1 clock sync | M | runtime | M4.0, M3.3 | |
+| M4.2 ownership + permissions | M | runtime | M4.1 | |
+| M4.3 live viewer route | M | runtime | M4.1 | |
+
+### Three tracks run in parallel
+
+The milestones are **not** strictly sequential. After M0.1 lands, three streams are independent
+and can be staffed separately:
+
+- **Time** — M1 entire. Touches Pascal and path-creator. Does not need rendering work.
+- **Rendering** — M2 entire. Touches Pascal's viewer. Does not need the timeline to exist.
+- **Format and product** — M0.2, M0.4, M3.1. Touches elastiq. Does not need either of the above.
+
+They converge at **M3.2**, which is the first phase requiring all three. Schedule backwards from
+there. M2.2 is the long pole; start it early even though it is not blocking anything yet.
 
 ---
 
@@ -108,6 +165,24 @@ contains unresolved git merge-conflict markers that leak it.
 
 **Done when:** presentations are owner-scoped and auth-checked, the key is rotated out of git
 history and into env, and the skill file is repaired.
+
+### M0.4 — Asset pipeline
+
+**Why.** M3.1 says assets become content-addressed references, and the format cannot ship without
+somewhere for them to live. Today two of three save paths write `blob:` URLs straight into slides,
+which are dead on the next page load — so this also fixes a live data-loss bug.
+
+**Tasks.** Content-address by hash on upload. Store through elastiq's existing `@/lib/storage`
+abstraction (S3-compatible in production, local filesystem in development). Return a stable asset
+id that the document references. Deduplicate on hash so two slides using the same model store one
+copy. Decide and record a retention policy — an asset referenced by no document is otherwise
+immortal.
+
+**Note for the room (M4).** Content addressing is what makes a returning viewer, or a second
+viewer on the same network, avoid re-downloading the world. Cache headers matter here.
+
+**Done when:** uploading a GLB twice stores it once; a document survives a reload with its models
+intact; no `blob:` URL can reach persisted data.
 
 ---
 
@@ -171,6 +246,19 @@ restores the pre-drive pose on leave. Assert undo depth and dirty-node count are
 
 The lane editor, keyframes, curves. path-creator already ships `/timeline-ui` with a shared
 curve engine and a keyframe curve editor; reuse rather than rebuild.
+
+**How it mounts — do not guess this.** Panels are deliberately *not* a core plugin contribution.
+Pascal's plugin contract states that panels and sidebar UI are host-specific and that a plugin
+exports an **`EditorHostPanel`** separately, for hosts using `@pascal-app/editor`. So the plugin
+package ships two entry points: the node kinds through the manifest, and the timeline panel
+through the host-panel export, registered with `registerEditorHostPanel`. The upstream
+`plugin-bones`, `plugin-trees` and `plugin-streetscape` packs all do this — read one before
+starting.
+
+**Why this is the long pole.** `/timeline-ui` is DOM and React with its own theme; Pascal's editor
+has its own chrome and design language. Expect real work reconciling them, and expect the
+@xzdarcy lane dependency to be the thing you end up replacing (path-creator's roadmap already
+flags it as unmaintained, with an in-house lane as the intended replacement).
 
 **Frame-rate note.** Pascal's viewer runs `frameloop="never"` and advances through
 `<FrameLimiter fps={50} />` with 50 **hardcoded**. A `maxFps` prop is proposed upstream as
@@ -271,13 +359,45 @@ because drei's `SoftShadows` patches `THREE.ShaderChunk` globally.
 
 A WebGPU splat implementation exists in another project — integrate rather than port drei's.
 
-### M2.6 — The look becomes authorable
+### M2.6 — The look becomes authorable *(schema decision required first)*
 
-Lighting, environment and post move into the scene and onto the timeline. Then "polished" and
-"technical" stop being modes and become positions in a look-space that can **transition as you
-ride** — a slide can dissolve from a rendered view into an inked technical read.
+**Do not start this as a task. It is a design question wearing a task's clothes**, of the same
+kind as "what is a slide", and it needs a recorded answer before code:
 
-**Done when:** a look change is keyframable and rides with the clock.
+> Where does the look live — as scene nodes with animatable properties, as timeline tracks, or
+> split between them?
+
+The trade. **Nodes**: lights and environment become first-class scene objects, placeable and
+inspectable with everything else, and the timeline animates their properties like any other node —
+consistent, but "post-processing intensity" is not a thing in space. **Tracks**: the look is
+purely temporal, which fits post but makes a light something you cannot select in the viewport.
+**Split** is probably right — lights and environment probes are scene nodes, post-processing is a
+timeline track — but that is an assertion, not a decision, and it must be written into
+`INTEGRATION-DESIGN.md` before M2.6 begins.
+
+Once decided: "polished" and "technical" stop being modes and become positions in a look-space
+that can **transition as you ride** — a slide can dissolve from a rendered view into an inked
+technical read.
+
+**Done when:** the decision is recorded, and a look change is keyframable and rides with the clock.
+
+### M2 kill criterion and fallback *(not a phase — read before starting M2.2)*
+
+M2.2 is the largest risk in this plan and it is a *quality* risk, not a technical one: the port may
+work and still not look as good.
+
+**Kill criterion.** If environment, materials and shadows have not reached parity with elastiq's
+current output after a genuine attempt, stop and take the fallback rather than grinding.
+
+**The fallback is two renderers** — Pascal's viewer for authoring, elastiq's existing WebGL stack
+for publishing. It was rejected in the design because it means author and audience see different
+pictures and a preview button becomes load-bearing. It is not rejected as unworkable, and it is
+what every mainstream 3D tool does. Both were built and measured during the spike, so the path
+back is short.
+
+**What that costs if taken:** the look stops being authorable on the timeline (M2.6 dies), and the
+scene must render under two renderers, which imposes the discipline that no node kind may use a
+renderer-specific material.
 
 ---
 
@@ -309,8 +429,26 @@ Worlds are **normalised, not externalised** — slides reference a world by id a
 the same document, so one id still loads everything. Self-containment is preserved; that is a
 requirement, not a preference, because the room hands every viewer one document.
 
-**Migration.** An existing 3D slide becomes a **single-slide world** and behaves identically. The
-migration is not all-or-nothing, and a deck may mix shared worlds and private ones.
+**Migration, and it is lossy — say so to users.** An existing 3D slide becomes a **single-slide
+world**, and structurally that is clean: a deck may mix shared worlds and private ones, so the
+migration is not all-or-nothing.
+
+But it cannot be faithful, because the old data is genuinely ambiguous. Part visibility is keyed
+by **mesh name** in one flat record shared across every model in the scene. Where two models
+contain a mesh called `Cover`, or where an array clone duplicated every mesh name, the stored
+`hidden`/`ghost` flags do not identify which object they meant. Minting stable ids cannot recover
+information that was never captured.
+
+**Required policy, to decide and record before writing the migrator:**
+- Ambiguous name matches — apply to all matching meshes, apply to the first, or drop and warn.
+- Whether a migration report is surfaced to the author, listing what could not be resolved.
+- What happens to `attachTo` on annotations, which is written and restored today but never read
+  when rendering, so mesh-attached annotations are *already* landing at world origin. Migrating
+  the broken behaviour faithfully is probably wrong.
+
+Also note what the old format never captured at all and therefore cannot be migrated: material
+assignments, material tweaks, imported MaterialX materials, and per-model scale. Authors will lose
+these regardless. Warn them before they migrate, not after.
 
 **Assets** become content-addressed references. This kills the dead-`blob:`-URL class of bug and
 lets two slides share one model instead of fetching it twice.
@@ -368,6 +506,22 @@ and shelved. Read it — its transport reasoning is sound (BroadcastChannel same
 remote, CRDTs rejected as overkill for a presenter-authoritative model). It stalled because there
 was no clock to conduct and no stable identity to grant permissions against. M1 and M3 supply both.
 
+### M4.0 — Transport and rooms *(backend; not free)*
+
+**Why this is called out.** The rest of M4 describes what to replicate and reads deceptively cheap.
+The infrastructure under it is ordinary backend work that appears nowhere else in this plan.
+
+**Tasks.** A WebSocket relay with room lifecycle, join and leave, late-join snapshot, presenter
+election and hand-off, reconnection, and a deployment story with a scaling and cost model. The
+March plan's transport reasoning stands — BroadcastChannel same-device, WebSocket remote, CRDTs
+rejected as overkill for a presenter-authoritative model — but reasoning is not an implementation.
+
+**Depends on M0.3.** Rooms without auth and tenant isolation is the launch-blocking hole made
+worse, not better.
+
+**Done when:** two browsers on different networks join a room, one drops and rejoins, and both
+converge without a reload.
+
 ### M4.1 — Clock sync
 
 Replicate `t`, the cue, and ownership. **Nothing else.** Every client evaluates the same `t` against
@@ -405,5 +559,11 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
 1. **Clone versus timeline references** (M1.6) — the hardest unsolved problem on the boundary.
 2. **Deck schema** (M3.1) — keep React Flow's node/edge shape verbatim, or give the deck its own
    schema with React Flow as a view over it.
-3. **Fork policy for Pascal** — how much divergence is acceptable before upstreaming becomes
-   mandatory.
+3. **Where the look lives** (M2.6) — scene nodes, timeline tracks, or split. Blocks M2.6 and
+   shapes M2.2. A recommendation is written there; it needs a decision.
+4. **Migration policy for ambiguous part references** (M3.1) — apply to all, apply to the first,
+   or drop and warn; and whether authors see a migration report. Some data cannot be recovered
+   either way, so this is about what users are told, not only what the code does.
+5. **Fork policy for Pascal** — the plan says consume as packages and carry a patch only until
+   [#671](https://github.com/pascalorg/editor/pull/671) merges. Confirm, and set the threshold at
+   which divergence must be upstreamed instead of carried.
