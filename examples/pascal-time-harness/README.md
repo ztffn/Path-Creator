@@ -34,6 +34,10 @@ plugin demonstrates it rather than restating it.
 Three markers: one driven by a transform track, one revealed by an activation track, and one
 named by nothing at all, so "the drive touched only what it should" is measurable.
 
+Three cues, authored as Pascal nodes parented to the clock: `start`, `peak` and `return`. `peak`
+sits at t=4, where the transform track has the driven marker at the top of its arc — which is
+what makes riding to it a falsifiable claim rather than a demonstration.
+
 ## What it measures
 
 The probe mounts **inside** `<Viewer>`, so it shares Pascal's frame loop rather than racing it
@@ -41,26 +45,29 @@ from a separate animation callback. It then walks the whole lifecycle and record
 `window.__pascalTime`:
 
 ```
-drive 12s → release → select → delete → undo → done
+drive 12s → release → ride to a cue → select → delete → undo → done
 ```
 
 Last run:
 
 ```
-frames sampled            560
-sustained rate            43.8 fps
-registered node kinds     2
+frames sampled            396
+sustained rate            43 fps
+registered node kinds     3
+nodes in the document     7
 objects in sceneRegistry  4
 frames our write was lost 0
 worst drift               0.00000 m
-undo depth                5 -> 5
+undo depth                8 -> 8
 dirty nodes               3 -> 3
 restored on release       true (0 m)
+cues in the document      3
+rode to cue_peak in       46 frames -> t=4, marker y=3.4
 selection resolved to     2 object(s)
 delete / undo in registry left / returned
 ```
 
-13 checks, all passing. The ones worth understanding:
+18 checks, all passing. The ones worth understanding:
 
 - **"renders" is measured as presence in `sceneRegistry`.** That map is written by
   `useRegistry`, which only runs from a mounted renderer — so an entry proves Pascal's dispatch
@@ -74,6 +81,17 @@ delete / undo in registry left / returned
 - **Drift** is the pose we wrote last frame against the pose we find this frame. Zero means
   Pascal's render pass never overwrote a timeline write. The original spike measured 1 lost
   frame out of 2220 (the mount); this harness writes after the first mount, so it sees 0.
+- **The cue ride checks the scene, not the clock.** Landing on t=4 exactly is the easy half.
+  The claim that matters is that the driven marker was at y=3.4 when it arrived — the pose the
+  transform track specifies for that instant. A ride that moved the number without moving the
+  world would pass a weaker check and fail this one. It also takes ~46 frames, so "it landed"
+  cannot be a single-frame snap that skipped the ease.
+- **7 nodes, 4 objects.** The difference is the clock and its three cues, none of which have
+  geometry. It is checked rather than merely reported, because it is also the visible symptom
+  of a real constraint: Pascal's `<NodeRenderer>` does not dispatch children, so anything
+  parented to the timeline node mounts only if the timeline's own renderer dispatches it. That
+  costs nothing while the children are moments; it is a decision M1.4 has to make when a shot
+  wants to draw something. See the package README, trap 11.
 
 ## Frame rate, and one flake worth knowing about
 

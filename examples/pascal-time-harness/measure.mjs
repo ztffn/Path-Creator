@@ -49,6 +49,31 @@ function evaluate(report) {
       `${report.restoredExactly} (${report.restoredOffsetMetres} m)`
     ],
     [
+      "M1.5 non-spatial kinds are in the document but mount nothing (7 nodes, 4 objects)",
+      report.nodesInDocument === 7 && report.sceneRegistrySize === 4,
+      `${report.nodesInDocument} nodes / ${report.sceneRegistrySize} objects`
+    ],
+    [
+      "M1.5 cues are authored in the scene document and read back",
+      report.cuesInDocument === 3,
+      report.cuesInDocument
+    ],
+    [
+      "M1.5 the ride eased over many frames rather than snapping",
+      report.cueRideFrames > 10,
+      report.cueRideFrames
+    ],
+    [
+      "M1.5 the ride landed exactly on the cue's time",
+      report.cueLandedTime === 4,
+      report.cueLandedTime
+    ],
+    [
+      "M1.5 and the scene looked like that moment — the marker was at its peak",
+      Math.abs(report.cueLandedDrivenY - 3.4) < 1e-4,
+      report.cueLandedDrivenY
+    ],
+    [
       "M1.1 the viewer's selection state accepts the plugin kind",
       report.selectionRoundTripped === true,
       report.selectionRoundTripped
@@ -126,6 +151,7 @@ try {
   console.log(`  frames sampled            ${report.frames}`);
   console.log(`  sustained rate            ${report.fps.toFixed(1)} fps`);
   console.log(`  registered node kinds     ${report.registeredKindCount}`);
+  console.log(`  nodes in the document     ${report.nodesInDocument}`);
   console.log(`  objects in sceneRegistry  ${report.sceneRegistrySize}`);
   console.log(`  frames our write was lost ${report.overwrittenFrames}`);
   console.log(`  worst drift               ${report.worstDriftMetres.toFixed(5)} m`);
@@ -137,6 +163,10 @@ try {
   );
   console.log(
     `  restored on release       ${report.restoredExactly} (${report.restoredOffsetMetres} m)`
+  );
+  console.log(`  cues in the document      ${report.cuesInDocument}`);
+  console.log(
+    `  rode to cue_peak in       ${report.cueRideFrames} frames -> t=${report.cueLandedTime}, marker y=${report.cueLandedDrivenY}`
   );
   console.log(`  selection resolved to     ${report.selectedObjectsResolved} object(s)`);
   console.log(

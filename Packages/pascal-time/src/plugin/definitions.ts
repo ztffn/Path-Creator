@@ -4,7 +4,7 @@
 // `loadPlugin`, the plugin id must be installed on the scene, and the whole thing must run at
 // module import time. Scope: the Pascal-facing boundary; nothing in here knows about time.
 import type { NodeDefinition, Plugin } from "@pascal-app/core";
-import { PASCAL_TIME_PLUGIN_ID, TIMELINE_KIND, TimelineNode } from "./kinds";
+import { CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, TIMELINE_KIND, TimelineNode } from "./kinds";
 
 /**
  * Cast at the boundary, once, deliberately. This workspace compiles with
@@ -45,11 +45,45 @@ export const timelineDefinition = {
   }
 } as unknown as NodeDefinition<typeof TimelineNode>;
 
+/** Same boundary cast as above, same reason. */
+export const cueDefinition = {
+  kind: CUE_KIND,
+  schemaVersion: 1,
+  schema: CueNode,
+  category: "analysis",
+  // Organisational, like the timeline: no geometry, nothing rebuilds it on a dirty mark.
+  dirtyTracking: false,
+  defaults: () => ({
+    object: "node" as const,
+    parentId: null,
+    visible: true,
+    metadata: {},
+    timeSeconds: 0
+  }),
+  // NO renderer, deliberately. `def.renderer` is optional and `<NodeRenderer>` null-guards it,
+  // and a cue is a moment rather than a thing — there is no geometry to draw. It would also be
+  // unreachable if it existed: Pascal's `<NodeRenderer>` renders a node's OWN renderer and does
+  // not dispatch children, so anything parented to the timeline node only mounts if the
+  // timeline's renderer dispatches it, which it does not. Shipping a renderer here would be
+  // dead code that looks alive. See the README's trap 11, which M1.4 has to decide on.
+  capabilities: {
+    // Selectable from the hierarchy, never hit-tested — a moment has nothing to click in a
+    // viewport, and the author picks it from the tree or, later, from the timeline panel.
+    selectable: { hitVolume: "none" },
+    deletable: true,
+    // Unlike the timeline, a scene wants many of these, and duplicating one to retime it is a
+    // reasonable way to author. Fresh ids on clone are correct here — a cue is addressed by
+    // its own id, and nothing else in the document references it by identity yet. When
+    // hotspots start naming cue ids (M1.5 consumers do), the clone remap of M1.6 covers it.
+    duplicable: true
+  }
+} as unknown as NodeDefinition<typeof CueNode>;
+
 /**
  * The manifest. `apiVersion` is Pascal's plugin contract version, not ours.
  */
 export const pascalTimePlugin: Plugin = {
   id: PASCAL_TIME_PLUGIN_ID,
   apiVersion: 1,
-  nodes: [timelineDefinition as never]
+  nodes: [timelineDefinition as never, cueDefinition as never]
 };

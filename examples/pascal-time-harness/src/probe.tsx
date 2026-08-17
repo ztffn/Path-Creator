@@ -7,13 +7,17 @@ import { useEffect, useMemo, useRef } from "react";
 import { useFrame } from "@react-three/fiber";
 import { nodeRegistry, sceneRegistry, useScene } from "@pascal-app/core";
 import { useViewer } from "@pascal-app/viewer";
-import { PascalNodeDriver, pascalSceneBinding, TIMELINE_KIND } from "@huma/pascal-time";
+import { PascalNodeDriver, pascalSceneBinding, readCues, TIMELINE_KIND } from "@huma/pascal-time";
+import {
+  createCueTransport, createTimelinePlayer, rideToCue, stepCueTransport
+} from "@huma/path-creator/timeline";
 import {
   AUTHORED_POSITIONS,
   DRIVEN_ID,
   DURATION_SECONDS,
   harnessTimeline,
   HIDDEN_ID,
+  PEAK_Y,
   STILL_ID,
   TIMELINE_NODE_ID
 } from "./scene";
@@ -22,7 +26,7 @@ import { MARKER_KIND } from "./kinds";
 export interface HarnessReport {
   /** Set once the probe has run at least one frame. */
   ready: boolean;
-  phase: "driving" | "released" | "selected" | "deleted" | "undone" | "done";
+  phase: "driving" | "released" | "cued" | "selected" | "deleted" | "undone" | "done";
 
   // --- M1.1: the kind exists and renders through Pascal's own dispatch.
   kindRegistered: boolean;
@@ -32,6 +36,8 @@ export interface HarnessReport {
   timelineNodeInSceneRegistry: boolean;
   markersInSceneRegistry: number;
   sceneRegistrySize: number;
+  /** Nodes in the scene document. Larger than the registry: non-spatial kinds mount nothing. */
+  nodesInDocument: number;
 
   // --- M1.2: driving.
   frames: number;
@@ -54,6 +60,16 @@ export interface HarnessReport {
   // --- M1.2: restoration, filled in after release.
   restoredExactly: boolean | null;
   restoredOffsetMetres: number | null;
+
+  // --- M1.5: cues authored as Pascal nodes, navigated by the timeline.
+  /** Cues read back out of the scene document — authored, not hard-coded here. */
+  cuesInDocument: number;
+  /** Where the ride finished. Must be the cue's time exactly, not near it. */
+  cueLandedTime: number | null;
+  /** Where the driven marker was when it landed. The ride moves t; everything else follows. */
+  cueLandedDrivenY: number | null;
+  /** Frames the ride took, so "it landed" cannot be a single-frame snap that skipped the ease. */
+  cueRideFrames: number | null;
 
   // --- M1.1: select and delete, through the viewer rather than only the store.
   /** The viewer's own selection state accepted our plugin kind's node id. */
@@ -92,6 +108,7 @@ export function Probe() {
     timelineNodeInSceneRegistry: false,
     markersInSceneRegistry: 0,
     sceneRegistrySize: 0,
+    nodesInDocument: 0,
     frames: 0,
     elapsedSeconds: 0,
     fps: 0,
@@ -106,6 +123,10 @@ export function Probe() {
     dirtyCountNow: 0,
     restoredExactly: null,
     restoredOffsetMetres: null,
+    cuesInDocument: 0,
+    cueLandedTime: null,
+    cueLandedDrivenY: null,
+    cueRideFrames: null,
     selectionRoundTripped: null,
     selectedObjectsResolved: null,
     deletedLeftRegistry: null,
@@ -114,6 +135,10 @@ export function Probe() {
 
   /** Frames to wait after a store change so React can commit and renderers can (un)mount. */
   const settleFrames = useRef(0);
+
+  /** The cue ride's own clock and transport, held across frames like the driver. */
+  const cuePlayer = useRef(createTimelinePlayer());
+  const cueTransport = useRef(createCueTransport());
 
   /** What we wrote last frame, to detect Pascal overwriting it before the next one. */
   const expected = useRef<[number, number, number] | null>(null);
@@ -177,12 +202,40 @@ export function Probe() {
         state.restoredExactly = offset < EPSILON;
       }
     } else if (state.phase === "released") {
-      // Selection, through the viewer's own state — the thing Pascal's editor chrome reads.
-      // Asserting `isRegistrySelectable` proves the kind declares the capability; this proves
-      // the viewer actually accepts the node and resolves it to a live object in the scene.
-      useViewer.getState().setSelection({ selectedIds: [TIMELINE_NODE_ID, DRIVEN_ID] });
-      state.phase = "selected";
-      settleFrames.current = 0;
+      // Ride to a named cue the AUTHOR placed in the scene document — read back out of Pascal,
+      // not declared here. The claim being tested is not "the clock reached 4"; it is that the
+      // scene looks like that moment, which is checked against the marker's pose below.
+      cuePlayer.current.time = 0;
+      rideToCue(cueTransport.current, cuePlayer.current, readCues(TIMELINE_NODE_ID), "cue_peak", {
+        seconds: 1.5,
+        easing: "easeInOut"
+      });
+      state.cuesInDocument = readCues(TIMELINE_NODE_ID).length;
+      state.cueRideFrames = 0;
+      state.phase = "cued";
+    } else if (state.phase === "cued") {
+      state.cueRideFrames = (state.cueRideFrames ?? 0) + 1;
+      const riding = stepCueTransport(cueTransport.current, cuePlayer.current, delta);
+      // The ride owns the clock; the driver reads it. No separate transition system exists.
+      driver.sync(timeline, {
+        time: cuePlayer.current.time,
+        playing: false,
+        driving: true
+      });
+      if (!riding) {
+        // Read the pose BEFORE releasing: release restores the object, and the whole claim is
+        // about where the scene was at the cue.
+        state.cueLandedTime = cuePlayer.current.time;
+        state.cueLandedDrivenY = sceneRegistry.nodes.get(DRIVEN_ID)?.position.y ?? null;
+        driver.release();
+
+        // Selection, through the viewer's own state — the thing Pascal's editor chrome reads.
+        // Asserting `isRegistrySelectable` proves the kind declares the capability; this proves
+        // the viewer actually accepts the node and resolves it to a live object in the scene.
+        useViewer.getState().setSelection({ selectedIds: [TIMELINE_NODE_ID, DRIVEN_ID] });
+        state.phase = "selected";
+        settleFrames.current = 0;
+      }
     } else if (state.phase === "selected") {
       settleFrames.current += 1;
       if (settleFrames.current === SETTLE_FRAMES) {
@@ -230,6 +283,7 @@ export function Probe() {
     state.timelineNodeInSceneRegistry = sceneRegistry.nodes.has(TIMELINE_NODE_ID);
     state.markersInSceneRegistry = sceneRegistry.byType[MARKER_KIND]?.size ?? 0;
     state.sceneRegistrySize = sceneRegistry.nodes.size;
+    state.nodesInDocument = Object.keys(useScene.getState().nodes).length;
 
     state.drivenY = driven?.position.y ?? 0;
     state.hiddenVisible = sceneRegistry.nodes.get(HIDDEN_ID)?.visible ?? false;

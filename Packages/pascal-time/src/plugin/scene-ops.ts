@@ -4,7 +4,8 @@
 // from a plugin is a type error even though the runtime accepts it happily. These wrappers hold
 // the cast, explain it, and mint ids in the shape Pascal's own kinds use.
 import { generateId, nodeRegistry, useScene } from "@pascal-app/core";
-import { TIMELINE_KIND } from "./kinds";
+import type { Cue } from "@huma/path-creator/timeline";
+import { CUE_KIND, TIMELINE_KIND } from "./kinds";
 
 /**
  * `BaseNode.id` is a plain `z.string()` at runtime — Pascal's own schema file says so, with a
@@ -64,4 +65,53 @@ export function buildTimelineNode(
     type: TIMELINE_KIND,
     ...overrides
   } as SceneNodeInput;
+}
+
+/**
+ * A cue node with this plugin's defaults. `parentId` should be the timeline whose clock
+ * `timeSeconds` is measured on — nothing enforces it, but a cue parented elsewhere is a cue
+ * measured against a clock nobody can identify.
+ */
+export function buildCueNode(
+  overrides: Record<string, unknown> & { id?: string } = {}
+): SceneNodeInput {
+  const definition = nodeRegistry.get(CUE_KIND);
+  if (!definition) {
+    throw new Error(
+      `[pascal-time] ${CUE_KIND} is not registered — call registerPascalTimeKinds() at module import time`
+    );
+  }
+  return {
+    ...definition.defaults(),
+    id: overrides.id ?? newPascalTimeNodeId(),
+    type: CUE_KIND,
+    ...overrides
+  } as SceneNodeInput;
+}
+
+/**
+ * The scene document's cues, as the plain data the timeline library's lookup and ride helpers
+ * take. This is the seam in one function: Pascal owns creating, naming, retiming, deleting and
+ * undoing cues, and the time layer only ever sees `{ id, name, time }`.
+ *
+ * The node id becomes the cue id, deliberately. Ids are a contract, Pascal mints them, and a
+ * hotspot that navigates to a cue therefore stores a node id like every other reference in the
+ * system rather than a second kind of identifier that would need its own stability rules.
+ *
+ * Pass `timelineId` to read only the cues belonging to one clock. Cues are returned in document
+ * order; the library sorts by time itself, so ordering here would be a second source of truth.
+ */
+export function readCues(timelineId?: string): Cue[] {
+  const nodes = useScene.getState().nodes as Record<string, Record<string, unknown>>;
+  const cues: Cue[] = [];
+  for (const node of Object.values(nodes)) {
+    if (node.type !== CUE_KIND) continue;
+    if (timelineId !== undefined && node.parentId !== timelineId) continue;
+    cues.push({
+      id: node.id as string,
+      name: (node.name as string | undefined) ?? (node.id as string),
+      time: (node.timeSeconds as number | undefined) ?? 0
+    });
+  }
+  return cues;
 }

@@ -16,7 +16,7 @@ touching Pascal's document.
 It depends on both sides. **`@huma/path-creator` must never depend on Pascal** — if that rule
 ever needs breaking, the design is wrong.
 
-Status: **M1.1 and M1.2 complete.** Workspace-only (`private: true`) until the API settles;
+Status: **M1.1, M1.2 and M1.5 complete.** Workspace-only (`private: true`) until the API settles;
 extraction to its own repo is expected, and it is a leaf package with two clean dependencies so
 that stays cheap.
 
@@ -57,13 +57,24 @@ driver.release();   // every object it touched goes back to its pre-drive pose
 | Kind | What it is |
 |---|---|
 | `huma-time:timeline` | The scene's clock — duration, loop, autoplay. One per scene. |
+| `huma-time:cue` | A named moment on that clock. Parented to the timeline it is measured on. |
 
-It has no position, deliberately: under the integration design's classification test a node
-earns a place in space by being *placed by a person*, and a clock is not. It is an
-organisational node of the same class as Pascal's own site, building, level and zone, which is
-why it declares `dirtyTracking: false` and a `hitVolume` of `none`.
+Neither has a position, deliberately: under the integration design's classification test a node
+earns a place in space by being *placed by a person*, and neither a clock nor a moment is. They
+are organisational nodes of the same class as Pascal's own site, building, level and zone, which
+is why both declare `dirtyTracking: false` and a `hitVolume` of `none`.
 
-Track data is not on the node yet — the host supplies the timeline. Persistence is M1.6.
+**Why a cue is a scene node at all**, when it is pure timeline data: because an author creates
+it, names it, retimes it, deletes it and expects Ctrl+Z to bring it back. Pascal already does
+every one of those for any registered kind. A cue kept only in a timeline document would need
+all of it rebuilt. `readCues()` hands the time layer plain `{ id, name, time }`, so the timeline
+never learns that a scene document exists.
+
+The cue's **node id is the cue id**. Ids are a contract, Pascal mints them, and a hotspot that
+navigates to a cue therefore stores a node id like every other reference in the system rather
+than a second class of identifier needing its own stability rules.
+
+Track data is not on the timeline node yet — the host supplies the timeline. Persistence is M1.6.
 
 ## Pascal plugin contract — every one of these fails silently
 
@@ -108,6 +119,18 @@ found building this package and are not written down anywhere else.
    `test/driving.spec.ts` carries a control that fails if the counters stop moving.
 10. **`Viewer` and `useViewer` are named exports** in the published beta, not defaults, unlike
     the repo source.
+11. **A container kind must render its own children, or they never mount.** Pascal's
+    `<NodeRenderer>` renders the node's *own* renderer and does not dispatch children — that is
+    why its site and level renderers dispatch theirs explicitly. A kind that accepts children
+    and does not is a silent hole: the nodes exist in the document, behave correctly in the
+    store, and are invisible. Measured here — three cues parented to the timeline node leave the
+    scene at 7 nodes and 4 registered objects. It costs nothing today because cues have no
+    geometry, and `huma-time:cue` therefore ships **no renderer at all** rather than an
+    unreachable one. **M1.4 has to decide it properly**, because a shot or a camera parented to
+    the timeline may well want to draw something: either the timeline renderer dispatches
+    children (which means depending on `@pascal-app/viewer` for `<NodeRenderer>`, or
+    reimplementing its install gate and lazy-module contract), or renderable time kinds are
+    parented at the scene root instead.
 
 ## The ownership rule this package exists to keep
 
@@ -116,7 +139,7 @@ of the undo history, and it is asserted rather than assumed:
 
 | Measurement | Headless (`pnpm test`) | Browser (`pnpm --filter pascal-time-harness verify`) |
 |---|---|---|
-| Frames driven | 2000 | 560 at 43.8 fps |
+| Frames driven | 2000 | ~400-600 at ~43 fps |
 | Undo depth grown by driving | 0 | 0 (5 → 5) |
 | Dirty-node count grown by driving | 0 | 0 (3 → 3) |
 | Frames where our write was overwritten | — | 0 |
@@ -127,6 +150,23 @@ Both suites include a **control**: one ordinary `updateNode` must move undo dept
 and put the node in the dirty set. Without it the zeros above are indistinguishable from a
 broken instrument, which is not hypothetical — the first version of the dirty assertion passed
 for that exact reason.
+
+## Cues, and what the ride demonstrates
+
+`readCues(timelineId?)` reads the authored cue nodes out of the scene document as the plain data
+`@huma/path-creator/timeline` takes. Navigation is then the library's: `rideToNext`,
+`rideToPrevious`, `rideToCue`.
+
+A ride is not a cut. It animates `t` itself, so the camera, the transforms, the visibility and
+the audio all follow from one number and there is no separate transition system to build. The
+harness makes that falsifiable rather than decorative: it rides to a cue named `peak` over ~46
+frames and checks not only that the clock landed on 4.0 exactly, but that the driven marker was
+at y = 3.4 — the pose the transform track specifies for that instant. Landing on the number
+without the scene matching it would pass a weaker test and fail this one.
+
+The ride **seeks rather than plays**, so arriving at a cue is scrub-exact and does not fire the
+events it passed over. Skipping to slide five must not trigger every sound between here and
+there. That is covered in the library's own suite.
 
 ## Known, expected, not a gap
 

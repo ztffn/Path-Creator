@@ -10,6 +10,7 @@ import { BaseNode } from "@pascal-app/core";
 export const PASCAL_TIME_PLUGIN_ID = "huma-time";
 
 export const TIMELINE_KIND = "huma-time:timeline";
+export const CUE_KIND = "huma-time:cue";
 
 /**
  * The scene's clock. One per scene document: it is what tracks, cues and shots hang off, and
@@ -34,3 +35,22 @@ export const TimelineNode = BaseNode.extend({
   autoplay: z.boolean().default(false)
 });
 export type TimelineNodeType = z.infer<typeof TimelineNode>;
+
+/**
+ * A named moment on the clock. Products with a narrative call these slides, chapters or steps —
+ * the same thing at three granularities, which is why the kind does not say which.
+ *
+ * It is a scene node for one reason: an author creates it, names it, retimes it, deletes it and
+ * expects Ctrl+Z to bring it back. Pascal already does all of that for any registered kind, and
+ * a cue kept only in a timeline document would need every one of those behaviours rebuilt.
+ *
+ * Like the timeline it belongs to, it has no position. Under the classification test a node
+ * earns a place in space by being *placed* by a person, and a moment is not placed — so this is
+ * organisational, and `parentId` points at the timeline whose clock the time is measured on.
+ */
+export const CueNode = BaseNode.extend({
+  type: z.literal(CUE_KIND).default(CUE_KIND),
+  /** Seconds on the parent timeline. The only thing that orders cues. */
+  timeSeconds: z.number().min(0).default(0)
+});
+export type CueNodeType = z.infer<typeof CueNode>;

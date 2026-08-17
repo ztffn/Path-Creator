@@ -4,7 +4,7 @@
 // site/building/level hierarchy is simply unused. Idempotent, because strict mode mounts twice.
 // Scope: harness fixture. Ids here are the contract with the timeline below.
 import { nodeRegistry, useScene } from "@pascal-app/core";
-import { buildTimelineNode, PASCAL_TIME_PLUGIN_ID } from "@huma/pascal-time";
+import { buildCueNode, buildTimelineNode, PASCAL_TIME_PLUGIN_ID } from "@huma/pascal-time";
 import { createTimeline, type Timeline } from "@huma/path-creator/core";
 import { HARNESS_PLUGIN_ID, MARKER_KIND } from "./kinds";
 
@@ -21,6 +21,20 @@ export const AUTHORED_POSITIONS: Record<string, [number, number, number]> = {
 };
 
 export const DURATION_SECONDS = 8;
+
+/**
+ * Named moments on that clock, authored as Pascal nodes. `peak` is the interesting one: the
+ * transform track has the driven marker at the top of its arc at t=4, so riding to `peak` is a
+ * falsifiable claim — the scene must look like that moment, not merely arrive at that number.
+ */
+export const CUES: Array<{ id: string; name: string; time: number }> = [
+  { id: "cue_start", name: "Start", time: 0 },
+  { id: "cue_peak", name: "Peak", time: 4 },
+  { id: "cue_return", name: "Return", time: DURATION_SECONDS }
+];
+
+/** Where the driven marker sits at `cue_peak`, per the track below. The ride must reproduce it. */
+export const PEAK_Y = 3.4;
 
 /**
  * The timeline. A transform track lifts and returns one marker, an activation track reveals
@@ -73,6 +87,18 @@ export function buildHarnessScene(): void {
         id: TIMELINE_NODE_ID,
         name: "Harness clock",
         durationSeconds: DURATION_SECONDS
+      })
+    );
+  }
+
+  for (const cue of CUES) {
+    if (scene.nodes[cue.id]) continue;
+    scene.createNode(
+      buildCueNode({
+        id: cue.id,
+        name: cue.name,
+        parentId: TIMELINE_NODE_ID,
+        timeSeconds: cue.time
       })
     );
   }
