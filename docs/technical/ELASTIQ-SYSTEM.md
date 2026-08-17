@@ -230,17 +230,86 @@ Proposed: **one versioned document, four sections, assets by reference.**
 
 - **A version field, from day one.** The single cheapest thing on this list and the one whose
   absence hurts most later.
-- **Worlds are shared, not embedded.** This reverses the recorded "scene configs embed in slide
-  data" decision. It is what makes several slides address one space, and it collapses today's
-  one-canvas-per-3D-slide into one canvas per world. Presentations stop being self-contained;
-  that trade is the price of a continuous world and should be made deliberately.
+- **Worlds are normalised, not externalised.** Slides reference a world by id and the worlds sit
+  in the same document, so `elastiq?id=13` still loads one thing that holds everything. This is
+  de-duplication inside the document, not a reach outside it — the recorded "scene configs embed
+  in slide data" decision was about self-containment, and self-containment is preserved. What
+  changes is that several slides can address one space, which collapses today's
+  one-canvas-per-3D-slide into one canvas per world.
 - **A world with one slide is exactly today's behaviour**, so existing 3D slides migrate to
   single-slide worlds and nothing about them changes. The migration is not all-or-nothing.
-- **Assets are referenced and content-addressed**, which kills the dead-`blob:`-URL class of bug
-  and lets two slides share one GLB instead of loading it twice.
+- **Assets are referenced and content-addressed.** Binary payloads — GLB, HDRI, splat, video —
+  are the one thing that cannot sit inside the JSON. They are already URLs today; the difference
+  is that today two of three save paths write `blob:` URLs that are dead on the next load. A
+  content-addressed reference fixes that, lets two slides share one GLB instead of fetching it
+  twice, and still allows a bundle export when true single-file portability is wanted.
 
 **Open:** whether the deck stays React Flow's node/edge shape verbatim (cheapest, keeps the
 existing editor working) or gets its own schema with React Flow as a view over it.
+
+
+---
+
+## 7a. The room — presentations are joined, not broadcast *(decided in principle)*
+
+A presentation is a **room**. You send someone a link, they join, and they *are there* — their
+own client, their own screen, their own resolution, their own view when permitted. Not a 720p
+video of someone else's window in a meeting tool.
+
+This is not a later feature bolted onto the design. It is what the design is for, and the reason
+the document must stay self-contained: **the room hands every viewer the whole world once, and
+then conducts time over it.**
+
+### What synchronises
+
+Almost nothing. Because the timeline is a pure function of `t`, a room replicates:
+
+- **the clock** — `t`, and whether it is riding somewhere
+- **the cue** — which slide the presenter is on
+- **ownership** — who currently controls what
+
+Every client evaluates that same `t` against the same document and derives identical camera,
+transforms, visibility and audio on its own. **Object state is computed, never transmitted.**
+That is a dramatically smaller sync surface than replicating a scene, and it is a direct
+consequence of the determinism the timeline already guarantees for scrubbing.
+
+### Divergence, and coming back
+
+The camera rule from `INTEGRATION-DESIGN.md` — exactly one owner per frame — generalises into
+the room:
+
+- **`t` is presenter-owned.** The narrative is conducted.
+- **A viewer's camera may be locally owned**, when the slide permits it. They look where they
+  like while the world keeps moving around them.
+- **The ride reclaims it.** On slide advance, the transition takes the camera back, so nobody is
+  ever lost. This is "diverge and snap back", and it is the same code path as a normal ride.
+
+Permissions attach per slide — orbit, inspect, explode, section — which is where moment-level
+properties already live in this design.
+
+### What already exists
+
+Elastiq's `plans/2026-03-13-model-viewer-slide-and-remote-sync-v1.md` specifies most of this and
+none of it is built: a WebSocket relay with rooms and late-join, a live viewer route with a
+shareable URL and QR handoff, per-slide viewer permissions (`canOrbitCamera`,
+`canToggleExplode`), and diverge-and-snap-back by name. Its transport decisions are already
+reasoned — BroadcastChannel same-device, WebSocket remote, with CRDTs rejected as overkill for a
+presenter-authoritative model.
+
+It was specified and shelved because there was nothing to synchronise: no clock to conduct, and
+no stable identity to grant permissions against. This system supplies both.
+
+### What it demands of the rest of the design
+
+- **Self-containment is a requirement, not a preference.** A room cannot hand out a world that
+  lives in pieces. §7 stays as written.
+- **Late-join must be cheap.** A viewer arriving mid-presentation loads the document and is
+  handed the current `t` — no replay, no catch-up. Determinism gives this for free.
+- **Assets must be cacheable.** Content-addressed references mean a returning viewer, or a
+  second viewer on the same network, does not re-download the world.
+- **Evaluation must stay pure.** Any stateful drift inside the evaluator — a random pick, a
+  wall-clock read — breaks room consensus silently. This is already rule R7; the room raises its
+  stakes from "scrubbing looks wrong" to "viewers see different things."
 
 ---
 
@@ -309,6 +378,9 @@ Things measured or read this session, not guessed.
   and narrative apply to whatever anyone adds without them writing a line of timeline code.
 - **Authored from a description.** Pascal ships an MCP server; elastiq already generates decks
   from a brief with an agent pipeline. Neither can produce a narrated 3D presentation alone.
+- **A presentation you attend rather than watch.** Join a link, get the world, look where you
+  are allowed to look, and be brought back when the story moves on — instead of watching a
+  compressed video of someone else's screen.
 - **A time layer for someone else's ecosystem.** A widely-used 3D editor with no animation is a
   gap somebody fills. Contributing rather than forking makes every plugin anyone writes
   something this system can animate and present.
