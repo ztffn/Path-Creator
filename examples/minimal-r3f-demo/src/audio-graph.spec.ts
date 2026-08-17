@@ -194,6 +194,19 @@ describe("buildAudioGraph gain automation", () => {
     const curve = gains[0]!.curves[0]!.curve;
     expect(curve[curve.length - 1]).toBeCloseTo(1, 6);
   });
+
+  it("samples on the same grid setValueCurveAtTime replays, so the envelope is not stretched", () => {
+    // Web Audio lands point i at i/(count-1) of the duration. Sampling at i/count instead
+    // replays the whole envelope stretched by count/(count-1) — a fade authored to close at
+    // the end would still be open when the clip stops. A linear ramp catches the skew: with
+    // correct sampling, point i reads exactly i/(count-1).
+    const { gains } = build([layer([track([
+      { id: "c", src: "a.wav", start: 0, duration: 4, gainCurve: { type: "curve", keys: [{ x: 0, y: 0 }, { x: 1, y: 1 }] } }
+    ])], 0)]);
+    const curve = gains[0]!.curves[0]!.curve;
+    const last = curve.length - 1;
+    for (let i = 0; i <= last; i += 1) expect(curve[i]!).toBeCloseTo(i / last, 4);
+  });
 });
 
 describe("audioTracksEnd", () => {

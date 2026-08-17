@@ -750,18 +750,21 @@ export function App() {
     entrySceneId,
     interactions
   }), [currentScene, sceneContents, activeSceneId, entrySceneId, paths, activePathId, dollies, vcamDefs, editorVcams, pointTargets, interactions]);
-  useStoryAutosave(SCENE_STORAGE_KEY, currentStory);
+  // Serialize once per change and share the string: the undo stack compares against it and
+  // the autosave writes it. Doing it separately in each meant two full document
+  // serializations per state change, at frame rate for the duration of any drag.
+  const storySnapshot = useMemo(() => serializeStory(currentStory), [currentStory]);
+  useStoryAutosave(SCENE_STORAGE_KEY, storySnapshot);
   // Linear undo over story snapshots (Ctrl/Cmd+Z; no redo). Text inputs keep
   // their native undo — the shortcut is ignored while one has focus.
   const undoHistoryRef = useRef<string[]>([]);
   useEffect(() => {
     const history = undoHistoryRef.current;
-    const snapshot = serializeStory(currentStory);
-    if (history[history.length - 1] !== snapshot) {
-      history.push(snapshot);
+    if (history[history.length - 1] !== storySnapshot) {
+      history.push(storySnapshot);
       if (history.length > 60) history.shift();
     }
-  }, [currentStory]);
+  }, [storySnapshot]);
   useEffect(() => {
     const onKey = (event: KeyboardEvent) => {
       if (!(event.key === "z" || event.key === "Z") || !(event.metaKey || event.ctrlKey) || event.shiftKey) return;
@@ -1883,7 +1886,7 @@ export function App() {
           return {
             ...t,
             ...(t.position && { position: insertTransformKey(t.position, start, pose?.position ?? [0, 0, 0]) }),
-            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, pose?.rotation ?? [0, 0, 0]) }),
+            ...(t.rotation && { rotation: insertTransformKey(t.rotation, start, pose?.rotation ?? [0, 0, 0], "rotation") }),
             ...(t.scale && { scale: insertTransformKey(t.scale, start, pose?.scale ?? [1, 1, 1]) })
           };
         })

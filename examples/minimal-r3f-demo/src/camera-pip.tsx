@@ -1,3 +1,7 @@
+// Picture-in-picture preview of what a virtual camera sees, rendered as a second viewport
+// in the corner of the main canvas, plus the frustum/composer-zone helpers drawn over it.
+// Lets an author frame a shot while still watching the scene from the editing camera.
+// Scope: demo app shell only — it renders with the host's renderer and owns no rig state.
 import { useFrame, useThree } from "@react-three/fiber";
 import type { ComposerSettings } from "@huma/path-creator/core";
 import { CameraHelper, Color, PerspectiveCamera } from "three";

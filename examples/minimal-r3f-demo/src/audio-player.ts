@@ -4,7 +4,7 @@
 // Reschedules only when what should be heard changes (play, seek, edit, a late decode)
 // instead of reconciling every frame. `tone:<freq>` synthesizes a sine buffer so the
 // demo needs no bundled asset. Demo scaffolding.
-import type { AudioClip, AudioTrack } from "@huma/path-creator/core";
+import { audioClipSpeeds, type AudioClip, type AudioTrack } from "@huma/path-creator/core";
 import { buildAudioGraph, type AudioGraphLayer, type ScheduledClip } from "./audio-graph";
 import { stretchAudioBuffer } from "./audio-stretch";
 
@@ -13,6 +13,10 @@ const TONE_BUFFER_SECONDS = 60;
 // so anything past a few frames of slack means the playhead was moved (or the timeline
 // looped) and the schedule has to be rebuilt.
 const SEEK_EPSILON_SECONDS = 0.05;
+// How many stretched variants to keep decoded. Each is a whole-file offline render, so the
+// cache cannot grow without bound; the authoring UI debounces speed edits, which keeps a
+// single gesture from needing more than one.
+const MAX_STRETCHED_BUFFERS = 8;
 
 interface ScheduleAnchor {
   contextTime: number;
@@ -47,6 +51,7 @@ function scheduleSignature(layers: readonly AudioGraphLayer[], driveTime: number
 export class AudioTrackPlayer {
   private context: AudioContext | null = null;
   private buffers = new Map<string, AudioBuffer>();
+  private stretched: string[] = [];
   private loading = new Set<string>();
   private scheduled: ScheduledClip[] = [];
   private anchor: ScheduleAnchor | null = null;
@@ -103,13 +108,17 @@ export class AudioTrackPlayer {
   async previewClip(clip: AudioClip, trackGain: number): Promise<void> {
     const ctx = this.ensureContext();
     if (ctx.state !== "running") await ctx.resume();
-    await this.loadInto(clip.src, 1);
+    // Preload the buffer the graph will actually ask for. Loading the unstretched source
+    // while the builder looks up `src@stretch` misses the cache, and the clip is dropped
+    // from the schedule — a silent preview for every clip whose speed is not 1.
+    await this.loadInto(clip.src, audioClipSpeeds(clip).stretch);
     this.stopPreview();
     const track: AudioTrack = { type: "audio", id: "preview", clips: [clip], gain: trackGain };
     this.preview = buildAudioGraph(ctx, [{ tracks: [track], time: clip.start }], {
       originContextTime: ctx.currentTime,
       getBuffer: (src, stretch) => this.buffers.get(bufferKey(src, stretch)) ?? null,
-      destination: ctx.destination
+      destination: ctx.destination,
+      onMissing: (src) => console.warn(`[audio] preview skipped ${src}: buffer not ready`)
     });
   }
 
@@ -165,11 +174,28 @@ export class AudioTrackPlayer {
       // it correctly — the exact divergence the shared graph exists to prevent.
       const buffer = stretchAudioBuffer(this.ensureContext(), source, stretch);
       this.buffers.set(key, buffer);
+      this.rememberStretched(key, src);
       // A clip that was skipped for want of this buffer must get scheduled now.
       this.anchor = null;
       return buffer;
     } finally {
       this.loading.delete(key);
+    }
+  }
+
+  /**
+   * A stretched buffer is a full offline render of the entire file, so a run of edits can
+   * mint a lot of them; hold only the most recent few. The unstretched decode of each
+   * source is never evicted — every stretch is re-derived from it, and a source already
+   * playing keeps its own reference to the buffer, so eviction cannot cut a note short.
+   */
+  private rememberStretched(key: string, src: string): void {
+    if (key === src) return;
+    this.stretched = this.stretched.filter((held) => held !== key);
+    this.stretched.push(key);
+    while (this.stretched.length > MAX_STRETCHED_BUFFERS) {
+      const evicted = this.stretched.shift();
+      if (evicted) this.buffers.delete(evicted);
     }
   }
 

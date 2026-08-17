@@ -1,3 +1,8 @@
+// Three.js directors that apply the object-bound timeline tracks to real scene objects:
+// activation (visibility), transform (absolute and additive pose), and animation (GLB clips
+// through an AnimationMixer). Each owns the state a pure evaluator cannot — the pre-drive
+// pose to restore on leave, and the mixer actions kept alive across frames.
+// Scope: the ObjectBindingRegistry that resolves ids to objects, and one director per track kind.
 import { LoopRepeat, Quaternion, type AnimationAction, type AnimationMixer, type Object3D } from "three";
 import {
   evaluateActivation,
@@ -79,11 +84,20 @@ export class ActivationTrackDirector {
   }
 
   private applyPostPlayback(registry: ObjectBindingResolver, layers: readonly TrackLayer<ActivationTrack>[]): void {
+    const covered = new Set<string>();
     for (const layer of layers) for (const track of layer.tracks) {
+      covered.add(track.objectId);
       const object = registry.resolve(track.objectId); if (!object) continue;
       if (track.postPlaybackState === "active") object.visible = true;
       else if (track.postPlaybackState === "inactive") object.visible = false;
       else if (track.postPlaybackState === "revert") object.visible = this.original.get(track.objectId) ?? true;
+    }
+    // A track deleted mid-drive takes its postPlaybackState with it, so an object left
+    // hidden by that track would stay hidden with no UI remaining to restore it. Anything
+    // this drive touched that no layer still covers goes back to how we found it.
+    for (const [id, visible] of this.original) {
+      if (covered.has(id)) continue;
+      const object = registry.resolve(id); if (object) object.visible = visible;
     }
   }
 }
@@ -151,9 +165,18 @@ export class TransformTrackDirector {
     for (const [id, value] of additive) {
       const object = registry.resolve(id);
       if (!object) continue;
-      // Snapshot every frame, not once: the pose being offset is the mixer's output and
-      // changes under us, so a first-drive snapshot would restore an arbitrary frame.
-      this.additiveBase.set(id, snapshot(object));
+      // The pose an offset layers onto has to be stable frame to frame. When a mixer or an
+      // absolute track rewrites this object every frame, the pose on it now IS that stable
+      // base and must be re-read each frame — a first-frame snapshot would freeze an
+      // arbitrary frame of the animation. When nothing else drives it, the base is captured
+      // once and restored before each offset; without that the offset compounds every frame
+      // and the object drifts away without bound.
+      if (absolute.has(id) || registry.resolveAnimation(id)) this.additiveBase.set(id, snapshot(object));
+      else {
+        const base = this.additiveBase.get(id);
+        if (base) restore(object, base);
+        else this.additiveBase.set(id, snapshot(object));
+      }
       if (value.position) object.position.set(object.position.x + value.position[0], object.position.y + value.position[1], object.position.z + value.position[2]);
       // Post-multiply: the offset is expressed in the object's own space, so a bone
       // correction reads as "bend this joint a further N degrees", not as a world twist.
@@ -168,10 +191,11 @@ export class TransformTrackDirector {
       if (object) restore(object, pose);
     }
     for (const [id, pose] of this.additiveBase) {
-      // An animated object's mixer has already reset it to rest by the time this runs;
-      // writing a remembered pose over that would freeze it at an arbitrary frame. For
-      // an object nothing else drives, the remembered pose IS the correct resting state.
-      if (registry.resolveAnimation(id)) continue;
+      // An animated object's mixer has already reset it to rest by the time this runs, and
+      // an object with an absolute track was just restored from `base` with its true
+      // pre-drive pose — writing a remembered pose over either would freeze an arbitrary
+      // frame. For an object nothing else drives, the remembered pose IS the resting state.
+      if (this.base.has(id) || registry.resolveAnimation(id)) continue;
       const object = registry.resolve(id);
       if (object) restore(object, pose);
     }

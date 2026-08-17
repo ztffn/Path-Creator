@@ -4,6 +4,7 @@
 // determinism. Plus the span/bounds helpers used by the timeline lane.
 import { describe, expect, it } from "vitest";
 import { evaluateTransform, transformSpan, transformBlock, maxClipEnd, insertTransformKey, upsertTransformKey, EMPTY_EXTRA_TRACKS, type TransformTrack } from "./extra-tracks";
+import type { AxisTangent } from "@huma/path-creator/core";
 
 const track = (over: Partial<TransformTrack> = {}): TransformTrack => ({ type: "transform", id: "t", objectId: "obj", ...over });
 
@@ -153,21 +154,45 @@ describe("transformBlock (timeline lane block)", () => {
 });
 
 describe("key insertion helpers", () => {
-  it("insertTransformKey holds the prior value and no-ops on a duplicate time", () => {
+  it("insertTransformKey seeds from the curve so the pose does not move, and no-ops on a duplicate time", () => {
     const keys = [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 4, value: [8, 0, 0] as [number, number, number] }];
     const inserted = insertTransformKey(keys, 2, [1, 1, 1]);
     expect(inserted.map((k) => k.time)).toEqual([0, 2, 4]);
-    expect(inserted[1]!.value).toEqual([0, 0, 0]); // held from the prior key, not the fallback
+    expect(inserted[1]!.value).toEqual([4, 0, 0]); // what the ramp already reads at t=2 — not the prior key's 0
+    expect(evaluateTransform([{ type: "transform", id: "t", objectId: "o", position: inserted }], 2).get("o")!.position)
+      .toEqual([4, 0, 0]); // and the curve is unchanged by the insert
     expect(insertTransformKey(keys, 4, [1, 1, 1])).toHaveLength(2); // duplicate time -> no-op
     expect(insertTransformKey(undefined, 1, [5, 5, 5])[0]!.value).toEqual([5, 5, 5]); // fallback when empty
   });
 
-  it("upsertTransformKey overwrites the value at a time (keeping easing) or inserts sorted", () => {
-    const keys = [{ time: 2, value: [0, 0, 0] as [number, number, number], easing: "easeIn" as const }];
+  it("insertTransformKey follows the eased slerp timing on a rotation channel", () => {
+    const keys = [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 4, value: [0, 90, 0] as [number, number, number], easing: "linear" as const }];
+    expect(insertTransformKey(keys, 2, [0, 0, 0], "rotation")[1]!.value).toEqual([0, 45, 0]);
+  });
+
+  it("upsertTransformKey overwrites the value at a time (keeping easing AND tangent handles) or inserts sorted", () => {
+    const tangents: [AxisTangent, AxisTangent, AxisTangent] = [{ out: [0.5, 2] }, {}, {}];
+    const keys = [{ time: 2, value: [0, 0, 0] as [number, number, number], easing: "easeIn" as const, tangentsAxes: tangents }];
     const over = upsertTransformKey(keys, 2, [9, 9, 9]);
     expect(over).toHaveLength(1);
     expect(over[0]!.value).toEqual([9, 9, 9]);
-    expect(over[0]!.easing).toBe("easeIn"); // preserved
+    expect(over[0]!.easing).toBe("easeIn"); // preserved (rotation's slerp timing)
+    expect(over[0]!.tangentsAxes).toEqual(tangents); // preserved — this is what position/scale read
     expect(upsertTransformKey(keys, 0, [1, 1, 1]).map((k) => k.time)).toEqual([0, 2]); // inserted, sorted
+  });
+
+  it("plays a pre-v6 key's easing on position when no tangent handles are authored", () => {
+    // Documents saved before tangent handles shaped position/scale with `easing`; honouring
+    // it here is what keeps them playing as written instead of silently going linear.
+    const eased: TransformTrack = {
+      type: "transform", id: "t", objectId: "o",
+      position: [{ time: 0, value: [0, 0, 0] }, { time: 4, value: [8, 0, 0], easing: "easeIn" }]
+    };
+    const linear: TransformTrack = {
+      type: "transform", id: "t", objectId: "o",
+      position: [{ time: 0, value: [0, 0, 0] }, { time: 4, value: [8, 0, 0] }]
+    };
+    expect(evaluateTransform([eased], 2).get("o")!.position![0]).toBeLessThan(4); // ease-in lags the ramp
+    expect(evaluateTransform([linear], 2).get("o")!.position![0]).toBe(4);
   });
 });

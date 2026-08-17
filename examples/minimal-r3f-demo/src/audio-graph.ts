@@ -51,11 +51,19 @@ function sampleGainCurve(track: AudioTrack, clip: AudioClip, from: number, to: n
     Math.max(MIN_AUTOMATION_POINTS, Math.ceil(span * AUTOMATION_HZ))
   );
   const curve = new Float32Array(count);
+  // setValueCurveAtTime spreads the points evenly over the duration with point i landing at
+  // i/(count-1) — so sample on that same grid, or the whole envelope replays stretched by
+  // count/(count-1) and a fade never reaches its authored final value. The last point would
+  // land exactly on the clip's exclusive end and read 0, notching every tail, so it is
+  // pulled a hair inside the window instead.
+  const lastIndex = count - 1;
+  const insideEnd = to - span * 1e-6;
+  // evaluateAudio walks the whole track (the curve has to carry the adjacent-clip
+  // crossfade), so hand it clips already in start order once rather than per sample.
+  const ordered: AudioTrack = { ...track, clips: [...track.clips].sort((a, b) => a.start - b.start) };
   for (let i = 0; i < count; i += 1) {
-    // Sample strictly inside the window: the clip's end is exclusive, so a sample
-    // landing exactly on it would read 0 and notch the tail of every clip.
-    const t = from + (span * i) / count;
-    curve[i] = evaluateAudio([track], t).get(clip.id)?.gain ?? 0;
+    const t = Math.min(from + (span * i) / lastIndex, insideEnd);
+    curve[i] = evaluateAudio([ordered], t).get(clip.id)?.gain ?? 0;
   }
   return curve;
 }

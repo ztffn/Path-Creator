@@ -272,6 +272,7 @@ export function TimelineLanes({
   } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
   const pointerYRef = useRef<number | null>(null);
+  const dragStartLaneRef = useRef<string | null>(null);
   const [playing, setPlaying] = useState(false);
   const timeLabelRef = useRef<HTMLSpanElement>(null);
   const contextMenuRef = useRef<HTMLDivElement>(null);
@@ -586,13 +587,21 @@ export function TimelineLanes({
               ? undefined
               : wouldFullyContain(action.id, start, end) ? false : undefined
           }
+          onActionMoveStart={() => { dragStartLaneRef.current = extraLaneAtPointer(); }}
           onActionMoveEnd={({ action, start, end }) => {
             const extra = parseExtraId(action.id);
             const targetLane = extraLaneAtPointer();
-            if (!extra || !targetLane || targetLane === extra.laneId) return;
+            const startLane = dragStartLaneRef.current;
+            dragStartLaneRef.current = null;
+            // Compare against the row the pointer STARTED in, not the clip's own lane: a
+            // grab near a clip's top edge puts the cursor in the row above, so a purely
+            // horizontal drag would otherwise read as a lane change and move the clip.
+            if (!extra || !targetLane || targetLane === startLane || targetLane === extra.laneId) return;
+            // Snap the start, then carry the original duration across. Re-snapping the end
+            // independently would resize any clip whose length is not a whole number of
+            // snap steps — an imported audio clip, say — as a side effect of moving it.
             const snappedStart = Math.max(0, Math.round(start / SNAP_SECONDS) * SNAP_SECONDS);
-            const snappedEnd = Math.max(snappedStart + SNAP_SECONDS, Math.round(end / SNAP_SECONDS) * SNAP_SECONDS);
-            onExtraClipLaneChange?.(extra.laneId, targetLane, extra.clipId, snappedStart, snappedEnd);
+            onExtraClipLaneChange?.(extra.laneId, targetLane, extra.clipId, snappedStart, snappedStart + Math.max(SNAP_SECONDS, end - start));
           }}
           onActionResizing={({ action, start, end }) =>
             action.id.startsWith("move-") || action.id.startsWith("x|")

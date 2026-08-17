@@ -1528,8 +1528,11 @@ describe("portable object track directors", () => {
 
   it("additive transforms offset the pose already on the object instead of replacing it", () => {
     const object = new Group();
+    const mixer = new AnimationMixer(object);
     const registry = new ObjectBindingRegistry();
-    registry.register("bone", object);
+    // The binding is what tells the director a mixer rewrites this object every frame, and
+    // so that the pose on it now is the base to offset rather than one to remember.
+    registry.register("bone", object, { mixer, actions: new Map(), clips: [], resetToRest: () => {} });
     const director = new TransformTrackDirector();
     const tracks = [{
       type: "transform" as const,
@@ -1553,6 +1556,52 @@ describe("portable object track directors", () => {
     director.sync(registry, [{ tracks, time: 0 }], true);
     expect(object.position.toArray()).toEqual([20.5, 0, 0]);
     expect(object.scale.toArray()).toEqual([6, 3, 3]);
+  });
+
+  it("holds an additive offset steady on an object no mixer drives, and restores it on leave", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object); // no animation binding: nothing else writes this pose
+    const director = new TransformTrackDirector();
+    const tracks = [{
+      type: "transform" as const,
+      id: "correction",
+      objectId: "prop",
+      additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }],
+      scale: [{ time: 0, value: [2, 1, 1] as [number, number, number] }]
+    }];
+    object.position.set(1, 1, 1);
+    object.scale.set(1, 1, 1);
+    // Nothing resets this object between frames, so re-reading its pose as the base would
+    // compound the offset every frame and send it off to infinity.
+    for (let frame = 0; frame < 4; frame += 1) director.sync(registry, [{ tracks, time: 0 }], true);
+    expect(object.position.toArray()).toEqual([6, 1, 1]);
+    expect(object.scale.toArray()).toEqual([2, 1, 1]);
+    director.sync(registry, [{ tracks, time: 0 }], false);
+    expect(object.position.toArray()).toEqual([1, 1, 1]); // the pose we started from, not a drifted one
+    expect(object.scale.toArray()).toEqual([1, 1, 1]);
+  });
+
+  it("re-reads the base each frame when an absolute track shares the object", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new TransformTrackDirector();
+    const absolute = {
+      type: "transform" as const, id: "drive", objectId: "prop",
+      position: [{ time: 0, value: [0, 0, 0] as [number, number, number] }, { time: 10, value: [10, 0, 0] as [number, number, number] }]
+    };
+    const additive = {
+      type: "transform" as const, id: "correction", objectId: "prop", additive: true,
+      position: [{ time: 0, value: [5, 0, 0] as [number, number, number] }]
+    };
+    director.sync(registry, [{ tracks: [absolute, additive], time: 0 }], true);
+    expect(object.position.toArray()).toEqual([5, 0, 0]);
+    // The absolute track rewrites the pose every frame, so the offset rides it rather than
+    // being pinned to a base captured on the first frame.
+    director.sync(registry, [{ tracks: [absolute, additive], time: 10 }], true);
+    expect(object.position.toArray()).toEqual([15, 0, 0]);
   });
 
   it("additive rotation composes in the object's own space", () => {
@@ -1624,6 +1673,27 @@ describe("portable object track directors", () => {
     expect(object.visible).toBe(true);
     director.sync(registry, layers, false, 2, 1, false);
     expect(object.visible).toBe(false);
+  });
+
+  it("reverts an object whose activation track was deleted mid-drive", () => {
+    const object = new Group();
+    const registry = new ObjectBindingRegistry();
+    registry.register("prop", object);
+    const director = new ActivationTrackDirector();
+    const layers = [{ tracks: [{
+      type: "activation" as const,
+      id: "track",
+      objectId: "prop",
+      clips: [{ id: "clip", start: 0, end: 2 }],
+      postPlaybackState: "revert" as const
+    }], time: 5 }];
+    director.sync(registry, layers, true, 10, 5, true);
+    expect(object.visible).toBe(false); // hidden: the playhead sits past the clip window
+    // The author deletes the track while its object is hidden. There is no track left to
+    // carry a postPlaybackState and no UI left to unhide it, so leaving the drive has to
+    // put back what we found or the object is stranded invisible.
+    director.sync(registry, [{ tracks: [], time: 5 }], false, 10, 5, false);
+    expect(object.visible).toBe(true);
   });
 
   it("merges layered activation with later layers overriding per object", () => {

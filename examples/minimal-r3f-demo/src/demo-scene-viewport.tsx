@@ -1,3 +1,8 @@
+// The demo's 3D viewport: the R3F Canvas plus everything mounted inside it — the path
+// editor, virtual-camera glyphs, trigger gizmos, the transform gizmo, and the per-frame
+// drive that hands the rig its camera and steps the track directors.
+// Scope: demo app shell only. Anything here that proves reusable is promoted to the package;
+// GLTF loading, selection policy, and edit/play view mode are deliberately app-owned.
 import { Canvas, useFrame, useThree } from "@react-three/fiber";
 import { OrbitControls, PivotControls } from "@react-three/drei";
 import {

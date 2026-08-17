@@ -169,6 +169,37 @@ function MixdownButton({ tracks }: { tracks: AudioTrack[] }) {
   );
 }
 
+/**
+ * The clip speed (time-stretch) slider. Every distinct value re-renders the whole source
+ * offline, so committing per slider step would fire dozens of full-file renders during one
+ * drag. The knob and its readout track the pointer locally; the value is committed once, on
+ * release — which is what the tooltip has always promised.
+ */
+function SpeedRow({ value, onCommit }: { value: number; onCommit: (value: number) => void }) {
+  const [dragging, setDragging] = useState<number | null>(null);
+  const shown = dragging ?? value;
+  const commit = (): void => {
+    if (dragging === null) return;
+    setDragging(null);
+    if (dragging !== value) onCommit(dragging);
+  };
+  return (
+    <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
+      <span>speed</span>
+      <input
+        type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
+        value={shown}
+        title="Time stretch — same speed change as pitch, but the pitch stays put. Costs an offline re-render of the source, so it lands when you let go."
+        onChange={(e) => setDragging(Number(e.target.value))}
+        onPointerUp={commit}
+        onKeyUp={commit}
+        onBlur={commit}
+      />
+      <span>{shown.toFixed(2)}×</span>
+    </div>
+  );
+}
+
 export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPreviewClip, peaksFor }: AudioEditorProps) {
   const emit = (next: AudioTrack[]): void => onChange({ audioTracks: next });
   const patch = (id: string, p: Partial<AudioTrack>): void => emit(audioTracks.map((t) => (t.id === id ? { ...t, ...p } : t)));
@@ -220,14 +251,10 @@ export function AudioTracksEditor({ audioTracks, onChange, hideAdd = false, onPr
                     onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, rate: Number(e.target.value) } : c)) })} />
                   <span>{(clip.rate ?? 1).toFixed(2)}×</span>
                 </div>
-                <div style={{ display: "flex", alignItems: "center", gap: 6, fontSize: 10, color: "rgba(232,238,245,0.34)" }}>
-                  <span>speed</span>
-                  <input type="range" min={0.25} max={4} step={0.05} style={{ flex: 1 }}
-                    value={clip.stretch ?? 1}
-                    title="Time stretch — same speed change as pitch, but the pitch stays put. Costs an offline re-render of the source, so it lands a beat after you let go."
-                    onChange={(e) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, stretch: Number(e.target.value) } : c)) })} />
-                  <span>{(clip.stretch ?? 1).toFixed(2)}×</span>
-                </div>
+                <SpeedRow
+                  value={clip.stretch ?? 1}
+                  onCommit={(stretch) => patch(track.id, { clips: track.clips.map((c) => (c.id === clip.id ? { ...c, stretch } : c)) })}
+                />
                 <EasingEditor
                   mode="value"
                   height={90}
@@ -531,7 +558,7 @@ export function TransformTracksEditor({ transformTracks, activatables, onChange,
                     + key
                   </button>
                   {getPlayhead ? (
-                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), seed()))}>
+                    <button style={iconBtn} title="Key the held value at the playhead" onClick={() => setChannel(track, key, insertTransformKey(keys, snapSeconds(getPlayhead()), seed(), key === "rotation" ? "rotation" : "vector"))}>
                       ◆ now
                     </button>
                   ) : null}

@@ -378,11 +378,18 @@ export function audioClipSpeeds(clip: AudioClip): AudioClipSpeeds {
  */
 export const audioClipSpeed = (clip: AudioClip): number => audioClipSpeeds(clip).speed;
 
+const isSortedByStart = (clips: readonly AudioClip[]): boolean => {
+  for (let i = 1; i < clips.length; i += 1) if (clips[i]!.start < clips[i - 1]!.start) return false;
+  return true;
+};
 export function evaluateAudio(tracks: readonly AudioTrack[], t: number): Map<string, DesiredAudio> {
   const result = new Map<string, DesiredAudio>();
   for (const track of tracks) {
     if (track.mute) continue;
-    const ordered = [...track.clips].sort((a, b) => a.start - b.start);
+    // Callers that sample an envelope hit this thousands of times per graph rebuild, so
+    // check order in O(n) rather than allocating and sorting a copy every call. Clips
+    // arrive in start order in practice; the sort stays for the case where they do not.
+    const ordered = isSortedByStart(track.clips) ? track.clips : [...track.clips].sort((a, b) => a.start - b.start);
     for (let i = 0; i < ordered.length; i += 1) {
       const clip = ordered[i]!;
       if (!covers(clip.start, clip.start + clip.duration, t)) continue;
@@ -453,7 +460,7 @@ function segment(keys: readonly TransformKey[], t: number): { a: TransformKey; b
 }
 
 /** A key shape the per-component bezier sampler accepts (TransformKey and the editor's key both satisfy it). */
-export interface TransformKeyLike { time: number; value: readonly number[]; tangentsAxes?: readonly (AxisTangent | undefined)[]; }
+export interface TransformKeyLike { time: number; value: readonly number[]; easing?: Easing; tangentsAxes?: readonly (AxisTangent | undefined)[]; }
 
 // One component's value along the cubic bezier between keys `a` and `b`, in real
 // (time, value) space: control points are the keys' tangent handles (default 1/3-chord
@@ -467,7 +474,14 @@ function bezierComponent(a: TransformKeyLike, b: TransformKeyLike, comp: number,
   const inn = b.tangentsAxes?.[comp]?.in;
   // No authored handles => straight 1/3-chord bezier == a linear lerp; take the cheap
   // path (no allocations, no solver) for the common untouched-key case on the hot path.
-  if (!out && !inn) return av + (bv - av) * ((t - a.time) / dt);
+  // Pre-v6 documents shaped position/scale with the shared `easing` rather than handles,
+  // and there is no lossless way to rewrite an arbitrary preset as one cubic segment — so
+  // honour it here instead of migrating, and those saves keep playing as they were authored.
+  // Authored handles win: shaping a key in the curve editor supersedes any legacy easing.
+  if (!out && !inn) {
+    const localT = (t - a.time) / dt;
+    return av + (bv - av) * (b.easing ? evaluateEasing(localT, b.easing) : localT);
+  }
   const c1 = { x: clamp(a.time + (out ? out[0] : dt / 3), a.time, b.time), y: av + (out ? out[1] : (bv - av) / 3) };
   const c2 = { x: clamp(b.time + (inn ? inn[0] : -dt / 3), a.time, b.time), y: bv + (inn ? inn[1] : -(bv - av) / 3) };
   return solveCubicBezierSegment({ x: a.time, y: av }, c1, c2, { x: b.time, y: bv }, t);
@@ -503,6 +517,48 @@ export function evaluateTransform(tracks: readonly TransformTrack[], t: number):
   return result;
 }
 export const transformKeyTimes = (track: TransformTrack): number[] => [...(track.position??[]),...(track.rotation??[]),...(track.scale??[])].map((key)=>key.time);
-export function insertTransformKey(keys: TransformKey[]|undefined,time:number,fallback:[number,number,number]):TransformKey[]{const list=keys??[];if(list.some((key)=>Math.abs(key.time-time)<1e-6))return list;const prior=list.filter((key)=>key.time<=time).at(-1)??list[0],source=prior?.value??fallback;const value:[number,number,number]=[source[0],source[1],source[2]];return [...list,{time,value}].sort((a,b)=>a.time-b.time);}
-export function upsertTransformKey(keys:TransformKey[]|undefined,time:number,value:[number,number,number]):TransformKey[]{const list=keys??[],existing=list.find((key)=>Math.abs(key.time-time)<1e-6),copy:[number,number,number]=[value[0],value[1],value[2]];return [...list.filter((key)=>Math.abs(key.time-time)>=1e-6),{time,value:copy,...(existing?.easing&&{easing:existing.easing})}].sort((a,b)=>a.time-b.time);}
+/**
+ * Adds a key at `time` seeded from the curve's OWN value there, so inserting never moves
+ * the pose. `kind` picks the sampler so the seed matches what the evaluator plays:
+ * "vector" (position/scale) uses the per-axis bezier; "rotation" uses the eased lerp of the
+ * Euler values, which matches the slerp's timing exactly and its path whenever the two keys
+ * turn about a single axis. `fallback` seeds the first key of an empty channel; a duplicate
+ * time is a no-op.
+ */
+export function insertTransformKey(
+  keys: TransformKey[] | undefined,
+  time: number,
+  fallback: [number, number, number],
+  kind: "vector" | "rotation" = "vector"
+): TransformKey[] {
+  const list = keys ?? [];
+  if (list.some((key) => Math.abs(key.time - time) < 1e-6)) return list;
+  let value: [number, number, number];
+  if (list.length === 0) value = [fallback[0], fallback[1], fallback[2]];
+  else if (kind === "rotation") {
+    const s = segment(list, time);
+    if (!s.b) value = [s.a.value[0], s.a.value[1], s.a.value[2]];
+    else {
+      const e = evaluateEasing(s.localT, s.b.easing ?? "linear");
+      value = [lerp(s.a.value[0], s.b.value[0], e), lerp(s.a.value[1], s.b.value[1], e), lerp(s.a.value[2], s.b.value[2], e)];
+    }
+  } else value = [transformComponentAt(list, 0, time), transformComponentAt(list, 1, time), transformComponentAt(list, 2, time)];
+  return [...list, { time, value }].sort((a, b) => a.time - b.time);
+}
+/**
+ * Writes `value` at `time`, replacing any key already there and carrying over that key's
+ * shaping — `tangentsAxes` (what position/scale actually read) as well as `easing` (rotation's
+ * slerp timing). Re-keying a pose from the viewport therefore does not wipe handles authored
+ * in the curve editor; handles are (Δtime, Δvalue) offsets from the key, so they keep their
+ * shape against the new value.
+ */
+export function upsertTransformKey(keys: TransformKey[] | undefined, time: number, value: [number, number, number]): TransformKey[] {
+  const list = keys ?? [];
+  const existing = list.find((key) => Math.abs(key.time - time) < 1e-6);
+  const copy: [number, number, number] = [value[0], value[1], value[2]];
+  return [
+    ...list.filter((key) => Math.abs(key.time - time) >= 1e-6),
+    { time, value: copy, ...(existing?.easing && { easing: existing.easing }), ...(existing?.tangentsAxes && { tangentsAxes: existing.tangentsAxes }) }
+  ].sort((a, b) => a.time - b.time);
+}
 export function transformSpan(track:TransformTrack):{start:number;end:number}|null{const times=transformKeyTimes(track);return times.length?{start:Math.min(...times),end:Math.max(...times)}:null;}

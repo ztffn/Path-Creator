@@ -7,6 +7,7 @@ import { audioClipSpeeds, type AudioTrack } from "@huma/path-creator/core";
 import { buildAudioGraph, audioTracksEnd } from "./audio-graph";
 import { stretchAudioBuffer } from "./audio-stretch";
 import { synthesizeTone } from "./audio-player";
+import { saveBlob } from "./scene-storage";
 
 const DEFAULT_SAMPLE_RATE = 48000;
 const MIXDOWN_CHANNELS = 2;
@@ -125,10 +126,5 @@ export async function downloadAudioMixdown(
   options: { duration?: number } = {}
 ): Promise<void> {
   const rendered = await renderAudioMixdown(tracks, options);
-  const url = URL.createObjectURL(encodeWav(rendered));
-  const anchor = document.createElement("a");
-  anchor.href = url;
-  anchor.download = filename;
-  anchor.click();
-  URL.revokeObjectURL(url);
+  saveBlob(encodeWav(rendered), filename);
 }

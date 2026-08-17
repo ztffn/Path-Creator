@@ -91,9 +91,7 @@ export function maxClipEnd(tracks: ExtraTracks): number {
     ...tracks.activationTracks.flatMap((track) => track.clips.map((clip) => clip.end)),
     ...tracks.audioTracks.flatMap((track) => track.clips.map((clip) => clip.start + clip.duration)),
     ...tracks.animationTracks.flatMap((track) => track.clips.map((clip) => clip.end)),
-    ...tracks.transformTracks.flatMap((track) => [
-      ...(track.position ?? []), ...(track.rotation ?? []), ...(track.scale ?? [])
-    ].map((key) => key.time))
+    ...tracks.transformTracks.flatMap((track) => keyTimes(track))
   );
 }
 
