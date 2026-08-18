@@ -1,0 +1,14 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "paths": {
+      "@pascal-app/editor": ["./types/pascal-editor-lint-stub.d.ts"]
+    }
+  },
+  "include": [
+    "next-env.d.ts",
+    "app/**/*",
+    "lib/**/*",
+    "types/**/*"
+  ]
+}
