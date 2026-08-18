@@ -11,6 +11,10 @@
     ".": {
       "types": "./dist/index.d.ts",
       "import": "./dist/index.js"
+    },
+    "./host-panel": {
+      "types": "./dist/host-panel/index.d.ts",
+      "import": "./dist/host-panel/index.js"
     }
   },
   "files": [
@@ -26,15 +30,24 @@
   "peerDependencies": {
     "@huma/path-creator": "workspace:*",
     "@pascal-app/core": "1.0.0-beta.4",
+    "@pascal-app/editor": "1.0.0-beta.4",
     "@react-three/fiber": "^9.0.0",
     "react": "^19.0.0",
     "three": ">=0.185.0 <0.190.0",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "zustand": "^5.0.0"
+  },
+  "peerDependenciesMeta": {
+    "@pascal-app/editor": {
+      "optional": true
+    }
   },
   "devDependencies": {
     "@huma/path-creator": "workspace:*",
     "@pascal-app/core": "1.0.0-beta.4",
+    "@pascal-app/editor": "1.0.0-beta.4",
     "@react-three/drei": "^10.7.6",
+    "next": "16.3.1",
     "@react-three/fiber": "^9.0.0",
     "@types/react": "^19.1.13",
     "@types/three": "^0.185.0",
@@ -43,6 +56,7 @@
     "tsup": "^8.5.0",
     "typescript": "^5.9.2",
     "vitest": "^3.2.4",
-    "zod": "^4.3.5"
+    "zod": "^4.3.5",
+    "zustand": "^5.0.0"
   }
 }

@@ -29,8 +29,15 @@ export {
   readCues,
   readPluginNode,
   readShots,
+  updatePluginNode,
   type Shot
 } from "./plugin/scene-ops";
+export {
+  capturePose,
+  captureTransformKey,
+  withCapturedPose,
+  type CapturedPose
+} from "./plugin/keying";
 export {
   pascalObjectBinding,
   pascalSceneBinding,
@@ -65,6 +72,8 @@ export {
   type StoredTimeline
 } from "./plugin/timeline-io";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
+export { PascalTimeSceneDriver } from "./drive/timeline-scene-driver";
+export { pascalTimeTransport, type PascalTimeTransportState } from "./transport/store";
 export {
   PascalCameraDirector,
   pascalTargetContext,

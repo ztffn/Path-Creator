@@ -48,6 +48,15 @@ export function readPluginNode(id: string): Record<string, unknown> | undefined 
 }
 
 /**
+ * Patch a node's data. One `updateNode`, so one undo entry — batch a gesture's fields into a
+ * single call rather than writing per field. Any array or object in the patch must be a NEW
+ * value, never a mutation of what `readPluginNode` returned (the undo snapshot aliases it).
+ */
+export function updatePluginNode(id: string, patch: Record<string, unknown>): void {
+  useScene.getState().updateNode(id as never, patch as never);
+}
+
+/**
  * A timeline node with this plugin's defaults, ready to hand to `createPluginNode`. Reads the
  * registered definition rather than duplicating its defaults, so the two cannot drift.
  */

@@ -5,7 +5,10 @@
     "outDir": "dist",
     "noUncheckedIndexedAccess": false,
     "jsx": "react-jsx",
-    "noEmit": true
+    "noEmit": true,
+    "paths": {
+      "@pascal-app/editor": ["./src/host-panel/editor-contract.d.ts"]
+    }
   },
   "include": ["src", "test"]
 }

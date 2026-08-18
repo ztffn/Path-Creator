@@ -7,11 +7,42 @@ import { z } from "zod";
 
 const Vec3Tuple = z.tuple([z.number(), z.number(), z.number()]);
 
+// Mirrors `Easing` in @huma/path-creator/core: a preset name, or a full easing curve. The
+// persisted schema must carry everything the library's evaluator understands — a narrower
+// mirror here would silently cap what the curve editor can author (drop on save, no error).
+const EasingPointSchema = z.object({ x: z.number(), y: z.number() });
+const EasingCurveKeySchema = EasingPointSchema.extend({
+  out: EasingPointSchema.optional(),
+  in: EasingPointSchema.optional(),
+  tangent: z.string().optional()
+});
+export const EasingSchema = z.union([
+  z.string(),
+  z.object({
+    type: z.literal("curve"),
+    keys: z.array(EasingCurveKeySchema),
+    space: z.enum(["position", "speed"]).optional()
+  })
+]);
+
+// Mirrors `AxisTangent`: per-axis cubic-bezier handle offsets in (time, value) space. Entries
+// may be undefined (the curve editor leaves holes for untouched axes) OR null — JSON
+// round-trips undefined array holes to null, and a persisted document is exactly a JSON
+// round-trip. Rejecting either would make the migrator drop a freshly edited track.
+const AxisTangentSchema = z.object({
+  in: z.tuple([z.number(), z.number()]).optional(),
+  out: z.tuple([z.number(), z.number()]).optional()
+});
+
 /** Mirrors `TransformKey` in @huma/path-creator/core. */
 export const TransformKeySchema = z.object({
   time: z.number(),
   value: Vec3Tuple,
-  easing: z.string().optional()
+  easing: EasingSchema.optional(),
+  tangentsAxes: z
+    .array(z.union([AxisTangentSchema, z.null(), z.undefined()]))
+    .max(3)
+    .optional()
 });
 
 export const TransformTrackSchema = z.object({
