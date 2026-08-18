@@ -35,6 +35,7 @@ export {
 export {
   capturePose,
   captureTransformKey,
+  withActivationClip,
   withCapturedPose,
   type CapturedPose
 } from "./plugin/keying";
@@ -72,7 +73,11 @@ export {
   type StoredTimeline
 } from "./plugin/timeline-io";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
-export { PascalTimeSceneDriver } from "./drive/timeline-scene-driver";
+export {
+  getViewportCameraPose,
+  PascalTimeSceneDriver,
+  type ViewportCameraPose
+} from "./drive/timeline-scene-driver";
 export { pascalTimeTransport, type PascalTimeTransportState } from "./transport/store";
 export {
   PascalCameraDirector,

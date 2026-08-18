@@ -86,6 +86,49 @@ export function withCapturedPose(
   });
 }
 
+/**
+ * A new track list with a visibility clip `[start, end)` added to the object's activation
+ * track — creating the track when the object has none. An object is visible while inside any
+ * clip and hidden outside all of them, so the first clip an author adds is also the moment
+ * the object STARTS disappearing everywhere else; that is the semantic, not a bug. Pure.
+ */
+export function withActivationClip(
+  tracks: readonly PersistedTrack[],
+  objectId: string,
+  start: number,
+  end: number
+): PersistedTrack[] {
+  const at = tracks.findIndex(
+    (track) => track.type === "activation" && track.objectId === objectId
+  );
+
+  if (at < 0) {
+    const taken = new Set(tracks.map((track) => ("id" in track ? track.id : "")));
+    let id = `activation_${objectId}`;
+    for (let n = 2; taken.has(id); n += 1) id = `activation_${objectId}_${n}`;
+    return [
+      ...tracks,
+      {
+        type: "activation",
+        id,
+        objectId,
+        clips: [{ id: "clip_1", start, end }],
+        postPlaybackState: "revert"
+      }
+    ];
+  }
+
+  return tracks.map((track, index) => {
+    if (index !== at || track.type !== "activation") return track;
+    const taken = new Set(track.clips.map((clip) => clip.id));
+    let clipId = `clip_${track.clips.length + 1}`;
+    for (let n = track.clips.length + 2; taken.has(clipId); n += 1) clipId = `clip_${n}`;
+    const clips = [...track.clips, { id: clipId, start, end }];
+    clips.sort((a, b) => a.start - b.start);
+    return { ...track, clips };
+  });
+}
+
 /** The live pose of a registered object, as a key captures it. */
 export function capturePose(object: Object3D): CapturedPose {
   return {

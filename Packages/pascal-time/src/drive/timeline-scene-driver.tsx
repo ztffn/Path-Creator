@@ -36,6 +36,25 @@ const looksLikeCameraControls = (candidate: unknown): candidate is CameraControl
   typeof (candidate as CameraControlsLike).setLookAt === "function" &&
   typeof (candidate as CameraControlsLike).update === "function";
 
+/** What "add shot from the current view" captures, in the shot node's own field shapes. */
+export interface ViewportCameraPose {
+  position: [number, number, number];
+  /** Euler degrees, XYZ order — exactly what `ShotNode.rotationDeg` stores. */
+  rotationDeg: [number, number, number];
+  fov: number;
+}
+
+// The panel lives in the DOM and cannot reach into the R3F scene; the driver can. It refreshes
+// this snapshot every frame (plain assignments, no re-renders), and the panel reads it at the
+// moment the author presses "add shot from view".
+let viewportCamera: ViewportCameraPose | null = null;
+const RAD_TO_DEG = 180 / Math.PI;
+
+/** The viewport camera's pose as of the last driven frame, or null before the first frame. */
+export function getViewportCameraPose(): ViewportCameraPose | null {
+  return viewportCamera;
+}
+
 export function PascalTimeSceneDriver(): null {
   const driver = useMemo(() => new PascalNodeDriver(pascalSceneBinding()), []);
   const director = useMemo(() => new PascalCameraDirector(), []);
@@ -53,6 +72,17 @@ export function PascalTimeSceneDriver(): null {
   );
 
   useFrame((state, delta) => {
+    const camera = state.camera;
+    viewportCamera = {
+      position: [camera.position.x, camera.position.y, camera.position.z],
+      rotationDeg: [
+        camera.rotation.x * RAD_TO_DEG,
+        camera.rotation.y * RAD_TO_DEG,
+        camera.rotation.z * RAD_TO_DEG
+      ],
+      fov: (camera as { fov?: number }).fov ?? 50
+    };
+
     const transport = pascalTimeTransport.getState();
     const timelineId = transport.timelineId;
 

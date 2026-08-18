@@ -17,6 +17,7 @@ import {
   putTrack,
   readStoredTimeline,
   registerPascalTimeKinds,
+  withActivationClip,
   withCapturedPose,
   type CapturedPose,
   type PersistedTrack
@@ -81,6 +82,40 @@ describe("withCapturedPose (pure)", () => {
     const next = withCapturedPose(additive, "obj", 0, POSE);
     expect(next).toHaveLength(2);
     expect((next[1] as { id: string }).id).not.toBe("transform_obj");
+  });
+});
+
+describe("withActivationClip (pure)", () => {
+  it("creates the object's activation track with one clip and revert semantics", () => {
+    const next = withActivationClip([], "obj", 1, 10);
+    expect(next).toHaveLength(1);
+    expect(next[0]).toMatchObject({
+      type: "activation",
+      id: "activation_obj",
+      objectId: "obj",
+      clips: [{ id: "clip_1", start: 1, end: 10 }],
+      postPlaybackState: "revert"
+    });
+  });
+
+  it("appends to an existing track sorted by start, with a fresh clip id, no mutation", () => {
+    const original = withActivationClip([], "obj", 5, 10);
+    Object.freeze(original);
+    Object.freeze(original[0]);
+    Object.freeze((original[0] as { clips: unknown[] }).clips);
+
+    const next = withActivationClip(original, "obj", 0, 2);
+    const track = next[0] as Extract<PersistedTrack, { type: "activation" }>;
+    expect(track.clips.map((clip) => clip.start)).toEqual([0, 5]);
+    expect(new Set(track.clips.map((clip) => clip.id)).size).toBe(2);
+    expect(next).not.toBe(original);
+  });
+
+  it("leaves other objects' activation tracks alone", () => {
+    const seeded = withActivationClip([], "other", 0, 4);
+    const next = withActivationClip(seeded, "obj", 1, 3);
+    expect(next).toHaveLength(2);
+    expect((seeded[0] as { clips: unknown[] }).clips).toHaveLength(1);
   });
 });
 
