@@ -520,6 +520,50 @@ carry the patch or drive `advance` yourself. Do not design around 60fps until it
 
 **Done when:** an author can keyframe from the timeline panel and see it play in the viewport.
 
+### M1.3 de-risked — two probes, 2026-08-18
+
+The phase design rests on two assumptions nobody had tested. Both hold.
+
+**Probe A — does `@pascal-app/editor` execute outside Pascal's repo?** *Yes.* The module graph
+imports and evaluates: **316 exports**, `Editor` is a component function, and both
+`registerEditorHostPanel` and `editorHostPanelRegistry` are present with the right types. It needs
+the automatic JSX runtime and the source transformed rather than resolved as a built package —
+which Next and Vite both do — but nothing Next-exclusive blocks module evaluation.
+
+*What this does NOT establish:* that `<Editor>` **renders**. Importing a module and mounting a
+component that may call Next's navigation hooks are different questions, and only the second one
+is answered by standing the app up. Treat rendering as still unverified.
+
+**Probe B — can a THIRD-PARTY package contribute a host panel?** *Yes.* Registering a panel from
+`@huma/pascal-time` with all three of our kinds, then asking the registry:
+
+```
+panelForKind("huma-time:timeline") -> "huma-time:timeline-panel"
+panelForKind("huma-time:cue")      -> "huma-time:timeline-panel"
+panelForKind("huma-time:shot")     -> "huma-time:timeline-panel"
+panelForKind("wall")               -> undefined      (Pascal's own kinds unaffected)
+editorHostPanelRegistry.list()     -> 7 panels        (6 built-in + ours)
+```
+
+The contract, from Pascal's own test for it:
+
+```ts
+registerEditorHostPanel({
+  id: "huma-time:timeline-panel",
+  label: "Timeline",
+  icon: { kind: "url", src: "/timeline.svg" },
+  component: async () => ({ default: TimelinePanel }),   // lazy module, default export
+  kinds: [TIMELINE_KIND, CUE_KIND, SHOT_KIND]
+})
+```
+
+Note `component` is a lazy module with a **default export** — the same shape as `def.renderer`,
+and presumably the same silent failure if got wrong.
+
+**So the phase's approach is sound and its remaining risk is the work, not the mechanism:**
+standing up the Next app, confirming `<Editor>` actually renders, and reconciling `/timeline-ui`
+with Pascal's chrome. The long pole is unchanged.
+
 ### M1.4 — Camera and shot kinds — **DONE** (2026-08-17)
 
 Virtual cameras as node kinds — path-creator already has the bodies (static, cart, orbit), blends,
