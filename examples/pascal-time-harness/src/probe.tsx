@@ -14,6 +14,8 @@ import {
   pascalTargetContext,
   readCues,
   readShots,
+  readStoredTimeline,
+  readTimeline,
   resolveShotAt,
   TIMELINE_KIND,
   type CameraControlsLike
@@ -25,7 +27,6 @@ import {
   AUTHORED_POSITIONS,
   DRIVEN_ID,
   DURATION_SECONDS,
-  harnessTimeline,
   HIDDEN_ID,
   PEAK_Y,
   STILL_ID,
@@ -81,6 +82,11 @@ export interface HarnessReport {
   /** Frames the ride took, so "it landed" cannot be a single-frame snap that skipped the ease. */
   cueRideFrames: number | null;
 
+  // --- M1.6: the timeline came out of the scene document, versioned.
+  timelineReadFromDocument: boolean;
+  tracksInDocument: number;
+  trackPayloadVersion: number | null;
+
   // --- M1.4: shots drive the viewport camera, with a real controller mounted.
   shotsInDocument: number;
   /** Frames the camera did NOT hold the pose the shot resolved to. R9's whole point. */
@@ -128,7 +134,9 @@ export function Probe({ controls }: { controls: { current: CameraControlsLike | 
   const cameraDirector = useMemo(() => new PascalCameraDirector(), []);
   const cameraClock = useRef(0);
   const seenShots = useRef(new Set<string>());
-  const timeline = useMemo(() => harnessTimeline(), []);
+  // Read out of the scene document, not built here. If persistence is broken this is null and
+  // every driving check below fails loudly rather than passing against a hard-coded fixture.
+  const timeline = useMemo(() => readTimeline(TIMELINE_NODE_ID), []);
   const driver = useMemo(() => new PascalNodeDriver(pascalSceneBinding()), []);
   const report = useRef<HarnessReport>({
     ready: false,
@@ -154,6 +162,9 @@ export function Probe({ controls }: { controls: { current: CameraControlsLike | 
     dirtyCountNow: 0,
     restoredExactly: null,
     restoredOffsetMetres: null,
+    timelineReadFromDocument: false,
+    tracksInDocument: 0,
+    trackPayloadVersion: null,
     shotsInDocument: 0,
     cameraContestedFrames: 0,
     cameraWorstErrorMetres: 0,
@@ -189,11 +200,16 @@ export function Probe({ controls }: { controls: { current: CameraControlsLike | 
 
   useFrame((_, delta) => {
     const state = report.current;
+    if (!timeline) return; // persistence failed; leave the report unfinished rather than lie
 
     if (!started.current) {
       started.current = true;
       state.undoDepthAtStart = useScene.temporal.getState().pastStates.length;
       state.dirtyCountAtStart = useScene.getState().dirtyNodes.size;
+      const stored = readStoredTimeline(TIMELINE_NODE_ID);
+      state.timelineReadFromDocument = stored !== null;
+      state.tracksInDocument = stored?.tracks.length ?? 0;
+      state.trackPayloadVersion = stored ? stored.storedVersion : null;
     }
 
     // --- Did the pose we wrote last frame survive Pascal's render pass?

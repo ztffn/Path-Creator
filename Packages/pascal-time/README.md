@@ -16,7 +16,7 @@ touching Pascal's document.
 It depends on both sides. **`@huma/path-creator` must never depend on Pascal** — if that rule
 ever needs breaking, the design is wrong.
 
-Status: **M1.1, M1.2, M1.4 and M1.5 complete.** Workspace-only (`private: true`) until the API settles;
+Status: **M1.1, M1.2, M1.4, M1.5 and M1.6 complete.** Workspace-only (`private: true`) until the API settles;
 extraction to its own repo is expected, and it is a leaf package with two clean dependencies so
 that stays cheap.
 
@@ -82,7 +82,7 @@ The cue's **node id is the cue id**. Ids are a contract, Pascal mints them, and 
 navigates to a cue therefore stores a node id like every other reference in the system rather
 than a second class of identifier needing its own stability rules.
 
-Track data is not on the timeline node yet — the host supplies the timeline. Persistence is M1.6.
+Tracks are persisted on the timeline node — see below.
 
 ## Pascal plugin contract — every one of these fails silently
 
@@ -163,6 +163,44 @@ Both suites include a **control**: one ordinary `updateNode` must move undo dept
 and put the node in the dirty set. Without it the zeros above are indistinguishable from a
 broken instrument, which is not hypothetical — the first version of the dirty assertion passed
 for that exact reason.
+
+## Where tracks live, and why — decided against my own first recommendation
+
+Tracks are **one versioned field on the timeline node**, not a node per track. I argued the
+opposite first, on three claims that measurement then killed. They are recorded here so nobody
+re-derives the same wrong answer:
+
+| Claim I made for track-as-node | What measurement showed |
+|---|---|
+| Per-track undo granularity | **False.** Pascal's undo is granular over store *operations*. Two edits to two nodes and two edits to one node both push two entries; one batched call pushes one. |
+| Schema migration for free | **False.** `NodeDefinition.schemaVersion` is validated as a positive integer at registration and never read again. There is no migration hook in the contract; Pascal's own migrations are two hand-written functions. |
+| Inspector derived from the schema | **False.** The inspector comes from `def.parametrics`, a hand-declared `groups` descriptor. You write it either way. |
+
+Since the migrator is ours regardless, one versioned payload is the smaller thing to migrate,
+and the outliner presence that nodes would have bought largely duplicates the timeline panel
+M1.3 delivers anyway. What track-as-node genuinely still offers is a better substrate for
+concurrent editing — which matters at M4, not now — and that is the one reason to revisit.
+
+**The hazard this API exists to prevent.** Pascal's undo snapshot holds the nodes map **by
+reference**, not as a deep copy. Measured: mutating a stored array in place and then undoing
+does *not* restore it, because the past state was mutated too. So every editing function here
+returns a new array and never mutates, and a test enforces it.
+
+```ts
+import { readTimeline, putTrack, remapTracksAfterClone } from "@huma/pascal-time";
+
+const timeline = readTimeline(clockId);      // a genuine path-creator Timeline
+putTrack(clockId, track);                     // one updateNode, one undo entry
+remapTracksAfterClone(clockId, idMap);        // R8: the duplicate keeps its animation
+```
+
+`readTimeline` builds through `createTimeline`, so the result carries the library's own schema
+version rather than being a lookalike. The stored payload carries `trackPayloadVersion`, and a
+missing value reads as **0** rather than as current — which is precisely the trap elastiq's own
+decks fell into, where a migrator has to sniff the shape and guess.
+
+Only transform and activation tracks are persisted, because those are the two the driver
+applies. Persisting a shape nothing reads is a promise the document does not keep.
 
 ## Shots, and the camera rule
 

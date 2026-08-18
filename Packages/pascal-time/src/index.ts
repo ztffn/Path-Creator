@@ -36,6 +36,28 @@ export {
   pascalSceneBinding,
   type PascalSceneRegistryLike
 } from "./bind/scene-binding";
+export {
+  ActivationTrackSchema,
+  migrateTrackPayload,
+  PersistedTrackSchema,
+  remapTracksForClone,
+  removeTrack,
+  removeTracksForObject,
+  TRACK_PAYLOAD_VERSION,
+  TransformTrackSchema,
+  upsertTrack,
+  type PersistedTrack
+} from "./plugin/tracks";
+export {
+  deleteTrack,
+  dropTracksForObject,
+  putTrack,
+  readStoredTimeline,
+  readTimeline,
+  remapTracksAfterClone,
+  writeTracks,
+  type StoredTimeline
+} from "./plugin/timeline-io";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
 export {
   PascalCameraDirector,

@@ -20,7 +20,7 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 | Object binding, frame loop, persistence seams | **Proven** by the Pascal spike (§7). |
 | Camera ownership | **Proven, and implemented** — one owner per frame; re-measured against the shipped director. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
-| Clone identity versus track references | **Decided** — remap on clone. §10 decision 1, R8. |
+| Clone identity versus track references | **Decided and implemented** — remap on clone. §10 decision 1, R8, M1.6. |
 | Time as a Pascal plugin | **Built and measured** — M1.1, M1.2. `Packages/pascal-time`. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
@@ -387,6 +387,18 @@ Each measured while integrating; each will be paid again by the next person.
   fails when the counters stop moving.
 - **`Viewer` and `useViewer` are named exports in the published beta**, defaults in the repo
   source.
+- **Pascal supplies no per-kind schema migration.** `NodeDefinition.schemaVersion` is validated
+  as a positive integer when a kind registers and is never read again; there is no migration
+  hook anywhere in the definition contract. Pascal's own migrations are two hand-written
+  functions (`healSceneNodes`, `removeRetiredDrawingSheetNodes`), neither version-driven. A
+  plugin that changes its stored shape writes and runs its own migrator. Do not plan on
+  inheriting one.
+- **The undo snapshot holds the nodes map by reference, not as a deep copy.** Safe while every
+  write replaces the map immutably, which the store does — but it means mutating node data *in
+  place* silently corrupts the past state, and undo will not restore it. Measured. Anything
+  editing an array or object inside node data must produce a new one.
+- **The inspector is not derived from the Zod schema.** It comes from `def.parametrics`, a
+  hand-declared `groups` descriptor. A kind with a schema and no descriptor has no inspector.
 - **Only the `1.0.0-beta.4` line is coherent** across core, viewer, and nodes.
 - **Pascal's default scene carries no geometry.** `item` needs a catalog asset; `column` is
   parametric and asset-free, which makes it the cheap thing to drive in a test.
@@ -407,7 +419,8 @@ Each measured while integrating; each will be paid again by the next person.
    *Accepted limitation:* N copies means N track sets, so re-animating a duplicated object
    means editing it N times. That bites only at authoring scale, and the upgrade when it does
    is **binding indirection** — tracks name a slot, instances map slots to ids, one track set
-   drives N instances. Remapping does not foreclose it.
+   drives N instances. Remapping does not foreclose it. **Implemented in M1.6**
+   (`remapTracksAfterClone`), verified by driving an original and its duplicate together.
 
    *Ruled out, do not revisit without new evidence:* relative addressing within the subtree
    (`root/child/grandchild`). It resolves clones without remapping, but it breaks on rename and

@@ -8,8 +8,8 @@ Read ELASTIQ-SYSTEM.md first for what is being built and why; this doc is how.
 
 # elastiq system — implementation plan v1
 
-**Status:** in progress. M0.4, M1.1, M1.2, M1.4 and M1.5 are done (2026-08-17). M1.3 and M1.6
-remain in M1; everything after is plan.
+**Status:** in progress. M0.4, M1.1, M1.2, M1.4, M1.5 and M1.6 are done. **M1.3 is the only
+phase left in M1**; everything after is plan.
 **Design:** [`../technical/ELASTIQ-SYSTEM.md`](../technical/ELASTIQ-SYSTEM.md) (what and why)
 and [`../technical/INTEGRATION-DESIGN.md`](../technical/INTEGRATION-DESIGN.md) (the ownership
 rules and the measurements behind them).
@@ -102,7 +102,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | **Done** 2026-08-17. R9 re-measured against drei's real CameraControls. |
 | M1.5 cues | S | both | M1.2 | **Done** 2026-08-17. |
-| M1.6 persistence | M | both | M1.2 | Unblocked — clone identity decided (remap on clone). |
+| M1.6 persistence | M | both | M1.2 | **Done** 2026-08-18. Camera track carried forward. |
 | M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
 | M2.1 post-processing | M | both | M0.1, M2.0 | Mechanical. Direct TSL equivalents. Includes seam PRs if (c). |
 | M2.2 environment + lighting | **XL** | both | M2.1, M2.0 | A re-authoring. The biggest risk in the plan. |
@@ -621,37 +621,48 @@ and then it is a real choice: dispatch children from the timeline renderer (depe
 contract), or parent renderable time kinds at the scene root. Recorded as trap 11 in
 `Packages/pascal-time/README.md`.
 
-### M1.6 — Persistence
+### M1.6 — Persistence — **DONE** (2026-08-18)
 
 The timeline lives in the scene document alongside the nodes. Schema-versioned, migrating.
 
-**Clone identity — DECIDED 2026-08-17: remap on clone.** Pascal's `cloneNodesInto` mints fresh
-ids, which is what a prefab needs and what a timeline reference cannot survive: duplicating an
-animated object would otherwise produce an inert copy.
+**The unsolved problem, and it lands here.** Pascal's `cloneNodesInto` mints **fresh ids** — which
+is exactly what a prefab needs and exactly what a timeline reference cannot survive. Duplicating an
+animated object will break its tracks. **DECIDED 2026-08-17: remap tracks on clone** (§ decision 1).
 
-**Implement:** when a subtree is duplicated, duplicate any tracks referencing nodes inside it and
-rewrite their `objectId`s to the new ids. The copy animates like the original. This lives entirely
-in our plugin — no upstream change, no new document concept.
+**Delivered.**
 
-**Known limitation, accepted:** N copies means N track sets, so editing the animation of a
-duplicated object means editing it N times. That bites only at authoring scale, and the upgrade
-when it does is **binding indirection** — tracks reference a slot, instances map slots to ids, one
-track set drives N instances. Remapping does not block moving there later.
+*Tracks are one versioned field on the timeline node*, not a node per track — and that reverses the
+recommendation this phase started with. Three claims were made for track-as-node and measurement
+killed all three: undo is granular over store *operations*, not nodes; `schemaVersion` is validated
+at registration and **never read again**, so Pascal supplies no migration; and the inspector comes
+from a hand-declared `parametrics` descriptor, not from the Zod schema. Since the migrator is ours
+either way, one versioned payload is the smaller thing to migrate, and the outliner presence nodes
+would have bought largely duplicates the panel M1.3 delivers. The surviving argument for nodes is
+concurrent editing, which matters at M4 — that is the one reason to revisit.
 
-**Ruled out, do not revisit without new evidence:** relative addressing within the subtree
-(`root/child/grandchild`). It resolves clones without remapping and breaks on rename and reparent —
-name-keying returning through a side door, which is the exact defect this design exists to remove.
+*The hazard the API is shaped around.* Pascal's undo snapshot holds the nodes map **by reference**,
+not as a deep copy. Measured: mutating a stored array in place and then undoing does not restore
+it, because the past state was mutated too. Every editing function returns a new array, and a test
+enforces it.
 
-**Fallback:** if remapping proves unimplementable, drop tracks on clone with a visible warning.
+*Versioning is ours.* The payload carries `trackPayloadVersion`; a missing value reads as **0**, not
+as current, so a document written before versioning still migrates instead of being misread. That is
+the trap elastiq's decks are in today, avoided here by construction. The migrator drops entries that
+never validated rather than carrying them forward.
 
-**First risk to check when this phase starts:** whether Pascal's clone is observable to a plugin.
-`cloneNodesInto` is on `SceneApi` and core depends on `mitt`, so an event may exist to hang off. If
-clone is neither observable nor wrappable, remapping needs an upstream hook and its latency
-reopens this decision — escalate rather than improvising.
+*The clone remap is implemented.* Every track bound to a node inside a cloned subtree is duplicated
+and rebound to the copy, so the duplicate animates like the original — verified by driving both and
+seeing both move. The accepted cost stands: N copies means N track sets, with binding indirection as
+the named upgrade if authoring at scale demands it.
 
-Record the outcome in `INTEGRATION-DESIGN.md` §10 when implemented.
+**Evidence.** 18 headless tests, plus three browser checks confirming the harness now reads its
+timeline *out of the document* rather than building one in code — 2 tracks, payload version 1. The
+harness fails loudly if persistence breaks rather than falling back to a fixture.
 
----
+**Outstanding, carried from M1.4.** `timeSeconds` still lives on the shot node, so one shot cannot
+be reused at two times. The fix is a camera track referencing shots by id — which `@huma/path-creator`
+already models — plus a payload migration moving shot times into it. Now cheap, because the versioned
+payload and its migrator exist. Not done.
 
 ## M2 — Rendering
 

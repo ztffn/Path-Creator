@@ -49,6 +49,21 @@ function evaluate(report) {
       `${report.restoredExactly} (${report.restoredOffsetMetres} m)`
     ],
     [
+      "M1.6 the timeline was read out of the scene document, not built in code",
+      report.timelineReadFromDocument === true,
+      report.timelineReadFromDocument
+    ],
+    [
+      "M1.6 both tracks persisted with the document",
+      report.tracksInDocument === 2,
+      report.tracksInDocument
+    ],
+    [
+      "M1.6 the payload carried its version, so a future migrator will not have to guess",
+      report.trackPayloadVersion === 1,
+      report.trackPayloadVersion
+    ],
+    [
       // 9 document nodes: 1 clock + 3 cues + 2 shots + 3 markers.
       // 6 rendered objects: the same, less the 3 cues, which ship no renderer because a cue is
       // a moment rather than a thing. The shots DO render — they are placed, so they are
@@ -187,6 +202,9 @@ try {
   );
   console.log(
     `  restored on release       ${report.restoredExactly} (${report.restoredOffsetMetres} m)`
+  );
+  console.log(
+    `  timeline from document    ${report.timelineReadFromDocument} (${report.tracksInDocument} tracks, payload v${report.trackPayloadVersion})`
   );
   console.log(`  cues in the document      ${report.cuesInDocument}`);
   console.log(

@@ -5,6 +5,7 @@
 // exactly as it round-trips a wall's thickness. Scope: schema only, no runtime behaviour.
 import { z } from "zod";
 import { BaseNode } from "@pascal-app/core";
+import { PersistedTrackSchema, TRACK_PAYLOAD_VERSION } from "./tracks";
 
 /** Plugin id. Recorded by `loadPlugin` and gated per project by `installedPlugins`. */
 export const PASCAL_TIME_PLUGIN_ID = "huma-time";
@@ -33,7 +34,25 @@ export const TimelineNode = BaseNode.extend({
   /** Whether the clock wraps at `durationSeconds` rather than holding at the end. */
   loop: z.boolean().default(false),
   /** Whether a player starts running on load, rather than waiting to be driven. */
-  autoplay: z.boolean().default(false)
+  autoplay: z.boolean().default(false),
+
+  /**
+   * The timeline's tracks, persisted with the scene document (M1.6).
+   *
+   * One versioned field rather than a node per track. The reasons that would have made nodes
+   * clearly right — free migration and a free inspector — turned out not to exist: Pascal
+   * validates `schemaVersion` and never reads it, and its inspector comes from a hand-declared
+   * `parametrics` descriptor, not from the schema. Since the migrator is ours either way, one
+   * versioned payload is the smaller thing to migrate. See the README.
+   */
+  tracks: z.array(PersistedTrackSchema).default([]),
+
+  /**
+   * Version of the `tracks` payload. Ours, not Pascal's — a missing value reads as 0, so a
+   * document written before versioning existed still migrates rather than being misread as
+   * current. That is the trap elastiq's own decks fell into.
+   */
+  trackPayloadVersion: z.number().int().min(0).default(TRACK_PAYLOAD_VERSION)
 });
 export type TimelineNodeType = z.infer<typeof TimelineNode>;
 

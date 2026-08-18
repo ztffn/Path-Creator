@@ -5,9 +5,8 @@
 // Scope: harness fixture. Ids here are the contract with the timeline below.
 import { nodeRegistry, useScene } from "@pascal-app/core";
 import {
-  buildCueNode, buildShotNode, buildTimelineNode, PASCAL_TIME_PLUGIN_ID
+  buildCueNode, buildShotNode, buildTimelineNode, PASCAL_TIME_PLUGIN_ID, type PersistedTrack
 } from "@huma/pascal-time";
-import { createTimeline, type Timeline } from "@huma/path-creator/core";
 import { HARNESS_PLUGIN_ID, MARKER_KIND } from "./kinds";
 
 export const TIMELINE_NODE_ID = "humatime_clock";
@@ -70,35 +69,32 @@ export const SHOTS = [
 ];
 
 /**
- * The timeline. A transform track lifts and returns one marker, an activation track reveals
- * another for a window, and the third is named by nothing — so "did the drive touch only what
- * it should" is measurable rather than assumed.
+ * The tracks, authored as document data. Before M1.6 this was a `Timeline` built in code at
+ * drive time; now it is persisted on the timeline node and the probe reads it back out, which
+ * is the only way "the timeline lives in the scene document" is actually demonstrated rather
+ * than asserted. A transform track lifts and returns one marker, an activation track reveals
+ * another for a window, and the third marker is named by nothing — so "the drive touched only
+ * what it should" stays measurable.
  */
-export function harnessTimeline(): Timeline {
-  const [x, y, z] = AUTHORED_POSITIONS[DRIVEN_ID]!;
-  return createTimeline({
-    duration: DURATION_SECONDS,
-    tracks: [
-      {
-        type: "transform",
-        id: "lift",
-        objectId: DRIVEN_ID,
-        position: [
-          { time: 0, value: [x, y, z] },
-          { time: 4, value: [x, y + 3, z] },
-          { time: 8, value: [x, y, z] }
-        ]
-      },
-      {
-        type: "activation",
-        id: "reveal",
-        objectId: HIDDEN_ID,
-        clips: [{ id: "window", start: 2, end: 6 }],
-        postPlaybackState: "revert"
-      }
+export const HARNESS_TRACKS: PersistedTrack[] = [
+  {
+    type: "transform",
+    id: "track_lift",
+    objectId: DRIVEN_ID,
+    position: [
+      { time: 0, value: [-2, 0.4, 0] },
+      { time: 4, value: [-2, 3.4, 0] },
+      { time: 8, value: [-2, 0.4, 0] }
     ]
-  });
-}
+  },
+  {
+    type: "activation",
+    id: "track_reveal",
+    objectId: HIDDEN_ID,
+    clips: [{ id: "window", start: 2, end: 6 }],
+    postPlaybackState: "revert"
+  }
+];
 
 interface SceneStoreLike {
   nodes: Record<string, unknown>;
@@ -119,7 +115,8 @@ export function buildHarnessScene(): void {
       buildTimelineNode({
         id: TIMELINE_NODE_ID,
         name: "Harness clock",
-        durationSeconds: DURATION_SECONDS
+        durationSeconds: DURATION_SECONDS,
+        tracks: HARNESS_TRACKS
       })
     );
   }

@@ -7,6 +7,7 @@ import type { NodeDefinition, Plugin } from "@pascal-app/core";
 import {
   CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, SHOT_KIND, ShotNode, TIMELINE_KIND, TimelineNode
 } from "./kinds";
+import { TRACK_PAYLOAD_VERSION } from "./tracks";
 
 /**
  * Cast at the boundary, once, deliberately. This workspace compiles with
@@ -33,7 +34,9 @@ export const timelineDefinition = {
     metadata: {},
     durationSeconds: 10,
     loop: false,
-    autoplay: false
+    autoplay: false,
+    tracks: [],
+    trackPayloadVersion: TRACK_PAYLOAD_VERSION
   }),
   renderer: { kind: "parametric", module: () => import("../render/timeline-renderer") },
   capabilities: {
