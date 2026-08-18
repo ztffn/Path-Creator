@@ -10,11 +10,16 @@ import { ColumnNode, nodeRegistry, sceneRegistry, useScene } from "@pascal-app/c
 import { useViewer } from "@pascal-app/viewer";
 import {
   createPluginNode,
+  getViewportCameraPose,
   pascalTimeTransport,
   putTrack,
+  readCues,
+  readShots,
   readStoredTimeline,
+  readTimeline,
   TIMELINE_KIND,
-  updatePluginNode
+  updatePluginNode,
+  type ViewportCameraPose
 } from "@huma/pascal-time";
 import { useEffect } from "react";
 
@@ -25,11 +30,18 @@ type EditorProbe = {
   installedPlugins: readonly string[];
   timelineId: string | null;
   tracksCount: number | null;
+  cuesCount: number;
+  shotsCount: number;
+  /** Whether evaluation sees a camera track (persisted or synthesised from shot nodes). */
+  hasCameraTrack: boolean;
+  cameraPose: ViewportCameraPose | null;
   transport: { time: number; playing: boolean; driving: boolean; preview: boolean };
   undoDepth: number;
   rafBeats: number;
   findNodeIdByType(type: string): string | null;
+  nodeField(id: string, field: string): unknown;
   objectPosition(id: string): [number, number, number] | null;
+  objectVisible(id: string): boolean | null;
   injectDemoTrack(objectId: string): boolean;
   /** Author a real Pascal column under the level, as the wall tool would. */
   createTestColumn(id: string, position: [number, number, number]): boolean;
@@ -56,6 +68,12 @@ const objectPosition = (id: string): [number, number, number] | null => {
   const object = sceneRegistry.nodes.get(id);
   return object ? [object.position.x, object.position.y, object.position.z] : null;
 };
+
+const objectVisible = (id: string): boolean | null =>
+  sceneRegistry.nodes.get(id)?.visible ?? null;
+
+const nodeField = (id: string, field: string): unknown =>
+  (useScene.getState().nodes as Record<string, Record<string, unknown>>)[id]?.[field];
 
 /** A two-key lift over the scene's clock, written through the panel's own persistence seam. */
 const injectDemoTrack = (objectId: string): boolean => {
@@ -114,6 +132,12 @@ export function DevProbe() {
         installedPlugins: useScene.getState().installedPlugins,
         timelineId,
         tracksCount: timelineId ? (readStoredTimeline(timelineId)?.tracks.length ?? null) : null,
+        cuesCount: timelineId ? readCues(timelineId).length : 0,
+        shotsCount: timelineId ? readShots(timelineId).length : 0,
+        hasCameraTrack: timelineId
+          ? (readTimeline(timelineId)?.tracks.some((track) => track.type === "camera") ?? false)
+          : false,
+        cameraPose: getViewportCameraPose(),
         transport: {
           time: transport.time,
           playing: transport.playing,
@@ -123,7 +147,9 @@ export function DevProbe() {
         undoDepth: temporal.getState().pastStates.length,
         rafBeats,
         findNodeIdByType,
+        nodeField,
         objectPosition,
+        objectVisible,
         injectDemoTrack,
         createTestColumn,
         selectNode,

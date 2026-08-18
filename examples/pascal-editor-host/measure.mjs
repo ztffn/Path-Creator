@@ -283,6 +283,80 @@ try {
   );
 
 
+  // --- G. moments and visibility: cues, shots-from-view, activation clips ---
+  await scrubTo(3);
+  await page.getByRole("button", { name: /\+ cue @/ }).click();
+  await until(page, () => window.__editorProbe.cuesCount === 1);
+  check("a cue was authored at the playhead", true, "1 cue");
+
+  await scrubTo(0);
+  await page.getByRole("button", { name: "Seek to cue Cue 1" }).click();
+  const afterCueSeek = await until(page, () => {
+    const p = window.__editorProbe;
+    return Math.abs(p.transport.time - 3) < 1e-6 ? p : null;
+  });
+  check("clicking a cue seeks its moment exactly", true, afterCueSeek.transport.time);
+
+  const poseBeforeShot = (await probe(page)).cameraPose;
+  await page.getByRole("button", { name: /\+ shot from view @/ }).click();
+  await until(page, () => window.__editorProbe.shotsCount === 1);
+  check("a shot was captured from the viewport camera", true, "1 shot");
+  const shotId = await page.evaluate(() =>
+    window.__editorProbe.findNodeIdByType("huma-time:shot")
+  );
+  const shotPosition = await page.evaluate(
+    (id) => window.__editorProbe.nodeField(id, "position"),
+    shotId
+  );
+  const shotDrift = Math.hypot(
+    shotPosition[0] - poseBeforeShot.position[0],
+    shotPosition[1] - poseBeforeShot.position[1],
+    shotPosition[2] - poseBeforeShot.position[2]
+  );
+  check("the shot node holds the camera's pose at capture", shotDrift < 1e-4, `${shotDrift} m`);
+  check(
+    "the shot synthesises a camera track, so it plays back with no further authoring",
+    (await probe(page)).hasCameraTrack === true,
+    true
+  );
+
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), COLUMN_ID);
+  await scrubTo(1);
+  await page.getByRole("button", { name: "◎ Vis" }).click();
+  await until(page, () => window.__editorProbe.tracksCount === 2);
+  check("the visibility clip created the column's activation track", true, "2 tracks");
+
+  await scrubTo(0.5);
+  const hiddenBefore = await page.evaluate(
+    (id) => window.__editorProbe.objectVisible(id),
+    COLUMN_ID
+  );
+  check("before its clip the column is hidden", hiddenBefore === false, hiddenBefore);
+  await scrubTo(2);
+  const visibleInside = await page.evaluate(
+    (id) => window.__editorProbe.objectVisible(id),
+    COLUMN_ID
+  );
+  check("inside its clip the column is visible", visibleInside === true, visibleInside);
+
+  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await until(page, () => window.__editorProbe.transport.driving === false);
+  const visibleAfterRelease = await page.evaluate(
+    (id) => window.__editorProbe.objectVisible(id),
+    COLUMN_ID
+  );
+  check("release restores visibility (revert semantics)", visibleAfterRelease === true, visibleAfterRelease);
+
+  const finalUndo = await until(page, () => {
+    const p = window.__editorProbe;
+    return p.undoDepth >= 8 ? p.undoDepth : null;
+  });
+  check(
+    "the moments session cost exactly its edits (cue, shot, clip) — playback still zero",
+    finalUndo === 8,
+    finalUndo
+  );
+
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 
