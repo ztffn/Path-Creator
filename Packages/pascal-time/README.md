@@ -16,9 +16,9 @@ touching Pascal's document.
 It depends on both sides. **`@huma/path-creator` must never depend on Pascal** — if that rule
 ever needs breaking, the design is wrong.
 
-Status: **M1.1, M1.2, M1.4, M1.5 and M1.6 complete.** Workspace-only (`private: true`) until the API settles;
-extraction to its own repo is expected, and it is a leaf package with two clean dependencies so
-that stays cheap.
+Status: **all of M1 complete** — M1.3's authoring panel landed 2026-08-18. Workspace-only
+(`private: true`) until the API settles; extraction to its own repo is expected, and it is a
+leaf package with clean dependencies so that stays cheap.
 
 ## Mounting it
 
@@ -272,24 +272,59 @@ Pascal has no runtime `AnimationMixer` for its nodes, so `resolveAnimation` retu
 corrections over mixer output; here there is nothing to layer over. Skinned GLB clip playback
 stays `@huma/path-creator`'s job, on objects it registers itself.
 
-## Layout, and where M1.3's panel goes
+## The authoring panel (M1.3), and the two-entry split
+
+The timeline panel is the editor-facing half: transport (play/pause/stop and a **preview/edit
+toggle** — preview scrubs the animation, edit mode parks the playhead WITHOUT driving so a
+tracked object can be posed with Pascal's own tools and then keyed), keyframe capture for the
+viewport selection (full TRS, one `putTrack`, one undo entry per press), the reused
+`KeyframeCurveEditor` over the selected track with **per-gesture write batching** (the editor
+fires onChange per pointer-move; edits buffer in a draft and pointerup commits once), a clip
+editor for visibility (an object is visible inside any activation clip and hidden outside all
+of them), cue and shot lists ("+ shot from view" captures the viewport camera through the
+scene driver's per-frame snapshot), and `def.parametrics` inspectors for all three kinds.
+
+A host using Pascal's editor mounts it in two lines next to the manifest registration:
+
+```ts
+import { registerPascalTimeHostPanel } from "@huma/pascal-time/host-panel"; // bootstrap
+registerPascalTimeHostPanel();
+// and inside the page:
+<Editor viewerSceneSlot={<PascalTimeSceneDriver />} />
+```
+
+`PascalTimeSceneDriver` (runtime entry) rides `EditorProps.viewerSceneSlot`, shares the
+viewer's frame loop, finds the mounted CameraControls through R3F's default-controls slot (R9
+with zero wiring), and rebuilds its evaluation inputs whenever the document changes — so undo
+and redo just work. The panel and the driver meet in `pascalTimeTransport`, a shared ephemeral
+store; playback intent never touches the scene document, which is why scrubbing and playback
+leave Pascal's undo history alone **by construction**.
+
+## Layout
 
 ```
 src/plugin/kinds.ts        node schemas — what Pascal persists
-src/plugin/definitions.ts  the Pascal-facing definitions and the manifest
+src/plugin/definitions.ts  definitions, parametrics, presentation, the manifest
 src/plugin/install.ts      registration and per-scene install
 src/plugin/scene-ops.ts    the store boundary, cast once (trap 7)
+src/plugin/timeline-io.ts  document <-> Timeline: read, putTrack, writeTracks, clone remap
+src/plugin/keying.ts       keyframe + visibility capture (pure cores, one-write impure halves)
 src/render/                renderers — default export, lazy module (trap 1)
-src/bind/scene-binding.ts  Pascal's registry as an ObjectBindingResolver
-src/drive/node-driver.ts   the per-frame drive
+src/bind/scene-binding.ts  any id->Object3D map as an ObjectBindingResolver
+src/drive/                 node driver, camera director, the viewerSceneSlot scene driver
+src/transport/store.ts     the shared playback transport (preview/edit semantics live here)
+src/host-panel/            the panel — the SEPARATE entry, editor-coupled
 ```
 
 The single `.` entry is framework-agnostic: it imports `@pascal-app/core` and never
-`@pascal-app/editor`, so Vite and Next can both consume it. The timeline authoring panel (M1.3)
-is editor-coupled and therefore Next-coupled, and must ship as a **separate
-`@huma/pascal-time/host-panel` entry** — never from `src/index.ts`. A single entry that
-conditionally imports the panel will not survive a bundler. See the plan's §0b for the two-app
-topology this serves.
+`@pascal-app/editor`, so Vite and Next can both consume it. The panel is editor-coupled and
+therefore Next-coupled, and ships as the **separate `@huma/pascal-time/host-panel` entry** —
+never from `src/index.ts`. A single entry that conditionally imports the panel will not survive
+a bundler; nor will two entries without shared chunks, which would give each entry its OWN COPY
+of the transport store — a panel scrubbing a clock no driver reads. Both properties are
+asserted in `test/host-panel.spec.ts`, along with the tsconfig-`paths` trick that type-checks
+against a local editor contract while the built JS imports the real package. See the plan's
+§0b for the two-app topology this serves.
 
 One thing to know before planning that: `@pascal-app/nodes` reaches `@pascal-app/editor` through
 a static import chain, so "runtime = core + nodes + viewer, no editor" is not achievable at

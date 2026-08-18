@@ -21,7 +21,8 @@ lifetime, or a clock. Scope: cross-repo architecture; supersedes ad-hoc assumpti
 | Camera ownership | **Proven, and implemented** — one owner per frame; re-measured against the shipped director. §5.4, R9. |
 | Hotspots as plugin node kinds | **Proven** end to end by the spike. §5.5. |
 | Clone identity versus track references | **Decided and implemented** — remap on clone. §10 decision 1, R8, M1.6. |
-| Time as a Pascal plugin | **Built and measured** — M1.1, M1.2. `Packages/pascal-time`. |
+| Time as a Pascal plugin | **Built and measured** — all of M1, panel included. `Packages/pascal-time`. |
+| Publishing through Pascal's bake | **Proven** — identity, render and drive in a Next-free bundle. §11 option 2, M1.3. |
 | Mission editor boundary | **Speculative.** No code exists. §8.2. |
 
 Last revised 2026-08-17, after M1.1 and M1.2 built the time plugin against Pascal's real
@@ -489,7 +490,14 @@ must not import `@pascal-app/editor`, and `@huma/pascal-time` does not. Its auth
 (the M1.3 panel) goes behind a separate `./editor` entry for exactly this reason.
 
 **What changes.** The claim that a published presentation carrying Pascal's built-in kinds pays
-no editor cost is false at `1.0.0-beta.4`. Three options, none yet chosen:
+no editor cost is false at `1.0.0-beta.4`. Three options — and a fourth, Pascal's own bake
+pipeline, was **measured working 2026-08-18** (M1.3): `exportSceneToGlb` stamps
+`extras.pascalId` + `kind` into the artifact, a bundle whose resolver provably cannot see
+`/nodes`, `/editor` or `next` mounts `GlbScene` over it, rebuilds the id→object binding from
+the extras (the §5.2 resolver interface, different source), and the timeline drives the baked
+mesh scrub-exact with exact restore (7/7 export + 13/13 load checks,
+`pnpm --filter pascal-editor-host verify:bake`). That makes the bake the leading answer for a
+published presentation; what it cannot carry is parametric animation. The original three:
 
 1. **Don't ship Pascal's built-in kinds in the runtime.** Products whose scene vocabulary is
    their own — which is what the elastiq prototype already does, and what the pascal-time

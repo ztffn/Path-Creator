@@ -8,8 +8,8 @@ Read ELASTIQ-SYSTEM.md first for what is being built and why; this doc is how.
 
 # elastiq system — implementation plan v1
 
-**Status:** in progress. M0.4, M1.1, M1.2, M1.4, M1.5 and M1.6 are done. **M1.3 is the only
-phase left in M1**; everything after is plan.
+**Status:** in progress. M0.4 and **all of M1** are done — M1.3 completed 2026-08-18, which
+closes the milestone. Everything after is plan.
 **Design:** [`../technical/ELASTIQ-SYSTEM.md`](../technical/ELASTIQ-SYSTEM.md) (what and why)
 and [`../technical/INTEGRATION-DESIGN.md`](../technical/INTEGRATION-DESIGN.md) (the ownership
 rules and the measurements behind them).
@@ -99,7 +99,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M0.5 asset pipeline | M | both | M0.2 | M3.1 cannot ship without it. |
 | M1.1 plugin skeleton | S | authoring | M0.1 | **Done** 2026-08-17. |
 | M1.2 binding + tracks | M | both | M1.1 | **Done** 2026-08-17. |
-| M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
+| M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Done** 2026-08-18, closing M1. Includes the Next dev loop (§0b) and the bake measurement. |
 | M1.4 camera + shots | M | both | M1.2 | **Done** 2026-08-17. R9 re-measured against drei's real CameraControls. |
 | M1.5 cues | S | both | M1.2 | **Done** 2026-08-17. |
 | M1.6 persistence | M | both | M1.2 | **Done** 2026-08-18, camera tracks included. |
@@ -194,6 +194,14 @@ renderer.
 >
 > **The product question underneath, and it is Steffen's:** does the vision need parametric
 > animation, or is transform-and-visibility enough? That decides bake versus split.
+>
+> **Measured 2026-08-18 (M1.3): the bake path WORKS.** Export stamps `extras.pascalId` + `kind`
+> into the artifact; a bundle that provably cannot resolve `/nodes`, `/editor` or `next` mounts
+> Pascal's own `GlbScene` over it, rebuilds the id binding from the extras, and the timeline
+> drives the baked column scrub-exact with exact restore. Evidence:
+> `pnpm --filter pascal-editor-host verify:bake` (7/7 export + 13/13 load checks). The product
+> half of the question — is transform-and-visibility enough? — remains open and is all that
+> remains of this decision.
 >
 > **Also still unmeasured:** whether `@pascal-app/viewer` statically reaches the editor too. If it
 > does, the runtime cannot mount Pascal's renderer at all and this cascades into M2's one-renderer
@@ -486,7 +494,7 @@ The headless suite drives a genuine Pascal `column`, authored from Pascal's own 
 node *schemas* are exported by `@pascal-app/core`; only their renderers and tools live in
 `/nodes`, so a real Pascal kind can be driven without the editor dependency of §0 principle 7.
 
-### M1.3 — Timeline authoring UI inside the editor
+### M1.3 — Timeline authoring UI inside the editor — **DONE** (2026-08-18)
 
 The lane editor, keyframes, curves. path-creator already ships `/timeline-ui` with a shared
 curve engine and a keyframe curve editor; reuse rather than rebuild.
@@ -634,9 +642,41 @@ tracks over (caught by test, not in production). 443 tests across the workspace.
 clip-shaped — shots, dollies, ranges — and stays the intended surface for shot/activation
 lanes. The @xzdarcy replacement remains roadmap, not M1.3.
 
-**Still open in M1.3:** shot and cue authoring affordances in the panel (they are authorable
-as nodes already; the panel shows neither), `def.parametrics` inspectors for the three kinds,
-and the §0b bake measurement (decision 2) now unblocked by `/nodes` being installed here.
+~~**Still open in M1.3:** shot and cue authoring affordances in the panel, `def.parametrics`
+inspectors for the three kinds, and the §0b bake measurement.~~ **All three closed 2026-08-18;
+see below.**
+
+### M1.3 delivered — and with it, M1
+
+**The panel authors everything the plugin models.** Beyond keyframes: cues (create at the
+playhead, inline rename, retime, seek, delete — every gesture one undo entry), shots ("+ shot
+from view" captures the viewport camera through the scene driver's per-frame snapshot as a
+static shot; time and blend edit inline; orbit shots take their target from the viewport
+selection), and visibility (activation clips: an object is visible inside any clip and hidden
+outside all of them — created from the selection at the playhead, trimmed in a clip editor).
+Cue and shot markers ride above the scrubber and seek on click.
+
+**All three kinds have inspectors** — `def.parametrics`, hand-declared, with the shot's Static
+and Orbit groups partitioned by `visibleIf` on the body, and `presentation` metadata titling
+the inspector (hidden from the build palette: the panel is the creation surface). The
+definitions are cast at the package boundary, so a spec pins every declared field key to the
+kind's defaults — the type-check tsc cannot do there.
+
+**The bake measurement (§0b, decision 2's evidence) — both halves green.** Export half (7/7,
+in the editor app): a real parametric column and its track bake through Pascal's own
+`exportSceneToGlb`, and the ARTIFACT stamps identity — glTF `extras.pascalId` + `kind`, control
+included. Load half (13/13, in `pascal-time-harness`): a bundle that provably cannot resolve
+`@pascal-app/nodes`, `@pascal-app/editor` or `next` (checked from the package's own resolver)
+mounts Pascal's own `GlbScene` over the artifact, rebuilds the binding from `extras.pascalId` —
+same `ObjectBindingResolver` interface, different source, exactly as §0b predicted — and the
+timeline drives the baked column: scrub-exact ([0,3,0] at t=4), restore-exact (0 m). **So the
+bake path works for transform and visibility animation with a Next-free runtime.** What it
+cannot do remains parametric animation; that half of decision 2 stays a product call, now with
+numbers under it. Reproduce: `pnpm --filter pascal-editor-host verify:bake` (chains both).
+
+**Final gates:** 39/39 editor-host browser checks (the full authored loop through the panel's
+real buttons), 7/7 + 13/13 bake checks, the harness's original 25/25 intact, 121 plugin tests,
+454 tests across the workspace, 7 packages lint and build.
 
 ### M1.4 — Camera and shot kinds — **DONE** (2026-08-17)
 
@@ -1089,8 +1129,10 @@ Shareable URL, QR handoff, viewer role. Specified in the March plan; build it as
    reasoning and the implementation risk are in §M1.6.
 2. **Parametric animation, or transform-and-visibility?** (§0b) — decides bake versus asking
    upstream to split `@pascal-app/nodes`. Baking gives a Next-free runtime and costs parametric
-   animation: a wall can move into place but cannot build itself. Answer at M1.3, with a real baked
-   scene in hand.
+   animation: a wall can move into place but cannot build itself. **The technical half is now
+   measured (M1.3, 2026-08-18): the bake pipeline works end to end** — identity survives the
+   artifact, Pascal's baked viewer renders it in a Next-free bundle, and the timeline drives
+   baked meshes scrub-exact. Only the product half remains: is transform-and-visibility enough?
 3. **Where the authoring app lives and how it authenticates** (§0b) — subdomain, path, or
    same-origin route; and how it shares identity with elastiq's documents. Blocks M1.3's
    deployment story, not its code.

@@ -132,3 +132,16 @@ diagnostic line is the first thing to read.
 - **No `@pascal-app/editor`,** so there is no placement tool, gizmo or inspector. The lifecycle
   is exercised through the store and the viewer's selection state instead, which is the same
   machinery the editor's chrome drives.
+
+## The bake mode (`?mode=bake`, M1.3)
+
+The one place this harness's "cannot resolve `/nodes`, `/editor` or `next`" property is not a
+limitation but the measurement itself. `pnpm verify:bake` (usually chained from
+`pnpm --filter pascal-editor-host verify:bake`, which exports the artifact first) asserts the
+resolver claims statically — with a control that the resolver still resolves what IS a
+dependency — then loads `/?mode=bake`: Pascal's own `GlbScene` over `public/baked/scene.glb`,
+the id→object binding rebuilt from `extras.pascalId` (the same `ObjectBindingResolver`
+interface, different source), and the timeline driving the baked column — scrub-exact
+([0,3,0] at t=4, [0,0,0] at t=0) with the baked pose restored to 0 m on release. That is §0b's
+bake option measured end to end: a Next-free runtime playing a Pascal-authored scene. The
+artifact is committed as a fixture; regenerate it from the editor-host side.
