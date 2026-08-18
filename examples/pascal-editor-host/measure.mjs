@@ -320,6 +320,20 @@ try {
     true
   );
 
+  // The inspector is def.parametrics, hand-declared (M1.3 milestone C). Selecting the shot
+  // must surface our groups through Pascal's own ParametricInspector. The desktop inspector
+  // opens COLLAPSED to its header (the presentation label), so expand it first.
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), shotId);
+  await page.getByRole("button", { name: "Expand panel" }).click();
+  const inspectorShown = await until(page, () =>
+    document.body.innerText.includes("Timing") ? true : null
+  );
+  check(
+    "selecting the shot opens Pascal's inspector with our parametrics (Timing group)",
+    inspectorShown === true,
+    inspectorShown
+  );
+
   await page.evaluate((id) => window.__editorProbe.selectNode(id), COLUMN_ID);
   await scrubTo(1);
   await page.getByRole("button", { name: "◎ Vis" }).click();

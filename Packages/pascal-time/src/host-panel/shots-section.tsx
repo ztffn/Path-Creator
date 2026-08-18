@@ -8,6 +8,7 @@
 
 import { useState, type ReactNode } from "react";
 import { useStore } from "zustand";
+import { useViewer } from "@pascal-app/editor";
 import { getViewportCameraPose } from "../drive/timeline-scene-driver";
 import {
   buildShotNode,
@@ -18,7 +19,7 @@ import {
 import { SHOT_KIND } from "../plugin/kinds";
 import type { StoredTimeline } from "../plugin/timeline-io";
 import { pascalTimeTransport } from "../transport/store";
-import { formatSeconds, styles, useKindNodes } from "./panel-shared";
+import { formatSeconds, styles, useKindNodes, useNodeLabel } from "./panel-shared";
 
 export interface ShotRow {
   id: string;
@@ -26,6 +27,7 @@ export interface ShotRow {
   timeSeconds: number;
   blendSeconds: number;
   body: string;
+  targetNodeId: string;
 }
 
 /** The timeline's shots, reactively: nodes of the shot kind naming this clock. */
@@ -37,9 +39,42 @@ export function useShotRows(timelineId: string): ShotRow[] {
           name: (node.name as string | undefined) ?? id,
           timeSeconds: (node.timeSeconds as number | undefined) ?? 0,
           blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
-          body: (node.body as string | undefined) ?? "static"
+          body: (node.body as string | undefined) ?? "static",
+          targetNodeId: (node.targetNodeId as string | undefined) ?? ""
         }
       : null
+  );
+}
+
+/**
+ * The orbit target has no declarative inspector field (there is no free-text field kind, and
+ * `ref` filters by one node kind, which a camera target is not). So the panel owns it, with
+ * the affordance an author actually wants: click the thing to frame, press the button.
+ */
+function OrbitTargetButton({ shot }: { shot: ShotRow }): ReactNode {
+  const selectedIds = useViewer((s) => s.selection.selectedIds);
+  const label = useNodeLabel();
+  const candidate = selectedIds[0] ?? null;
+  const usable = candidate !== null && candidate !== shot.id && !candidate.startsWith("humatime_");
+
+  return (
+    <button
+      style={{ ...styles.smallButton, opacity: usable || shot.targetNodeId ? 1 : 0.4 }}
+      type="button"
+      disabled={!usable && !shot.targetNodeId}
+      title={
+        usable
+          ? `Orbit ${label(candidate)} (the viewport selection)`
+          : shot.targetNodeId
+            ? `Orbiting ${label(shot.targetNodeId)} — select another object to retarget`
+            : "Select the object to orbit in the viewport first"
+      }
+      onClick={() => {
+        if (usable) updatePluginNode(shot.id, { targetNodeId: candidate });
+      }}
+    >
+      ⊚ {shot.targetNodeId ? label(shot.targetNodeId) : "target ⇐ sel"}
+    </button>
   );
 }
 
@@ -141,6 +176,7 @@ export function ShotsSection({
             min={0}
             onCommit={(blendSeconds) => updatePluginNode(shot.id, { blendSeconds })}
           />
+          {shot.body === "orbit" ? <OrbitTargetButton shot={shot} /> : null}
           <button
             style={styles.iconButton}
             type="button"

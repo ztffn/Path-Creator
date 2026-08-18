@@ -39,6 +39,33 @@ export const timelineDefinition = {
     trackPayloadVersion: TRACK_PAYLOAD_VERSION
   }),
   renderer: { kind: "parametric", module: () => import("../render/timeline-renderer") },
+  // Inspector title, tree label. Hidden from the build palette: the timeline panel is the
+  // creation surface for every kind here, and a palette button with no placement tool is a
+  // dead affordance. Icons are self-contained svg paths — an iconify name would fetch from a
+  // CDN at runtime, which a headless check must not depend on.
+  presentation: {
+    label: "Timeline",
+    icon: { kind: "svg", viewBox: "0 0 24 24", path: "M3 5h12v2.5H3zM3 10.75h8v2.5H3zM3 16.5h5V19H3zM16 10.5l6 3.5-6 3.5z" },
+    hidden: true
+  },
+  // The inspector is NOT derived from the Zod schema — it comes from this hand-declared
+  // descriptor, and a kind without one has no inspector at all. Tracks and the payload
+  // version are deliberately absent: they are the panel's surface, not field-editable data.
+  parametrics: {
+    groups: [
+      {
+        label: "Clock",
+        fields: [
+          { key: "durationSeconds", kind: "number", unit: "s", min: 0.1, step: 0.5 },
+          { key: "loop", kind: "boolean" },
+          { key: "autoplay", kind: "boolean" }
+        ]
+      }
+    ]
+  },
+  // Parametrics makes a kind presettable by default; a preset of the scene's one clock is
+  // meaningless, so opt out explicitly.
+  presettable: false,
   capabilities: {
     // Selectable from the hierarchy, never hit-tested in the viewport — there is no geometry
     // to click, and a bbox around an empty group would be a target the author cannot see.
@@ -71,6 +98,15 @@ export const cueDefinition = {
   // not dispatch children, so anything parented to the timeline node only mounts if the
   // timeline's renderer dispatches it, which it does not. Shipping a renderer here would be
   // dead code that looks alive. See the README's trap 11, which M1.4 has to decide on.
+  presentation: {
+    label: "Cue",
+    icon: { kind: "svg", viewBox: "0 0 24 24", path: "M12 4l7 8-7 8-7-8z" },
+    hidden: true
+  },
+  parametrics: {
+    groups: [{ label: "Cue", fields: [{ key: "timeSeconds", kind: "number", unit: "s", min: 0, step: 0.1 }] }]
+  },
+  presettable: false,
   capabilities: {
     // Selectable from the hierarchy, never hit-tested — a moment has nothing to click in a
     // viewport, and the author picks it from the tree or, later, from the timeline panel.
@@ -114,6 +150,50 @@ export const shotDefinition = {
     fov: 50
   }),
   renderer: { kind: "parametric", module: () => import("../render/shot-renderer") },
+  presentation: {
+    label: "Shot",
+    icon: { kind: "svg", viewBox: "0 0 24 24", path: "M4 7h10v10H4zM14 10l6-3v10l-6-3z" },
+    hidden: true
+  },
+  // Declarative fields only — no custom components, because a parametrics component ships in
+  // the MANIFEST entry and this package's manifest depends on core alone. `targetNodeId` has
+  // no declarative field kind (there is no free-text field, and `ref` filters by one kind);
+  // the panel owns it with a use-the-viewport-selection affordance instead.
+  parametrics: {
+    groups: [
+      {
+        label: "Timing",
+        fields: [
+          { key: "timeSeconds", kind: "number", unit: "s", min: 0, step: 0.1 },
+          { key: "blendSeconds", kind: "number", unit: "s", min: 0, step: 0.1 }
+        ]
+      },
+      {
+        label: "Camera",
+        fields: [
+          { key: "body", kind: "enum", options: ["static", "orbit"], display: "segmented" },
+          { key: "fov", kind: "number", unit: "°", min: 1, max: 179, step: 1 }
+        ]
+      },
+      {
+        label: "Static",
+        fields: [
+          { key: "position", kind: "vec3", visibleIf: (n: { body: string }) => n.body === "static" },
+          { key: "rotationDeg", kind: "vec3", visibleIf: (n: { body: string }) => n.body === "static" }
+        ]
+      },
+      {
+        label: "Orbit",
+        fields: [
+          { key: "targetPoint", kind: "vec3", visibleIf: (n: { body: string }) => n.body === "orbit" },
+          { key: "radius", kind: "number", unit: "m", min: 0, step: 0.5, visibleIf: (n: { body: string }) => n.body === "orbit" },
+          { key: "azimuthDeg", kind: "number", unit: "°", step: 1, visibleIf: (n: { body: string }) => n.body === "orbit" },
+          { key: "elevationDeg", kind: "number", unit: "°", step: 1, visibleIf: (n: { body: string }) => n.body === "orbit" }
+        ]
+      }
+    ]
+  },
+  presettable: false,
   capabilities: {
     selectable: { hitVolume: "bbox" },
     movable: { axes: ["x", "y", "z"] as const },
