@@ -24,6 +24,7 @@ import {
   remapTracksAfterClone,
   remapTracksForClone,
   TRACK_PAYLOAD_VERSION,
+  isObjectBoundTrack,
   upsertTrack,
   writeTracks,
   type PersistedTrack
@@ -68,7 +69,7 @@ describe("M1.6 — tracks survive the scene document", () => {
     expect(stored.tracks).toHaveLength(2);
     const lift = stored.tracks.find((track) => track.id === "track_lift")!;
     expect(lift.type).toBe("transform");
-    expect(lift.objectId).toBe("marker_a");
+    expect(isObjectBoundTrack(lift) && lift.objectId).toBe("marker_a");
     expect("position" in lift && lift.position).toEqual(LIFT.position);
   });
 
@@ -208,11 +209,12 @@ describe("M1.6 — R8, a duplicated object keeps its animation", () => {
 
     const tracks = readStoredTimeline(CLOCK)!.tracks;
     expect(tracks).toHaveLength(3);
-    const copy = tracks.find((track) => track.objectId === "marker_a_copy")!;
+    const copy = tracks.find((track) => isObjectBoundTrack(track) && track.objectId === "marker_a_copy")!;
     expect(copy.type).toBe("transform");
     expect("position" in copy && copy.position).toEqual(LIFT.position);
     // The original is untouched.
-    expect(tracks.find((track) => track.id === "track_lift")!.objectId).toBe("marker_a");
+    const originalTrack = tracks.find((track) => track.id === "track_lift")!;
+    expect(isObjectBoundTrack(originalTrack) && originalTrack.objectId).toBe("marker_a");
   });
 
   it("gives the duplicate a distinct track id", () => {
@@ -254,6 +256,8 @@ describe("M1.6 — R8, a duplicated object keeps its animation", () => {
       new Map([["marker_a", "copy_2"]]),
       (id, obj) => `${id}__${obj}`
     );
-    expect(twice.filter((track) => track.objectId.startsWith("copy_"))).toHaveLength(2);
+    expect(
+      twice.filter((track) => isObjectBoundTrack(track) && track.objectId.startsWith("copy_"))
+    ).toHaveLength(2);
   });
 });

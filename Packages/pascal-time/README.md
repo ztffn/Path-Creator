@@ -204,12 +204,25 @@ applies. Persisting a shape nothing reads is a promise the document does not kee
 
 ## Shots, and the camera rule
 
-`readShots(timelineId?)` turns authored shot nodes into `@huma/path-creator` virtual camera
-definitions. `PascalCameraDirector.sync(camera, shots, time, options)` resolves which shot is in
-force and applies it. A shot holds until the next takes over, and takes over across its own
-`blendSeconds` — so a cut is `blendSeconds: 0` and there is one code path, not a cut path and a
-blend path. Before the first shot it writes **nothing**, leaving the host's camera alone rather
-than snapping it somewhere.
+`readShotDefinitions(timelineId)` turns authored shot nodes into a map of `@huma/path-creator`
+virtual camera definitions keyed by node id — which is what a camera block's `vcamId` names.
+`PascalCameraDirector.sync(camera, { timeline, vcams, time, controls })` applies whatever the
+timeline resolves. In a gap it writes **nothing**, leaving the host's camera alone rather than
+snapping it somewhere; a gap is a deliberate state, not an error.
+
+**Resolution is the library's, not this package's.** Which shot is live at `t` and how it blends
+is `evaluateTimeline`, which already does it — with blend curves, per-block overrides and an
+animated lens. This package first shipped its own resolver, which worked but was the weaker
+implementation: it snapped the field of view at a cut instead of blending it, and it was a
+second copy of logic that could drift. It was replaced. What is left here is the half the
+library cannot do: obeying R9 against whatever controller the host has mounted.
+
+**Where a shot's timing comes from.** A camera track in the persisted payload, if there is one.
+Otherwise `synthesiseCameraTrack` builds one at **read** time from the shot nodes' own
+`timeSeconds` and `blendSeconds`, so a document written before camera tracks existed still plays
+its shots — and loading it does not rewrite it. An authored track always wins. That also lifts
+M1.4's carried limitation: a camera track can name the same shot in two blocks, so one shot can
+be used at two times.
 
 An orbit shot names the node it frames. **That is the seam paying for itself:** move the subject
 and the shot re-frames it, with no timeline edit at all. Covered headlessly, and measured in the

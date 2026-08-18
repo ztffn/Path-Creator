@@ -41,17 +41,53 @@ export const ActivationTrackSchema = z.object({
   postPlaybackState: z.enum(["revert", "active", "inactive", "leaveAsIs"]).default("revert")
 });
 
+/** Mirrors `TimelineBlendIn`. `durationSeconds`, not `seconds` — the shape is the library's. */
+export const BlendInSchema = z.object({
+  durationSeconds: z.number().min(0),
+  curve: z.string().optional()
+});
+
 /**
- * Only the two track kinds the driver actually applies. Audio, animation and camera tracks are
- * deliberately absent: a schema that persists something nothing reads is a promise the document
- * does not keep, and every one of them would then need a migration when it arrives anyway.
+ * Mirrors `CameraBlock`. `vcamId` is a **shot node id** — the same identity every other
+ * reference in this system uses, so a block naming a shot is a node reference like any other.
+ */
+export const CameraBlockSchema = z.object({
+  id: z.string(),
+  vcamId: z.string(),
+  start: z.number(),
+  end: z.number(),
+  blendIn: BlendInSchema.optional()
+});
+
+export const CameraTrackSchema = z.object({
+  type: z.literal("camera"),
+  id: z.string(),
+  name: z.string().optional(),
+  blocks: z.array(CameraBlockSchema).default([])
+});
+
+/**
+ * Only the track kinds the runtime actually applies. Audio and animation tracks are deliberately
+ * absent: a schema that persists something nothing reads is a promise the document does not
+ * keep, and each would need a migration when it arrives anyway.
  */
 export const PersistedTrackSchema = z.discriminatedUnion("type", [
   TransformTrackSchema,
-  ActivationTrackSchema
+  ActivationTrackSchema,
+  CameraTrackSchema
 ]);
 
 export type PersistedTrack = z.infer<typeof PersistedTrackSchema>;
+
+/** The tracks that drive a scene object, i.e. every kind except the camera track. */
+export type ObjectBoundTrack = Extract<PersistedTrack, { objectId: string }>;
+
+/**
+ * Narrows to the tracks that name a scene object. A camera track binds to shots through its
+ * blocks instead, so anything reasoning about "which node does this track drive" has to ask.
+ */
+export const isObjectBoundTrack = (track: PersistedTrack): track is ObjectBoundTrack =>
+  "objectId" in track;
 
 /**
  * Version of the tracks payload, ours alone.
@@ -88,7 +124,9 @@ export function removeTracksForObject(
   tracks: readonly PersistedTrack[],
   objectId: string
 ): PersistedTrack[] {
-  return tracks.filter((track) => track.objectId !== objectId);
+  // A camera track binds to shots through its blocks, not through an `objectId`, so it is
+  // never object-scoped and must survive this filter rather than being dropped by accident.
+  return tracks.filter((track) => !("objectId" in track) || track.objectId !== objectId);
 }
 
 /**
@@ -136,6 +174,9 @@ export function remapTracksForClone(
 ): PersistedTrack[] {
   const added: PersistedTrack[] = [];
   for (const track of tracks) {
+    // Camera tracks reference shots, not driven objects; cloning a subtree of geometry does not
+    // duplicate the shot list, so they are skipped rather than mis-remapped.
+    if (!("objectId" in track)) continue;
     const cloneObjectId = idMap.get(track.objectId);
     if (!cloneObjectId) continue;
     added.push({

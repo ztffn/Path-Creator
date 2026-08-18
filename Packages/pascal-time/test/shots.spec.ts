@@ -13,14 +13,31 @@ import {
   installPascalTimeOnScene,
   PascalCameraDirector,
   pascalTargetContext,
+  readShotDefinitions,
   readShots,
+  readTimeline,
   registerPascalTimeKinds,
-  resolveShotAt,
   SHOT_KIND,
+  synthesiseCameraTrack,
   type CameraControlsLike
 } from "../src/index";
 
 const CLOCK = "humatime_clock";
+
+/** Drive the camera at `time`, exactly as a host would. */
+function driveAt(
+  director: PascalCameraDirector,
+  camera: PerspectiveCamera,
+  time: number,
+  extra: Partial<Parameters<PascalCameraDirector["sync"]>[1]> = {}
+) {
+  return director.sync(camera, {
+    timeline: readTimeline(CLOCK)!,
+    vcams: readShotDefinitions(CLOCK),
+    time,
+    ...extra
+  });
+}
 
 /**
  * A stand-in for drei's `CameraControls` that reproduces the behaviour which makes R9 real:
@@ -154,27 +171,57 @@ describe("M1.4 — the shot in force is a pure function of time", () => {
   });
 
   it("holds a shot until the next takes over", () => {
-    const shots = readShots(CLOCK);
-    expect(resolveShotAt(shots, 0).active?.id).toBe("shot_wide");
-    expect(resolveShotAt(shots, 9.9).active?.id).toBe("shot_wide");
-    expect(resolveShotAt(shots, 10).active?.id).toBe("shot_close");
-    expect(resolveShotAt(shots, 1000).active?.id).toBe("shot_close");
+    const camera = new PerspectiveCamera();
+    const director = new PascalCameraDirector();
+    expect(driveAt(director, camera, 0)?.vcamId).toBe("shot_wide");
+    expect(driveAt(director, camera, 9.9)?.vcamId).toBe("shot_wide");
+    expect(driveAt(director, camera, 10)?.vcamId).toBe("shot_close");
+    expect(driveAt(director, camera, 19)?.vcamId).toBe("shot_close");
   });
 
-  it("writes nothing at all before the first shot, rather than snapping the camera", () => {
+  it("synthesises a camera track from shot nodes when the document has none", () => {
+    // The compatibility path, at READ time: a document written before camera tracks existed
+    // still plays its shots, and loading it does not rewrite it.
+    const track = synthesiseCameraTrack(CLOCK, 20)!;
+    expect(track.type).toBe("camera");
+    expect("blocks" in track && track.blocks).toEqual([
+      { id: "block_shot_wide", vcamId: "shot_wide", start: 0, end: 10 },
+      {
+        id: "block_shot_close",
+        vcamId: "shot_close",
+        start: 10,
+        end: 20,
+        blendIn: { durationSeconds: 4 }
+      }
+    ]);
+  });
+
+  it("writes nothing at all in a gap, rather than snapping the camera", () => {
     const camera = new PerspectiveCamera();
     camera.position.set(1, 2, 3);
     const director = new PascalCameraDirector();
 
-    const shots = readShots(CLOCK).filter((shot) => shot.id === "shot_close"); // first at t=10
-    expect(director.sync(camera, shots, 0)).toBeNull();
+    // A timeline whose only block starts at 10 leaves t=0 uncovered. A gap is a deliberate
+    // state — the host keeps its own camera.
+    const timeline = readTimeline(CLOCK)!;
+    const gapped = {
+      ...timeline,
+      tracks: [{ type: "camera" as const, id: "cam", blocks: [
+        { id: "b", vcamId: "shot_close", start: 10, end: 20 }
+      ] }]
+    };
+    expect(
+      director.sync(camera, { timeline: gapped as never, vcams: readShotDefinitions(CLOCK), time: 0 })
+    ).toBeNull();
     expect(camera.position.toArray()).toEqual([1, 2, 3]);
   });
 
   it("does not depend on the order the shots came out of the document", () => {
-    const shots = readShots(CLOCK);
-    const reversed = [...shots].reverse();
-    expect(resolveShotAt(reversed, 11).active?.id).toBe(resolveShotAt(shots, 11).active?.id);
+    const ids = readShots(CLOCK).map((shot) => shot.id);
+    expect(new Set(ids).size).toBe(ids.length);
+    const camera = new PerspectiveCamera();
+    const director = new PascalCameraDirector();
+    expect(driveAt(director, camera, 11)?.vcamId).toBe("shot_close");
   });
 });
 
@@ -190,32 +237,42 @@ describe("M1.4 — playback, with the time layer owning the camera", () => {
   });
 
   it("puts the camera where the shot says, and sets its lens", () => {
-    director.sync(camera, readShots(CLOCK), 0);
+    driveAt(director, camera, 0);
     expect(camera.position.toArray()).toEqual([0, 5, 20]);
     expect(camera.fov).toBe(50);
   });
 
   it("blends into the next shot across its own blendSeconds, then holds", () => {
-    const shots = readShots(CLOCK);
-
-    director.sync(camera, shots, 10); // the instant it takes over
+    driveAt(director, camera, 10); // the instant it takes over
     expect(camera.position.z).toBeCloseTo(20, 3); // still the wide shot
 
-    director.sync(camera, shots, 12); // halfway through the 4s blend
+    driveAt(director, camera, 12); // halfway through the 4s blend
     expect(camera.position.z).toBeGreaterThan(4);
     expect(camera.position.z).toBeLessThan(20);
 
-    director.sync(camera, shots, 14); // blend complete
+    driveAt(director, camera, 14); // blend complete
     expect(camera.position.z).toBeCloseTo(4, 3);
 
-    director.sync(camera, shots, 19); // held
+    driveAt(director, camera, 19); // held
     expect(camera.position.z).toBeCloseTo(4, 3);
   });
 
+  it("blends the LENS across the window too, not just the position", () => {
+    // The capability the hand-rolled resolver this replaced did not have: it snapped fov at the
+    // cut. Deferring resolution to the library gets an animated lens, blend curves and
+    // per-block overrides for free, and removes a second implementation that could drift.
+    driveAt(director, camera, 10);
+    expect(camera.fov).toBeCloseTo(50, 3); // wide, at the instant close takes over
+    driveAt(director, camera, 12);
+    expect(camera.fov).toBeGreaterThan(35);
+    expect(camera.fov).toBeLessThan(50); // mid-blend, genuinely between the two
+    driveAt(director, camera, 14);
+    expect(camera.fov).toBeCloseTo(35, 3); // arrived
+  });
+
   it("is scrub-safe — the same time gives the same pose, forwards or backwards", () => {
-    const shots = readShots(CLOCK);
     const poseAt = (time: number): number[] => {
-      director.sync(camera, shots, time);
+      driveAt(director, camera, time);
       return camera.position.toArray();
     };
     const forwards = [10, 11, 12, 13, 14].map(poseAt);
@@ -243,15 +300,14 @@ describe("M1.4 — playback, with the time layer owning the camera", () => {
         radius: 6
       })
     );
-    const context = pascalTargetContext(sceneRegistry);
-    const shots = readShots(CLOCK);
+    const { getTargetPosition } = pascalTargetContext(sceneRegistry);
 
-    director.sync(camera, shots, 15, { context });
+    driveAt(director, camera, 15, { getTargetPosition });
     const framedAtOrigin = camera.position.clone();
 
     subject.position.set(10, 0, 0);
     subject.updateMatrixWorld(true);
-    director.sync(camera, shots, 15, { context });
+    driveAt(director, camera, 15, { getTargetPosition });
 
     expect(camera.position.x - framedAtOrigin.x).toBeCloseTo(10, 5);
   });
@@ -270,7 +326,7 @@ describe("M1.4 — R9, the camera has exactly one owner per frame", () => {
 
   it("feeds a mounted controller instead of writing past it", () => {
     const controls = new FakeCameraControls(camera);
-    director.sync(camera, readShots(CLOCK), 0, { controls });
+    driveAt(director, camera, 0, { controls });
 
     // The controller received the pose and applied it, so the camera holds the authored shot.
     expect(controls.updates).toBe(1);
@@ -283,7 +339,7 @@ describe("M1.4 — R9, the camera has exactly one owner per frame", () => {
     // from its own untouched state, and the write is gone. Feeding the controller instead
     // means its state IS the shot, so a later update is a no-op rather than a reversal.
     const controls = new FakeCameraControls(camera);
-    director.sync(camera, readShots(CLOCK), 0, { controls });
+    driveAt(director, camera, 0, { controls });
 
     controls.update(); // the controller's own next frame
     expect(camera.position.toArray()).toEqual([0, 5, 20]);
@@ -294,11 +350,10 @@ describe("M1.4 — R9, the camera has exactly one owner per frame", () => {
     const solo = new PerspectiveCamera();
     const cooperative = new PerspectiveCamera();
     const controls = new FakeCameraControls(cooperative);
-    const shots = readShots(CLOCK);
 
     for (const time of [0, 5, 10, 12, 14, 19]) {
-      director.sync(solo, shots, time);
-      director.sync(cooperative, shots, time, { controls });
+      driveAt(director, solo, time);
+      driveAt(director, cooperative, time, { controls });
       expect(cooperative.position.x).toBeCloseTo(solo.position.x, 6);
       expect(cooperative.position.y).toBeCloseTo(solo.position.y, 6);
       expect(cooperative.position.z).toBeCloseTo(solo.position.z, 6);
@@ -326,9 +381,9 @@ describe("M1.4 — R9, the camera has exactly one owner per frame", () => {
     );
 
     const controls = new FakeCameraControls(camera);
-    director.sync(camera, readShots(CLOCK), 15, {
+    driveAt(director, camera, 15, {
       controls,
-      context: pascalTargetContext(sceneRegistry)
+      getTargetPosition: pascalTargetContext(sceneRegistry).getTargetPosition
     });
 
     expect(controls.target.x).toBeCloseTo(3, 4);
@@ -355,7 +410,7 @@ describe("M1.4 — R9, the camera has exactly one owner per frame", () => {
 
   it("still owns the lens when a controller owns the pose", () => {
     const controls = new FakeCameraControls(camera);
-    director.sync(camera, readShots(CLOCK), 14, { controls });
+    driveAt(director, camera, 14, { controls });
     // camera-controls has no opinion about field of view, so the shot's lens is still ours.
     expect(camera.fov).toBe(35);
   });

@@ -13,10 +13,10 @@ import {
   pascalSceneBinding,
   pascalTargetContext,
   readCues,
+  readShotDefinitions,
   readShots,
   readStoredTimeline,
   readTimeline,
-  resolveShotAt,
   TIMELINE_KIND,
   type CameraControlsLike
 } from "@huma/pascal-time";
@@ -291,15 +291,17 @@ export function Probe({ controls }: { controls: { current: CameraControlsLike | 
       // camera actually holds the pose the shot resolved to — the spike's contested mode lost
       // 1229 frames of 1230 here, and parked on a different shot entirely.
       cameraClock.current += delta;
-      const shots = readShots(TIMELINE_NODE_ID);
       const targetContext = pascalTargetContext(sceneRegistry);
-      const resolved = cameraDirector.sync(camera, shots, cameraClock.current, {
+      const resolved = cameraDirector.sync(camera, {
+        timeline,
+        vcams: readShotDefinitions(TIMELINE_NODE_ID),
+        time: cameraClock.current,
         controls: controls.current,
-        context: targetContext
+        getTargetPosition: targetContext.getTargetPosition
       });
 
-      if (resolved) {
-        seenShots.current.add(resolved.shot.id);
+      if (resolved?.vcamId) {
+        seenShots.current.add(resolved.vcamId);
         state.shotsSeen = seenShots.current.size;
         const wanted = resolved.snapshot.position;
         const error = Math.hypot(
@@ -314,7 +316,8 @@ export function Probe({ controls }: { controls: { current: CameraControlsLike | 
         }
         // While the orbit shot is live, record how far the camera actually sat from the node
         // it frames. Authored radius is 5; a contested camera settles somewhere else entirely.
-        if (resolved.shot.definition.body.type === "orbit" && resolved.alpha >= 1) {
+        const definition = readShotDefinitions(TIMELINE_NODE_ID).get(resolved.vcamId);
+        if (definition?.body.type === "orbit" && resolved.blendProgress >= 1) {
           const subject = sceneRegistry.nodes.get(DRIVEN_ID);
           if (subject) {
             state.orbitRadiusHeld = camera.position.distanceTo(subject.position);

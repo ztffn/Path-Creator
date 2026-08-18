@@ -4,7 +4,9 @@
 // because Pascal's undo snapshot holds the nodes map by reference and an in-place edit silently
 // corrupts the past state. Scope: document <-> Timeline, plus the clone remap.
 import { useScene } from "@pascal-app/core";
-import { createTimeline, type Timeline } from "@huma/path-creator/core";
+import {
+  createTimeline, type Timeline, type VirtualCameraDefinition
+} from "@huma/path-creator/core";
 import { TIMELINE_KIND } from "./kinds";
 import {
   migrateTrackPayload,
@@ -15,7 +17,7 @@ import {
   upsertTrack,
   type PersistedTrack
 } from "./tracks";
-import { readPluginNode } from "./scene-ops";
+import { readPluginNode, readShots } from "./scene-ops";
 
 export interface StoredTimeline {
   id: string;
@@ -50,6 +52,46 @@ export function readStoredTimeline(timelineId: string): StoredTimeline | null {
 }
 
 /**
+ * The scene's shot definitions, keyed by node id — which is what a camera block's `vcamId`
+ * names, so the map and the blocks address shots the same way everything else in this system
+ * addresses anything.
+ */
+export function readShotDefinitions(timelineId: string): Map<string, VirtualCameraDefinition> {
+  return new Map(readShots(timelineId).map((shot) => [shot.id, shot.definition]));
+}
+
+/**
+ * A camera track built from the shot nodes' own `timeSeconds` / `blendSeconds`.
+ *
+ * This is the compatibility path for a document authored before camera tracks existed, and it
+ * runs at READ time rather than rewriting the document. That is deliberate: a load should not
+ * mutate what it loaded, and a synthesised track costs nothing to recompute. An explicit camera
+ * track in the payload always wins — the moment an author edits the shot list properly, the
+ * synthesis stops applying.
+ *
+ * Each shot holds until the next begins; the last runs to the timeline's duration.
+ */
+export function synthesiseCameraTrack(timelineId: string, duration: number): PersistedTrack | null {
+  const shots = [...readShots(timelineId)].sort((a, b) => a.time - b.time);
+  if (shots.length === 0) return null;
+
+  const blocks = shots.map((shot, index) => {
+    const end = shots[index + 1]?.time ?? Math.max(duration, shot.time);
+    return {
+      id: `block_${shot.id}`,
+      vcamId: shot.id,
+      start: shot.time,
+      end,
+      ...(shot.blendSeconds > 0 && index > 0
+        ? { blendIn: { durationSeconds: shot.blendSeconds } }
+        : {})
+    };
+  });
+
+  return { type: "camera", id: `camera_${timelineId}`, blocks };
+}
+
+/**
  * The scene's timeline, as the thing `@huma/path-creator` evaluates.
  *
  * `createTimeline` stamps the library's own schema version, so the returned object is a genuine
@@ -59,9 +101,18 @@ export function readStoredTimeline(timelineId: string): StoredTimeline | null {
 export function readTimeline(timelineId: string): Timeline | null {
   const stored = readStoredTimeline(timelineId);
   if (!stored) return null;
+
+  // An authored camera track wins; otherwise synthesise one from the shot nodes so a document
+  // written before camera tracks existed still plays back its shots.
+  const tracks = [...stored.tracks];
+  if (!tracks.some((track) => track.type === "camera")) {
+    const synthesised = synthesiseCameraTrack(timelineId, stored.durationSeconds);
+    if (synthesised) tracks.push(synthesised);
+  }
+
   return createTimeline({
     duration: stored.durationSeconds,
-    tracks: stored.tracks as Timeline["tracks"]
+    tracks: tracks as Timeline["tracks"]
   });
 }
 

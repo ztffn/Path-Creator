@@ -38,6 +38,9 @@ export {
 } from "./bind/scene-binding";
 export {
   ActivationTrackSchema,
+  CameraBlockSchema,
+  CameraTrackSchema,
+  isObjectBoundTrack,
   migrateTrackPayload,
   PersistedTrackSchema,
   remapTracksForClone,
@@ -46,14 +49,17 @@ export {
   TRACK_PAYLOAD_VERSION,
   TransformTrackSchema,
   upsertTrack,
+  type ObjectBoundTrack,
   type PersistedTrack
 } from "./plugin/tracks";
 export {
   deleteTrack,
   dropTracksForObject,
   putTrack,
+  readShotDefinitions,
   readStoredTimeline,
   readTimeline,
+  synthesiseCameraTrack,
   remapTracksAfterClone,
   writeTracks,
   type StoredTimeline
@@ -62,8 +68,7 @@ export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
 export {
   PascalCameraDirector,
   pascalTargetContext,
-  resolveShotAt,
   type CameraControlsLike,
-  type CameraSyncOptions,
-  type ShotResolution
+  type CameraDriveInput,
+  type CameraFrame
 } from "./drive/camera-director";

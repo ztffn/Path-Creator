@@ -102,7 +102,7 @@ Sizes are relative, not calendar estimates: **S** = a day or less, **M** = a wee
 | M1.3 timeline UI + host panel | **L** | authoring | M1.2 | **Largest single chunk.** Includes standing up the Next dev loop — see §0b. |
 | M1.4 camera + shots | M | both | M1.2 | **Done** 2026-08-17. R9 re-measured against drei's real CameraControls. |
 | M1.5 cues | S | both | M1.2 | **Done** 2026-08-17. |
-| M1.6 persistence | M | both | M1.2 | **Done** 2026-08-18. Camera track carried forward. |
+| M1.6 persistence | M | both | M1.2 | **Done** 2026-08-18, camera tracks included. |
 | M2.0 delivery mechanism | S | — | — | A decision, not code. Gates all of M2. |
 | M2.1 post-processing | M | both | M0.1, M2.0 | Mechanical. Direct TSL equivalents. Includes seam PRs if (c). |
 | M2.2 environment + lighting | **XL** | both | M2.1, M2.0 | A re-authoring. The biggest risk in the plan. |
@@ -659,10 +659,15 @@ the named upgrade if authoring at scale demands it.
 timeline *out of the document* rather than building one in code — 2 tracks, payload version 1. The
 harness fails loudly if persistence breaks rather than falling back to a fixture.
 
-**Outstanding, carried from M1.4.** `timeSeconds` still lives on the shot node, so one shot cannot
-be reused at two times. The fix is a camera track referencing shots by id — which `@huma/path-creator`
-already models — plus a payload migration moving shot times into it. Now cheap, because the versioned
-payload and its migrator exist. Not done.
+**Camera tracks landed too, and removed a duplicate implementation.** Checking before building
+found that `evaluateTimeline` already resolves the camera from blocks — so M1.4's director was a
+second, weaker copy of library logic: it snapped the field of view at a cut where the library
+blends it. The director now defers resolution to the library and keeps only the half the library
+cannot do, obeying R9 against the host's controller. Camera blocks join the persisted payload,
+and `synthesiseCameraTrack` builds one at READ time from the shot nodes when a document has none,
+so old documents play back without being rewritten on load. A camera track can name the same shot
+in two blocks, which lifts M1.4's carried limitation. Re-measured after the refactor: still 0
+contested frames, orbit radius still exactly 5.0.
 
 ## M2 — Rendering
 

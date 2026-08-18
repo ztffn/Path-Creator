@@ -1,16 +1,18 @@
-// Driving the viewport camera from a scene's shots, under the one rule the spike measured: the
-// camera has exactly one owner per frame. With no controller mounted the time layer writes the
-// camera; with one mounted the CONTROLLER writes it and the time layer feeds it a pose. Writing
-// past a mounted `camera-controls` is not degraded, it is broken — 1229 of 1230 frames lost, and
-// the camera parked on a different shot entirely. Scope: shot resolution and R9-safe application.
+// Applying a timeline's camera to the viewport, under the one rule the spike measured: the
+// camera has exactly one owner per frame. Resolution — which shot is live at t, and how it
+// blends into the next — belongs to `@huma/path-creator`, which already does it and does it
+// better (blend curves, per-block overrides, an animated lens). This file owns only the half
+// the library cannot: obeying R9 against whatever controller the host has mounted.
 import { Vector3, type Camera, type Object3D } from "three";
-import {
-  applyVirtualCameraSnapshot,
-  blendVirtualCameraSnapshots,
-  resolveVirtualCameraDefinition
-} from "@huma/path-creator/three";
-import type { Vec3, VirtualCameraResolveContext, VirtualCameraSnapshot } from "@huma/path-creator/core";
-import type { Shot } from "../plugin/scene-ops";
+import { applyVirtualCameraSnapshot } from "@huma/path-creator/three";
+import type {
+  QuaternionLike,
+  Timeline,
+  Vec3,
+  VirtualCameraDefinition,
+  VirtualCameraSnapshot
+} from "@huma/path-creator/core";
+import { evaluateTimeline } from "@huma/path-creator/timeline";
 
 /**
  * The slice of drei's `CameraControls` this needs. Declared structurally so nothing here
@@ -33,25 +35,31 @@ export interface CameraControlsLike {
   update(deltaSeconds: number): unknown;
 }
 
-export interface ShotResolution {
-  /** The shot in force. */
-  shot: Shot;
-  /** The shot being blended from, when a blend is in progress. */
-  from: Shot | null;
-  /** 0 to 1 through the blend; 1 when the shot is held outright. */
-  alpha: number;
-  snapshot: VirtualCameraSnapshot;
-}
-
-export interface CameraSyncOptions {
+export interface CameraDriveInput {
+  timeline: Timeline;
+  /** Shot definitions by node id — what a camera block's `vcamId` names. */
+  vcams: Map<string, VirtualCameraDefinition>;
+  time: number;
   /**
    * The mounted camera controller, when there is one. Its presence changes who writes the
    * camera — that is R9, and it is the whole reason this parameter exists.
    */
   controls?: CameraControlsLike | null;
-  /** Extra resolve context (cart frames, target orientation) a host may have. */
-  context?: VirtualCameraResolveContext;
+  /** Resolves an orbit shot's target by node id. See `pascalTargetContext`. */
+  getTargetPosition?: (targetId: string) => Vec3 | null;
+  getTargetOrientation?: (targetId: string) => QuaternionLike | null;
 }
+
+export interface CameraFrame {
+  snapshot: VirtualCameraSnapshot;
+  /** The shot id in force, or null in a gap. */
+  vcamId: string | null;
+  /** 1 outside a blend window. */
+  blendProgress: number;
+}
+
+/** Pascal has no dolly rails, so the rig half of the evaluation context is empty by design. */
+const EMPTY_RIG = { paths: new Map(), carts: new Map(), cartPaths: new Map() };
 
 const forward = new Vector3();
 const lookTarget = new Vector3();
@@ -64,7 +72,9 @@ const worldPosition = new Vector3();
  */
 export function pascalTargetContext(registry: {
   nodes: { get(id: string): Object3D | undefined };
-}): VirtualCameraResolveContext {
+}): {
+  getTargetPosition: (targetId: string) => Vec3 | null;
+} {
   return {
     getTargetPosition: (targetId: string): Vec3 | null => {
       const object = registry.nodes.get(targetId);
@@ -75,72 +85,37 @@ export function pascalTargetContext(registry: {
   };
 }
 
-/** The shot in force at `time`, and the one before it, by time rather than document order. */
-export function resolveShotAt(
-  shots: readonly Shot[],
-  time: number
-): { active: Shot | null; previous: Shot | null } {
-  const ordered = [...shots].sort((a, b) => a.time - b.time);
-  let active: Shot | null = null;
-  let previous: Shot | null = null;
-  for (const shot of ordered) {
-    if (shot.time > time) break;
-    previous = active;
-    active = shot;
-  }
-  return { active, previous };
-}
-
 /**
- * Drives a camera from a scene's shots.
+ * Drives a camera from a timeline's camera track.
  *
- * A shot holds until the next one takes over, and takes over across its own `blendSeconds` —
- * so a cut is `blendSeconds: 0` and there is one rule rather than a cut path and a blend path.
- * Resolution is a pure function of `time`, which is what keeps scrubbing and playback identical.
+ * Returns what it applied, or null when the timeline resolves no camera at this time — in which
+ * case it writes **nothing at all** and the host keeps its own camera, rather than snapping it
+ * somewhere. A gap is a deliberate state, not an error.
  */
 export class PascalCameraDirector {
-  /**
-   * Returns what it resolved, or null when no shot is in force yet — in which case it writes
-   * nothing at all and the host keeps its own camera, rather than snapping it somewhere.
-   */
-  sync(
-    camera: Camera,
-    shots: readonly Shot[],
-    time: number,
-    options: CameraSyncOptions = {}
-  ): ShotResolution | null {
-    const { active, previous } = resolveShotAt(shots, time);
-    if (!active) return null;
+  sync(camera: Camera, input: CameraDriveInput): CameraFrame | null {
+    const sample = evaluateTimeline(
+      input.timeline,
+      {
+        rig: EMPTY_RIG,
+        vcams: input.vcams,
+        ...(input.getTargetPosition && { getTargetPosition: input.getTargetPosition }),
+        ...(input.getTargetOrientation && { getTargetOrientation: input.getTargetOrientation })
+      } as never,
+      input.time
+    );
 
-    const context: VirtualCameraResolveContext = {
-      ...options.context,
-      elapsedSeconds: time
-    };
+    if (!sample.camera) return null;
 
-    const target = resolveVirtualCameraDefinition(active.definition, context);
-    if (!target) return null;
-
-    const blending =
-      previous !== null && active.blendSeconds > 0 && time - active.time < active.blendSeconds;
-    let snapshot = target;
-    let alpha = 1;
-
-    if (blending && previous) {
-      const source = resolveVirtualCameraDefinition(previous.definition, context);
-      if (source) {
-        alpha = (time - active.time) / active.blendSeconds;
-        snapshot = blendVirtualCameraSnapshots(source, target, alpha);
-      }
-    }
-
-    this.apply(camera, snapshot, active, options.controls ?? null);
-    return { shot: active, from: blending ? previous : null, alpha, snapshot };
+    const vcamId = sample.activeBlock?.block.vcamId ?? null;
+    this.apply(camera, sample.camera, vcamId ? input.vcams.get(vcamId) : undefined, input.controls ?? null);
+    return { snapshot: sample.camera, vcamId, blendProgress: sample.blendProgress };
   }
 
   private apply(
     camera: Camera,
     snapshot: VirtualCameraSnapshot,
-    shot: Shot,
+    definition: VirtualCameraDefinition | undefined,
     controls: CameraControlsLike | null
   ): void {
     if (!controls) {
@@ -165,10 +140,8 @@ export class PascalCameraDirector {
     const { position, quaternion } = snapshot;
     forward.set(0, 0, -1).applyQuaternion(quaternion as never);
     const distance =
-      shot.definition.body.type === "orbit" ? Math.max(0.01, shot.definition.body.radius) : 10;
-    lookTarget
-      .set(position.x, position.y, position.z)
-      .addScaledVector(forward, distance);
+      definition?.body.type === "orbit" ? Math.max(0.01, definition.body.radius) : 10;
+    lookTarget.set(position.x, position.y, position.z).addScaledVector(forward, distance);
 
     controls.setLookAt(
       position.x,
