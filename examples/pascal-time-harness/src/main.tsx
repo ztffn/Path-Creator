@@ -9,12 +9,16 @@ import { loadPlugin, nodeRegistry } from "@pascal-app/core";
 import { registerPascalTimeKinds } from "@huma/pascal-time";
 import { harnessPlugin, MARKER_KIND } from "./kinds";
 import App from "./App";
+import BakeApp from "./bake-app";
 
 registerPascalTimeKinds();
 if (!nodeRegistry.has(MARKER_KIND)) void loadPlugin(harnessPlugin);
 
+// `?mode=bake` runs the bake-measurement shell over the exported artifact instead of the
+// authored harness scene. A query switch rather than a route: the harness has no router, and
+// the two shells must share one bundle so the bake check measures THIS bundle's dependencies.
+const mode = new URLSearchParams(window.location.search).get("mode");
+
 createRoot(document.getElementById("root")!).render(
-  <StrictMode>
-    <App />
-  </StrictMode>
+  <StrictMode>{mode === "bake" ? <BakeApp /> : <App />}</StrictMode>
 );

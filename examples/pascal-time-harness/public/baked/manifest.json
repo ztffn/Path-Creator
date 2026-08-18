@@ -1,0 +1,29 @@
+{
+  "purpose": "M1.3 bake measurement fixture — regenerate with pnpm --filter pascal-editor-host verify:bake",
+  "exportedAt": "authored by measure-bake.mjs",
+  "trackedId": "column_bake",
+  "track": {
+    "type": "transform",
+    "id": "probe_lift_column_bake",
+    "objectId": "column_bake",
+    "position": [
+      {
+        "time": 0,
+        "value": [
+          0,
+          0,
+          0
+        ]
+      },
+      {
+        "time": 4,
+        "value": [
+          0,
+          3,
+          0
+        ]
+      }
+    ]
+  },
+  "durationSeconds": 10
+}

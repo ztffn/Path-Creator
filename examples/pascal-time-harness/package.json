@@ -8,8 +8,9 @@
     "build": "tsc -b && vite build",
     "preview": "vite preview",
     "lint": "tsc --noEmit",
-    "test": "echo \"No unit tests \u2014 measured in a browser via pnpm verify\"",
-    "verify": "pnpm --filter @huma/pascal-time build && node measure.mjs"
+    "test": "echo \"No unit tests — measured in a browser via pnpm verify\"",
+    "verify": "pnpm --filter @huma/pascal-time build && node measure.mjs",
+    "verify:bake": "node measure-bake.mjs"
   },
   "dependencies": {
     "@huma/pascal-time": "workspace:*",

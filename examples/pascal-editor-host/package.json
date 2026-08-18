@@ -9,7 +9,8 @@
     "start": "next start",
     "lint": "tsc -p tsconfig.lint.json --noEmit",
     "test": "echo \"No unit tests — verified in a browser via pnpm verify\"",
-    "verify": "pnpm --filter @huma/pascal-time build && node measure.mjs"
+    "verify": "pnpm --filter @huma/pascal-time build && node measure.mjs",
+    "verify:bake": "pnpm --filter @huma/pascal-time build && node measure-bake.mjs"
   },
   "dependencies": {
     "@huma/pascal-time": "workspace:*",

@@ -9,8 +9,10 @@
 import { ColumnNode, nodeRegistry, sceneRegistry, useScene } from "@pascal-app/core";
 import { useViewer } from "@pascal-app/viewer";
 import {
+  buildTimelineNode,
   createPluginNode,
   getViewportCameraPose,
+  installPascalTimeOnScene,
   pascalTimeTransport,
   putTrack,
   readCues,
@@ -45,6 +47,10 @@ type EditorProbe = {
   injectDemoTrack(objectId: string): boolean;
   /** Author a real Pascal column under the level, as the wall tool would. */
   createTestColumn(id: string, position: [number, number, number]): boolean;
+  /** Create the scene's timeline node directly — for measurement scripts, not authors. */
+  createTimelineNode(): string;
+  /** Bake the live scene through Pascal's own exportSceneToGlb; returns base64 GLB. */
+  exportGlb(): Promise<string | null>;
   /** Select a node the way a viewport click would — the Key button reads this. */
   selectNode(id: string): void;
   /** Move a node's AUTHORED position (one updateNode — the gizmo's document write). */
@@ -103,6 +109,43 @@ const selectNode = (id: string): void => {
   useViewer.getState().setSelection({ selectedIds: [id] as never });
 };
 
+const createTimelineNode = (): string => {
+  const existing = findNodeIdByType(TIMELINE_KIND);
+  if (existing) return existing;
+  installPascalTimeOnScene();
+  const node = buildTimelineNode({ name: "Timeline" });
+  createPluginNode(node);
+  return node.id as string;
+};
+
+/**
+ * The bake, exactly as Pascal's own export menu runs it: find the viewer's `scene-renderer`
+ * group (reachable by walking up from any registered object — the probe has no useThree) and
+ * hand it with the node map to exportSceneToGlb. Base64 in 8K chunks; a spread over a whole
+ * building's buffer would blow the call stack.
+ */
+const exportGlb = async (): Promise<string | null> => {
+  const { exportSceneToGlb } = (await import("@pascal-app/editor")) as unknown as {
+    exportSceneToGlb: (
+      sceneGroup: unknown,
+      nodes: unknown
+    ) => Promise<ArrayBuffer>;
+  };
+  const anyObject = sceneRegistry.nodes.values().next().value;
+  if (!anyObject) return null;
+  let root = anyObject;
+  while (root.parent) root = root.parent;
+  const sceneGroup = root.getObjectByName("scene-renderer");
+  if (!sceneGroup) return null;
+  const buffer = await exportSceneToGlb(sceneGroup, useScene.getState().nodes);
+  const bytes = new Uint8Array(buffer);
+  let binary = "";
+  for (let i = 0; i < bytes.length; i += 8192) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + 8192));
+  }
+  return btoa(binary);
+};
+
 const setNodePosition = (id: string, position: [number, number, number]): void => {
   updatePluginNode(id, { position });
 };
@@ -152,6 +195,8 @@ export function DevProbe() {
         objectVisible,
         injectDemoTrack,
         createTestColumn,
+        createTimelineNode,
+        exportGlb,
         selectNode,
         setNodePosition
       };
