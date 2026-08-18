@@ -564,6 +564,80 @@ and presumably the same silent failure if got wrong.
 standing up the Next app, confirming `<Editor>` actually renders, and reconciling `/timeline-ui`
 with Pascal's chrome. The long pole is unchanged.
 
+**Probe C — does `<Editor>` RENDER outside Pascal's repo? *Yes.* Measured 2026-08-18.** The
+question probe A could not answer is now closed by `examples/pascal-editor-host`, a minimal
+Next app in this workspace (Next 16.3.1, all `@pascal-app/*` pinned `1.0.0-beta.4`) mirroring
+upstream `apps/editor`'s load-bearing config: `transpilePackages` for the raw-TSX editor,
+react/three/fiber/drei singleton aliases, the vendored Tailwind v4 theme with `@source`
+directives over the editor's source, and a client bootstrap registering kinds at module import
+time. Driven headlessly in system Chrome on WebGPU:
+
+```
+hydration ran (probe global appeared)        yes
+unhandled page errors                        0
+console errors                               0
+canvases mounted (the R3F viewer)            1
+editor chrome in the DOM                     sidebar + 29 buttons
+node registry in the BROWSER                 49 kinds = 46 builtins + our 3
+CONTROL: rAF beats between samples           44 -> 403 (instrument alive)
+```
+
+Visually complete: hierarchy panel, Structure/Furnish/Zones tabs, tool rail, bottom toolbar,
+WebGPU viewport with the wall tool active. Three findings that shape the panel work:
+
+- **`viewerSceneSlot` is the driver's mount point.** `EditorProps` takes host-owned children
+  mounted *inside* the editor's R3F scene — exactly where `PascalNodeDriver` /
+  `PascalCameraDirector` must live to share the frame loop (§5.3). No fork, no portal tricks.
+- **Panel visibility is gated the way our install gate already works.** `useHostPanels`
+  filters registered panels by `pluginId` against the scene's `installedPlugins`, and
+  `defaultInstalled: true` auto-installs into scenes with no explicit plugin state. A panel
+  component receives **no props** — it reads stores.
+- **`panelForKind` has no consumer in the published beta-4 editor** — registering kinds maps
+  them to the panel, but nothing routes selection to it yet. The panel is reached through the
+  icon rail; do not design around select-to-open.
+
+The editor's chrome assets (`/icons/*.webp`, cursor, HDRI, SFX) are host-app public files —
+vendored from the upstream `@pascal-app/editor@1.0.0-beta.4` tag (92 files, 3.8 MB). The
+`items/` and `material/` catalogs (580 files) were deliberately not vendored: the timeline dev
+loop does not need them, and the broken-thumbnail cost is confined to the Items panel.
+
+### M1.3 progress — the done-criterion is measured, 2026-08-18
+
+**"An author can keyframe from the timeline panel and see it play in the viewport" — measured,
+28 of 28 browser checks green** (`pnpm --filter pascal-editor-host verify`, system Chrome,
+WebGPU, through the panel's real buttons — not through APIs behind its back):
+
+```
+key column @ t=0 from its authored pose        track created, 1 undo entry
+preview OFF -> gizmo-shaped move -> key @ t=2  playhead parks WITHOUT driving (edit mode)
+preview ON at t=2                              keyed pose held exactly (z=5)
+scrub t=0                                      first key exactly (z=-1); t=1 interpolates
+play / pause / stop                            restores the AUTHORED pose, 0 m off
+undo history                                   5 entries = exactly the 5 edits; playback +0
+```
+
+**Shipped:** `@huma/pascal-time/host-panel` (separate entry; the runtime entry provably never
+names the editor, both entries share chunks — asserted in tests, because unshared chunks mean
+TWO transport stores and a panel no driver hears); the transport store with an explicit
+**preview/edit distinction** (seek drives only in preview — posing a driven object is a fight
+the driver wins, so keying is pose-then-key in edit mode); `PascalTimeSceneDriver` mounted via
+`viewerSceneSlot`; keyframe capture (`captureTransformKey` — full TRS, one `putTrack`, one undo
+entry per press); the reused `KeyframeCurveEditor` over the selected track with **per-gesture
+write batching** (the editor fires onChange per pointer-move; edits buffer in a draft and the
+pointerup commits ONE `putTrack`). The persisted `TransformKeySchema` was widened to carry the
+library's full `Easing` (preset or curve) and `tangentsAxes` — including `undefined`/`null`
+tangent holes, which an earlier draft's schema would have made the migrator silently drop whole
+tracks over (caught by test, not in production). 443 tests across the workspace.
+
+**Lane-surface decision, recorded:** transform keyframes render in the keyframe curve editor
+(keys are points; it already does drag/add/delete/multi-select/tangents). `TimelineLanes` is
+clip-shaped — shots, dollies, ranges — and stays the intended surface for shot/activation
+lanes. The @xzdarcy replacement remains roadmap, not M1.3.
+
+**Still open in M1.3:** shot and cue authoring affordances in the panel (they are authorable
+as nodes already; the panel shows neither), `def.parametrics` inspectors for the three kinds,
+and the §0b bake measurement (decision 2) now unblocked by `/nodes` being installed here.
+
 ### M1.4 — Camera and shot kinds — **DONE** (2026-08-17)
 
 Virtual cameras as node kinds — path-creator already has the bodies (static, cart, orbit), blends,
