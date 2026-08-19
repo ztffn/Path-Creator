@@ -154,8 +154,13 @@ export function ShotsSection({
             style={styles.iconButton}
             type="button"
             aria-label={`Seek to shot ${shot.name}`}
-            title={`Seek to ${formatSeconds(shot.timeSeconds)} s`}
-            onClick={() => transport.seek(shot.timeSeconds)}
+            // A shot takes over ACROSS its blend: at timeSeconds it is still 100% the previous
+            // shot. Land where this shot fully owns the frame, or a seek "to" it shows its
+            // predecessor and every edit looks like it hit the wrong shot.
+            title={`Seek to ${formatSeconds(Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds))} s — where this shot fully owns the frame`}
+            onClick={() =>
+              transport.seek(Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds))
+            }
           >
             ▲
           </button>

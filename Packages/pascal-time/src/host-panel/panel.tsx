@@ -57,7 +57,13 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
 
   const markers: TimeMarker[] = [
     ...cues.map((cue): TimeMarker => ({ ...cue, kind: "cue" })),
-    ...shots.map((shot): TimeMarker => ({ ...shot, kind: "shot" }))
+    ...shots.map(
+      (shot): TimeMarker => ({
+        ...shot,
+        kind: "shot",
+        seekSeconds: Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds)
+      })
+    )
   ];
 
   return (

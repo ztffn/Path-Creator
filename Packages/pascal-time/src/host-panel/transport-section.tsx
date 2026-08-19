@@ -17,6 +17,9 @@ export interface TimeMarker {
   name: string;
   timeSeconds: number;
   kind: "cue" | "shot";
+  /** Where clicking lands. Shots seek past their blend — at timeSeconds they are still 100%
+   *  the previous shot; cues seek their exact moment. Defaults to timeSeconds. */
+  seekSeconds?: number;
 }
 
 /** Duration edits commit on blur/Enter as one node update — not per keystroke. */
@@ -80,7 +83,7 @@ function MarkerStrip({
           style={markerStyle(marker, duration)}
           title={`${marker.kind} "${marker.name}" @ ${formatSeconds(marker.timeSeconds)} s — click to seek`}
           aria-label={`${marker.kind} marker ${marker.name}`}
-          onClick={() => pascalTimeTransport.getState().seek(marker.timeSeconds)}
+          onClick={() => pascalTimeTransport.getState().seek(marker.seekSeconds ?? marker.timeSeconds)}
         >
           {marker.kind === "cue" ? "◆" : "▲"}
         </button>

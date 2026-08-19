@@ -321,6 +321,16 @@ try {
     true
   );
 
+  // A shot takes over ACROSS its blend: at its own timeSeconds it is still 100% the previous
+  // shot. Seeking "to" a shot must land where it fully owns the frame (time + blend), or every
+  // edit to a neighbour reads as hitting the wrong shot.
+  await page.getByRole("button", { name: "Seek to shot Shot 1" }).click();
+  const pastBlend = await until(page, () => {
+    const p = window.__editorProbe;
+    return Math.abs(p.transport.time - 4) < 1e-6 ? p : null;
+  });
+  check("seeking to a shot lands past its blend (t=3 + blend 1 -> 4)", true, pastBlend.transport.time);
+
   // The inspector is def.parametrics, hand-declared (M1.3 milestone C). Selecting the shot
   // must surface our groups through Pascal's own ParametricInspector. The desktop inspector
   // opens COLLAPSED to its header (the presentation label), so expand it first.
