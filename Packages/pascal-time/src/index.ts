@@ -76,6 +76,7 @@ export {
 } from "./plugin/timeline-io";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
 export {
+  captureViewportPose,
   getViewportCameraPose,
   PascalTimeSceneDriver,
   type ViewportCameraPose

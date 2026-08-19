@@ -39,8 +39,13 @@ export interface ViewerSelectionSlice {
     selectedIds: string[];
   };
   setSelection(updates: Partial<{ selectedIds: string[] }>): void;
+  /** True while the author is dragging in the viewport (camera orbit included). */
+  inputDragging: boolean;
 }
 
 export declare const useViewer: (<T>(selector: (state: ViewerSelectionSlice) => T) => T) & {
   getState(): ViewerSelectionSlice;
+  subscribe(
+    listener: (state: ViewerSelectionSlice, previous: ViewerSelectionSlice) => void
+  ): () => void;
 };

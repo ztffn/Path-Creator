@@ -6,6 +6,7 @@
 // Runtime-safe: imports core and fiber, never @pascal-app/editor.
 import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
+import { Euler, type Camera } from "three";
 import { sceneRegistry, useScene } from "@pascal-app/core";
 import type { Timeline, VirtualCameraDefinition } from "@huma/path-creator/core";
 import { pascalTimeTransport } from "../transport/store";
@@ -49,6 +50,26 @@ export interface ViewportCameraPose {
 // moment the author presses "add shot from view".
 let viewportCamera: ViewportCameraPose | null = null;
 const RAD_TO_DEG = 180 / Math.PI;
+const _captureEuler = new Euler();
+
+/**
+ * A camera's pose in the shot node's field shapes. The euler is derived from the QUATERNION in
+ * explicit XYZ order rather than read off `camera.rotation` — a camera controller is free to
+ * set a different rotation order, and components captured in one order and replayed in another
+ * would frame a different view with no error anywhere.
+ */
+export function captureViewportPose(camera: Camera): ViewportCameraPose {
+  _captureEuler.setFromQuaternion(camera.quaternion, "XYZ");
+  return {
+    position: [camera.position.x, camera.position.y, camera.position.z],
+    rotationDeg: [
+      _captureEuler.x * RAD_TO_DEG,
+      _captureEuler.y * RAD_TO_DEG,
+      _captureEuler.z * RAD_TO_DEG
+    ],
+    fov: (camera as { fov?: number }).fov ?? 50
+  };
+}
 
 /** The viewport camera's pose as of the last driven frame, or null before the first frame. */
 export function getViewportCameraPose(): ViewportCameraPose | null {
@@ -72,16 +93,7 @@ export function PascalTimeSceneDriver(): null {
   );
 
   useFrame((state, delta) => {
-    const camera = state.camera;
-    viewportCamera = {
-      position: [camera.position.x, camera.position.y, camera.position.z],
-      rotationDeg: [
-        camera.rotation.x * RAD_TO_DEG,
-        camera.rotation.y * RAD_TO_DEG,
-        camera.rotation.z * RAD_TO_DEG
-      ],
-      fov: (camera as { fov?: number }).fov ?? 50
-    };
+    viewportCamera = captureViewportPose(state.camera);
 
     const transport = pascalTimeTransport.getState();
     const timelineId = transport.timelineId;
@@ -130,6 +142,12 @@ export function PascalTimeSceneDriver(): null {
     wasDriving.current = true;
 
     driver.sync(timeline, { time: clock.time, playing: clock.playing, driving: true });
+
+    // The camera has exactly one owner per frame (R9) — and while the AUTHOR is that owner,
+    // the director stands down entirely. Without this, framing a new shot is a fight the
+    // director wins every frame, and "add shot from view" captures the fight instead of the
+    // view. A transport action (play, seek, preview-on) reclaims the camera.
+    if (!clock.cameraFollow) return;
 
     const mounted = state.controls;
     director.sync(state.camera, {

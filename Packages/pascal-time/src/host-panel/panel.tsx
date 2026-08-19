@@ -7,6 +7,7 @@
 "use client";
 
 import { useEffect, useState, type ReactNode } from "react";
+import { useViewer } from "@pascal-app/editor";
 import {
   buildTimelineNode,
   createPluginNode
@@ -97,6 +98,18 @@ export default function TimelinePanel(): ReactNode {
   useEffect(() => {
     pascalTimeTransport.getState().setTimeline(timelineId);
   }, [timelineId]);
+
+  // The author grabbing the viewport camera takes it from the director (R9: one owner per
+  // frame — during a drag, the author is that owner). Without this, framing a new shot while
+  // a shot is active is a fight the director wins every frame, and "add shot from view"
+  // captures the fight instead of the framing. Play/seek reclaim the camera in the transport.
+  useEffect(() => {
+    return useViewer.subscribe((state, previous) => {
+      if (state.inputDragging && !previous.inputDragging) {
+        pascalTimeTransport.getState().userGrabbedCamera();
+      }
+    });
+  }, []);
 
   if (!timelineId) return <EmptyState />;
   return <PanelBody timelineId={timelineId} />;

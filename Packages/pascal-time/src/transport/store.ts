@@ -27,6 +27,13 @@ export interface PascalTimeTransportState {
   preview: boolean;
   /** Playback rate. Scales `advance`'s deltas only — scrubbing and seeking are rate-blind. */
   rate: number;
+  /**
+   * Whether the camera director follows the timeline. The AUTHOR grabbing the camera (orbiting
+   * to frame a new shot) takes ownership — the director stands down so the framing is not a
+   * per-frame fight it always wins — and the next transport intent (play, seek, preview-on)
+   * reclaims it: diverge, then snap back on advance. Object driving is unaffected.
+   */
+  cameraFollow: boolean;
   /** Point the transport at a timeline. Resets the clock; a new subject is a new session. */
   setTimeline(id: string | null): void;
   play(): void;
@@ -35,6 +42,8 @@ export interface PascalTimeTransportState {
   seek(time: number): void;
   setPreview(on: boolean): void;
   setRate(rate: number): void;
+  /** The author took the camera (started a viewport drag). The director stands down. */
+  userGrabbedCamera(): void;
   /** Stop and hand the scene back. The clock keeps its position for a later re-engage. */
   release(): void;
   /**
@@ -53,34 +62,49 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   driving: false,
   preview: true,
   rate: 1,
+  cameraFollow: true,
 
   setTimeline: (id) => {
     if (get().timelineId === id) return;
-    set({ timelineId: id, time: 0, playing: false, driving: false, preview: true });
+    set({
+      timelineId: id,
+      time: 0,
+      playing: false,
+      driving: false,
+      preview: true,
+      cameraFollow: true
+    });
   },
 
   play: () => {
     if (!get().timelineId) return;
-    // Play IS a preview — pressing it in edit mode is the author asking to watch.
-    set({ playing: true, driving: true, preview: true });
+    // Play IS a preview — pressing it in edit mode is the author asking to watch. It also
+    // reclaims the camera from an author's grab: the ride takes over on advance.
+    set({ playing: true, driving: true, preview: true, cameraFollow: true });
   },
 
   pause: () => set({ playing: false }),
 
   seek: (time) => {
     if (!get().timelineId) return;
-    set({ time: Math.max(0, time), ...(get().preview ? { driving: true } : {}) });
+    set({
+      time: Math.max(0, time),
+      cameraFollow: true,
+      ...(get().preview ? { driving: true } : {})
+    });
   },
 
   setPreview: (on) => {
     if (on === get().preview) return;
     // Leaving preview releases the scene; entering it re-takes ownership at the parked time.
     if (on) {
-      set({ preview: true, ...(get().timelineId ? { driving: true } : {}) });
+      set({ preview: true, cameraFollow: true, ...(get().timelineId ? { driving: true } : {}) });
     } else {
       set({ preview: false, driving: false, playing: false });
     }
   },
+
+  userGrabbedCamera: () => set({ cameraFollow: false }),
 
   release: () => set({ playing: false, driving: false }),
 

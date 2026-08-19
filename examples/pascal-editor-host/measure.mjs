@@ -399,6 +399,62 @@ try {
   await until(page, () => window.__editorProbe.transport.driving === false);
   check("one clock: dock and sidebar transports are the same store", true, "stopped from sidebar");
 
+  // --- I. camera ownership and capture fidelity: frame a view, capture it, get it back ---
+  await scrubTo(6); // inside Shot 1's hold; the director owns the camera again
+  const poseShotOne = await page.evaluate(() => window.__cameraProbe.pose());
+
+  // The author grabs the camera (the same viewer flag a real orbit raises) and frames a view.
+  await page.evaluate(() => window.__editorProbe.setInputDragging(true));
+  await until(page, () => window.__editorProbe.transport.cameraFollow === false);
+  check("the author's grab takes the camera from the director", true, "cameraFollow=false");
+  const moved = await page.evaluate(() =>
+    window.__cameraProbe.look([12, 6, 14], [0, 0, 0])
+  );
+  check("the controls accepted the author's framing", moved === true, moved);
+  await page.evaluate(() => window.__editorProbe.setInputDragging(false));
+  await sleep(600);
+  const held = await page.evaluate(() => window.__cameraProbe.pose());
+  check(
+    "the director stands down — the framed view HOLDS (this was the reported bug)",
+    Math.hypot(held.position[0] - 12, held.position[1] - 6, held.position[2] - 14) < 1e-3,
+    JSON.stringify(held.position)
+  );
+
+  // Capture the framed view as a shot at the parked playhead (t=6).
+  await page.getByRole("button", { name: /\+ shot from view @/ }).click();
+  await until(page, () => window.__editorProbe.shotsCount === 2);
+  check("the framed view captured as a second shot", true, "2 shots");
+
+  // A seek reclaims the camera; inside Shot 1's exact hold the old framing returns...
+  await scrubTo(3.5);
+  const backAtOne = await page.evaluate(() => window.__cameraProbe.pose());
+  const oneDrift = Math.hypot(
+    backAtOne.position[0] - poseShotOne.position[0],
+    backAtOne.position[1] - poseShotOne.position[1],
+    backAtOne.position[2] - poseShotOne.position[2]
+  );
+  check("a seek reclaims the camera — Shot 1's framing returns", oneDrift < 1e-3, `${oneDrift} m`);
+
+  // ...and past the new shot's blend, playback shows EXACTLY what the author framed.
+  await scrubTo(7.5);
+  const atCaptured = await page.evaluate(() => window.__cameraProbe.pose());
+  const capturedDrift = Math.hypot(
+    atCaptured.position[0] - 12,
+    atCaptured.position[1] - 6,
+    atCaptured.position[2] - 14
+  );
+  const expectedForward = [-12, -6, -14].map((v) => v / Math.hypot(12, 6, 14));
+  const forwardDot =
+    atCaptured.forward[0] * expectedForward[0] +
+    atCaptured.forward[1] * expectedForward[1] +
+    atCaptured.forward[2] * expectedForward[2];
+  check("playback lands on the captured position exactly", capturedDrift < 1e-3, `${capturedDrift} m`);
+  check(
+    "and looks exactly where the author was looking",
+    forwardDot > 0.9999,
+    forwardDot.toFixed(6)
+  );
+
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 

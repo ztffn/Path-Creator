@@ -37,7 +37,13 @@ type EditorProbe = {
   /** Whether evaluation sees a camera track (persisted or synthesised from shot nodes). */
   hasCameraTrack: boolean;
   cameraPose: ViewportCameraPose | null;
-  transport: { time: number; playing: boolean; driving: boolean; preview: boolean };
+  transport: {
+    time: number;
+    playing: boolean;
+    driving: boolean;
+    preview: boolean;
+    cameraFollow: boolean;
+  };
   undoDepth: number;
   rafBeats: number;
   findNodeIdByType(type: string): string | null;
@@ -53,6 +59,8 @@ type EditorProbe = {
   exportGlb(): Promise<string | null>;
   /** Select a node the way a viewport click would — the Key button reads this. */
   selectNode(id: string): void;
+  /** Raise/clear the viewer's drag flag — the same signal a real camera orbit raises. */
+  setInputDragging(dragging: boolean): void;
   /** Move a node's AUTHORED position (one updateNode — the gizmo's document write). */
   setNodePosition(id: string, position: [number, number, number]): void;
 };
@@ -107,6 +115,10 @@ const createTestColumn = (id: string, position: [number, number, number]): boole
 
 const selectNode = (id: string): void => {
   useViewer.getState().setSelection({ selectedIds: [id] as never });
+};
+
+const setInputDragging = (dragging: boolean): void => {
+  useViewer.getState().setInputDragging(dragging);
 };
 
 const createTimelineNode = (): string => {
@@ -185,7 +197,8 @@ export function DevProbe() {
           time: transport.time,
           playing: transport.playing,
           driving: transport.driving,
-          preview: transport.preview
+          preview: transport.preview,
+          cameraFollow: transport.cameraFollow
         },
         undoDepth: temporal.getState().pastStates.length,
         rafBeats,
@@ -198,6 +211,7 @@ export function DevProbe() {
         createTimelineNode,
         exportGlb,
         selectNode,
+        setInputDragging,
         setNodePosition
       };
     }, 250);

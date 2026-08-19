@@ -15,7 +15,8 @@ beforeEach(() => {
     playing: false,
     driving: false,
     preview: true,
-    rate: 1
+    rate: 1,
+    cameraFollow: true
   });
 });
 
@@ -165,5 +166,36 @@ describe("advancing the clock", () => {
     t().setRate(0);
     t().setRate(-1);
     expect(t().rate).toBe(1);
+  });
+});
+
+describe("camera ownership (R9 at authoring time)", () => {
+  beforeEach(() => t().setTimeline("clock"));
+
+  it("the author's grab takes the camera from the director", () => {
+    t().play();
+    t().userGrabbedCamera();
+    expect(t().cameraFollow).toBe(false);
+    // Object driving is untouched — only the camera diverges.
+    expect(t().driving).toBe(true);
+  });
+
+  it("a seek reclaims the camera — diverge, snap back on advance", () => {
+    t().userGrabbedCamera();
+    t().seek(2);
+    expect(t().cameraFollow).toBe(true);
+  });
+
+  it("play reclaims the camera", () => {
+    t().userGrabbedCamera();
+    t().play();
+    expect(t().cameraFollow).toBe(true);
+  });
+
+  it("re-entering preview reclaims the camera", () => {
+    t().setPreview(false);
+    t().userGrabbedCamera();
+    t().setPreview(true);
+    expect(t().cameraFollow).toBe(true);
   });
 });

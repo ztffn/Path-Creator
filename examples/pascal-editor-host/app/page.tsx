@@ -7,6 +7,7 @@
 
 import { Editor } from "@pascal-app/editor";
 import { PascalTimeSceneDriver } from "@huma/pascal-time";
+import { CameraProbeBridge } from "./camera-probe";
 import { DevProbe } from "./dev-probe";
 
 const PROJECT_ID = "pascal-editor-host";
@@ -15,7 +16,15 @@ export default function Home() {
   return (
     <div className="relative h-screen w-screen">
       <DevProbe />
-      <Editor projectId={PROJECT_ID} viewerSceneSlot={<PascalTimeSceneDriver />} />
+      <Editor
+        projectId={PROJECT_ID}
+        viewerSceneSlot={
+          <>
+            <PascalTimeSceneDriver />
+            <CameraProbeBridge />
+          </>
+        }
+      />
     </div>
   );
 }
