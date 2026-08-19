@@ -827,6 +827,70 @@ so old documents play back without being rewritten on load. A camera track can n
 in two blocks, which lifts M1.4's carried limitation. Re-measured after the refactor: still 0
 contested frames, orbit radius still exactly 5.0.
 
+## M1.7–M1.10 — plugin parity with the library *(planned 2026-08-19)*
+
+M1's done-criterion is met, but the plugin exposes roughly half of what `@huma/path-creator`
+and its demo already do, measured against the demo's authoring surface. These phases close
+that gap. They are independent of M2/M3 and of each other except where noted; each is the
+same shape as M1.3 — reuse the library's implementation, author through Pascal nodes and the
+panel, prove in the browser measure. The pascal-plugin skill carries the traps.
+
+### M1.7 — Rails: paths, carts, and cart-bodied shots *(L)*
+
+The library's oldest strength, absent from the plugin entirely. `VirtualCameraBodyDefinition`
+already has a `cart` body; the lane editor already has dolly lanes with speed-profile
+sparklines (`LaneDollyMove`, `onCreateDollyRun`, `speedSeriesFor`) — all currently fed empty
+arrays by the dock; the demo has path/dolly inspectors and the WebGPU-safe `RigLine` /
+`TransformGizmo` for editing splines in-viewport.
+
+- A **path** is placed by a person → a spatial node kind (bezier control points as node data).
+  A **cart** rides a path → node kind naming its path by id. Persist with the document; the
+  clone remap (R8) must cover path/cart references like it covers tracks.
+- Shot node gains `body: "cart"` naming a cart id; `readShots` maps to the library's cart body.
+- Dock: dolly lanes come alive (`dollies`/`dollyMoves`/`onDollyRunTiming` — the wiring points
+  already exist, no-op'd); `showDollyEntries` flips back on for this host.
+- **Done when:** an author draws a path in the viewport, a shot rides it between two times with
+  an eased speed profile, and the dock shows the run with its sparkline. Measured end to end.
+
+### M1.8 — The camera language: blends, easing, lens, overrides, PiP *(M)*
+
+The library evaluates far more than the panel lets an author say. All of this is exposure, not
+implementation: per-block **blend curves** (`VirtualCameraBlendCurve`) edited with the already-
+shipped `EasingEditor` (timeline-ui exports it; the panel never mounts it); per-key **easing
+for rotation** (slerp uses the shared `easing`, tangents don't apply — the curve editor
+deliberately disables handles there, so easing is currently uneditable); **lens animation**
+(`LensFieldAnimation`); **composer framing** and **noise** (`ComposerSettings`,
+`VirtualCameraNoiseSettings`) as shot parametrics; and the demo's **camera PiP**
+(`camera-pip.tsx`) — a picture-in-picture of what the selected shot sees while the author keeps
+the working view. PiP is the single largest authoring-UX win here and interacts with R9: the
+PiP renders from a second camera, never the controller's.
+- **Done when:** a cut/ease/custom-curve blend is authorable per shot, rotation easing is
+  editable, and the PiP shows the selected shot live. Browser-measured.
+
+### M1.9 — Audio *(M–L; document format interacts with M0.5)*
+
+The library has the whole subsystem (`AudioTrack`, peaks, stretch, bake, player, graph); the
+demo authored 2D audio lanes with waveform sparklines (`BlockSeries` envelope, peaks as clip
+data) as a demo-only sidecar with a promotion path — this phase is that promotion. Clips need
+audio ASSETS: inside Pascal's document the honest options are data-URLs (small) or the M0.5
+content-addressed pipeline (right). Decide there, not here.
+- **Done when:** an audio clip sits on a lane with its waveform, scrubbing is silent, playback
+  is synchronous, and a ride to a cue does not fire the audio it skipped (the library already
+  guarantees the last part — keep its test).
+
+### M1.10 — Events, triggers, hotspots *(M)*
+
+`EventTrack` and the trigger/action layer exist in the library; the spike proved a hotspot as
+a third-party kind end to end (§5.5 of the integration design) and it never got promoted.
+Event tracks persist like the other tracks; the hotspot kind ships in the plugin; actions are
+the opaque payload Pascal stores and only the time layer reads.
+- **Done when:** a hotspot placed in Pascal seeks the timeline on click in the harness, and an
+  event fires exactly once under playback and never under scrubbing.
+
+**Sequencing note.** M1.8 is the cheapest win and pure UX; M1.7 is the deepest and unlocks the
+cinematic language (rails) the demo is known for; M1.9 waits on an asset decision; M1.10 is
+independent. Recommended order: M1.8 → M1.7 → M1.10 → M1.9.
+
 ## M2 — Rendering
 
 **The milestone goal:** a scene authored in Pascal looks like elastiq's current output. One
