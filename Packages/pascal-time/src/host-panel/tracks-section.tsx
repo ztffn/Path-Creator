@@ -258,9 +258,16 @@ function ClipEditor({
   );
 }
 
-export function TracksSection({ stored }: { stored: StoredTimeline }): ReactNode {
+export function TracksSection({
+  stored,
+  selectedTrackId,
+  onSelectTrack
+}: {
+  stored: StoredTimeline;
+  selectedTrackId: string | null;
+  onSelectTrack: (id: string | null) => void;
+}): ReactNode {
   const label = useNodeLabel();
-  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
 
   const objectTracks = stored.tracks.filter(
     (track): track is ObjectTrack =>
@@ -285,7 +292,7 @@ export function TracksSection({ stored }: { stored: StoredTimeline }): ReactNode
             <div
               key={track.id}
               style={{ ...styles.listRow, ...(isSelected ? styles.listRowSelected : {}), cursor: "pointer" }}
-              onClick={() => setSelectedTrackId(isSelected ? null : track.id)}
+              onClick={() => onSelectTrack(isSelected ? null : track.id)}
               role="button"
               tabIndex={0}
               aria-pressed={isSelected}
@@ -303,7 +310,7 @@ export function TracksSection({ stored }: { stored: StoredTimeline }): ReactNode
                 onClick={(event) => {
                   event.stopPropagation();
                   deleteTrack(stored.id, track.id);
-                  if (isSelected) setSelectedTrackId(null);
+                  if (isSelected) onSelectTrack(null);
                 }}
               >
                 ✕

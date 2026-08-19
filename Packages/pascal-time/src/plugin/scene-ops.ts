@@ -57,6 +57,18 @@ export function updatePluginNode(id: string, patch: Record<string, unknown>): vo
 }
 
 /**
+ * Patch several nodes as ONE store operation, so one undo entry. Pascal's undo is granular
+ * over operations, not nodes — a gesture that retimes two shots (dragging the cut between
+ * them) must land as a single Ctrl+Z step, and `updateNodes` is the only lever for that.
+ */
+export function updatePluginNodes(
+  updates: readonly { id: string; data: Record<string, unknown> }[]
+): void {
+  if (updates.length === 0) return;
+  useScene.getState().updateNodes(updates as never);
+}
+
+/**
  * A timeline node with this plugin's defaults, ready to hand to `createPluginNode`. Reads the
  * registered definition rather than duplicating its defaults, so the two cannot drift.
  */

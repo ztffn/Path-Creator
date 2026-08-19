@@ -33,6 +33,7 @@
     "@pascal-app/editor": "1.0.0-beta.4",
     "@react-three/fiber": "^9.0.0",
     "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "three": ">=0.185.0 <0.190.0",
     "zod": "^4.3.5",
     "zustand": "^5.0.0"
@@ -50,8 +51,10 @@
     "next": "16.3.1",
     "@react-three/fiber": "^9.0.0",
     "@types/react": "^19.1.13",
+    "@types/react-dom": "^19.1.9",
     "@types/three": "^0.185.0",
     "react": "^19.0.0",
+    "react-dom": "^19.0.0",
     "three": "^0.185.0",
     "tsup": "^8.5.0",
     "typescript": "^5.9.2",

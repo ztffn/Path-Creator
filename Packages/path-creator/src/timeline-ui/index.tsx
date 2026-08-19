@@ -214,6 +214,11 @@ export interface TimelineLanesProps {
   dollyIcon?: ReactNode;
   /** Host-defined lanes (activation, audio, …), each with its own clip blocks. */
   extraLanes?: ExtraLane[];
+  /**
+   * Seconds per major ruler tick (default 5). A short show on a wide host reads as a sliver
+   * under the default; pass ~duration/10 to fill the width. Snapping is unaffected.
+   */
+  scaleSeconds?: number;
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
@@ -260,7 +265,8 @@ export function TimelineLanes({
   onExtraClipLaneChange,
   onCreateExtraClip,
   onSelectLane,
-  selectedLaneId = null
+  selectedLaneId = null,
+  scaleSeconds = 5
 }: TimelineLanesProps) {
   const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
@@ -573,7 +579,7 @@ export function TimelineLanes({
           ref={laneStateRef}
           editorData={editorData}
           effects={SHOT_EFFECTS}
-          scale={5}
+          scale={scaleSeconds}
           scaleWidth={110}
           scaleSplitCount={5}
           startLeft={12}

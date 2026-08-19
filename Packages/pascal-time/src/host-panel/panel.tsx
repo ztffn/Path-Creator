@@ -6,7 +6,7 @@
 // through timeline-io/scene-ops, batched per gesture, one undo entry each.
 "use client";
 
-import { useEffect, type ReactNode } from "react";
+import { useEffect, useState, type ReactNode } from "react";
 import {
   buildTimelineNode,
   createPluginNode
@@ -19,6 +19,7 @@ import { KeyingSection } from "./keying-section";
 import { TracksSection } from "./tracks-section";
 import { CuesSection, useCueRows } from "./cues-section";
 import { ShotsSection, useShotRows } from "./shots-section";
+import { LaneDock } from "./lane-dock";
 
 function EmptyState(): ReactNode {
   return (
@@ -48,6 +49,9 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
   const stored = useStoredTimeline(timelineId);
   const cues = useCueRows(timelineId);
   const shots = useShotRows(timelineId);
+  // Shared between the sidebar's detail editors and the lane dock: clicking a lane opens the
+  // matching curve/clip editor here, and vice versa.
+  const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
   if (!stored) return <EmptyState />;
 
   const markers: TimeMarker[] = [
@@ -63,13 +67,24 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
       </div>
       <TransportSection stored={stored} markers={markers} />
       <KeyingSection stored={stored} />
-      <TracksSection stored={stored} />
+      <TracksSection
+        stored={stored}
+        selectedTrackId={selectedTrackId}
+        onSelectTrack={setSelectedTrackId}
+      />
       <CuesSection stored={stored} cues={cues} />
       <ShotsSection stored={stored} shots={shots} />
       <div style={styles.muted}>
         {stored.tracks.length} track{stored.tracks.length === 1 ? "" : "s"}
         {stored.loop ? " · loops" : ""}
       </div>
+      <LaneDock
+        stored={stored}
+        cues={cues}
+        shots={shots}
+        selectedTrackId={selectedTrackId}
+        onSelectTrack={setSelectedTrackId}
+      />
     </div>
   );
 }

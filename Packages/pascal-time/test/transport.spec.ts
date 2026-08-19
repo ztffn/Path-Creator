@@ -14,7 +14,8 @@ beforeEach(() => {
     time: 0,
     playing: false,
     driving: false,
-    preview: true
+    preview: true,
+    rate: 1
   });
 });
 
@@ -150,5 +151,19 @@ describe("advancing the clock", () => {
   it("a zero-duration timeline cannot play — parked at 0 rather than dividing by it", () => {
     t().advance(1, 0, true);
     expect(t()).toMatchObject({ time: 0, playing: false });
+  });
+
+  it("rate scales advancing only — a scrub is rate-blind", () => {
+    t().setRate(0.5);
+    t().advance(1, 10, false);
+    expect(t().time).toBeCloseTo(0.5);
+    t().seek(4);
+    expect(t().time).toBe(4);
+  });
+
+  it("a rate of zero or below is refused — the clock only runs forward", () => {
+    t().setRate(0);
+    t().setRate(-1);
+    expect(t().rate).toBe(1);
   });
 });

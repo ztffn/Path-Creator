@@ -30,6 +30,7 @@ export {
   readPluginNode,
   readShots,
   updatePluginNode,
+  updatePluginNodes,
   type Shot
 } from "./plugin/scene-ops";
 export {
@@ -39,6 +40,7 @@ export {
   withCapturedPose,
   type CapturedPose
 } from "./plugin/keying";
+export { retimeTransformTrack, transformTrackSpan } from "./plugin/retiming";
 export {
   pascalObjectBinding,
   pascalSceneBinding,

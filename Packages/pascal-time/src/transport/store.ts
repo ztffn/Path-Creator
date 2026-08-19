@@ -25,6 +25,8 @@ export interface PascalTimeTransportState {
    * the driver always wins (R4). Play always previews; turning preview off releases.
    */
   preview: boolean;
+  /** Playback rate. Scales `advance`'s deltas only — scrubbing and seeking are rate-blind. */
+  rate: number;
   /** Point the transport at a timeline. Resets the clock; a new subject is a new session. */
   setTimeline(id: string | null): void;
   play(): void;
@@ -32,6 +34,7 @@ export interface PascalTimeTransportState {
   /** Scrub. In preview it takes ownership of the scene; in edit mode it only parks the clock. */
   seek(time: number): void;
   setPreview(on: boolean): void;
+  setRate(rate: number): void;
   /** Stop and hand the scene back. The clock keeps its position for a later re-engage. */
   release(): void;
   /**
@@ -49,6 +52,7 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   playing: false,
   driving: false,
   preview: true,
+  rate: 1,
 
   setTimeline: (id) => {
     if (get().timelineId === id) return;
@@ -80,6 +84,10 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
 
   release: () => set({ playing: false, driving: false }),
 
+  setRate: (rate) => {
+    if (Number.isFinite(rate) && rate > 0) set({ rate });
+  },
+
   advance: (delta, duration, loop) => {
     const state = get();
     if (!state.playing) return;
@@ -87,7 +95,7 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
       set({ time: 0, playing: false });
       return;
     }
-    const next = state.time + delta;
+    const next = state.time + delta * state.rate;
     if (next < duration) {
       set({ time: next });
     } else if (loop) {

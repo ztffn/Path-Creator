@@ -79,6 +79,7 @@ try {
     ]
   });
   const page = await browser.newPage({ viewport: { width: 1600, height: 1000 } });
+  const sidebar = page.locator('[data-sidebar]');
 
   const pageErrors = [];
   const consoleErrors = [];
@@ -135,7 +136,7 @@ try {
     created.undoDepth > undoBeforeCreate,
     `${undoBeforeCreate} -> ${created.undoDepth}`
   );
-  await page.getByRole("button", { name: "Play", exact: true }).waitFor({ timeout: 20_000 });
+  await sidebar.getByRole("button", { name: "Play", exact: true }).waitFor({ timeout: 20_000 });
   check("the panel switched to the transport", true, "Play visible");
 
   // --- D. the authoring loop, through the panel's own buttons (the done-criterion) ---
@@ -167,7 +168,7 @@ try {
   check("selecting the track mounts the curve editor", true, "channel chips visible");
 
   // Edit mode: park the playhead without owning the scene, pose the object, key it.
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Preview", exact: true }).click();
   const editMode = await until(page, () => {
     const p = window.__editorProbe;
     return p.transport.preview === false ? p : null;
@@ -218,7 +219,7 @@ try {
   );
 
   // --- E. the authored animation plays back, scrub-exact, in the editor's frame loop ---
-  await page.getByRole("button", { name: "Preview", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Preview", exact: true }).click();
   await until(page, () => window.__editorProbe.transport.preview === true);
   await sleep(400);
   const poseAtTwo = await page.evaluate((id) => window.__editorProbe.objectPosition(id), COLUMN_ID);
@@ -244,17 +245,17 @@ try {
     poseBetween[2]
   );
 
-  await page.getByRole("button", { name: "Play", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Play", exact: true }).click();
   const playSample = await until(page, () => {
     const p = window.__editorProbe;
     return p.transport.playing && p.transport.time > 1.1 ? p : null;
   });
   check("the authored animation plays", playSample.transport.playing === true, playSample.transport.time.toFixed(3));
-  await page.getByRole("button", { name: "Pause", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Pause", exact: true }).click();
   await until(page, () => window.__editorProbe.transport.playing === false);
 
   // --- F. release restores the AUTHORED pose, and none of it touched the undo history ---
-  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Stop", exact: true }).click();
   await sleep(400);
   const released = await probe(page);
   const poseAfterRelease = await page.evaluate(
@@ -353,7 +354,7 @@ try {
   );
   check("inside its clip the column is visible", visibleInside === true, visibleInside);
 
-  await page.getByRole("button", { name: "Stop", exact: true }).click();
+  await sidebar.getByRole("button", { name: "Stop", exact: true }).click();
   await until(page, () => window.__editorProbe.transport.driving === false);
   const visibleAfterRelease = await page.evaluate(
     (id) => window.__editorProbe.objectVisible(id),
@@ -370,6 +371,33 @@ try {
     finalUndo === 8,
     finalUndo
   );
+
+  // --- H. the lane dock: TimelineLanes as the panel's real timeline surface ---
+  const dock = page.locator("[data-huma-lane-dock]");
+  await dock.waitFor({ state: "visible", timeout: 10_000 });
+  check("the lane dock is mounted over the viewport", true, "visible");
+
+  // After the whole session: 1 shot block + 1 cue clip + 1 transform block + 1 activation
+  // clip = 4 draggable actions on the lanes.
+  const actionCount = await dock.locator(".timeline-editor-action").count();
+  check(
+    "the lanes carry every authored thing as a block (shot, cue, motion, visibility)",
+    actionCount === 4,
+    actionCount
+  );
+
+  // The dock's own transport header drives the SAME clock through the player facade.
+  await dock.getByRole("button", { name: "Play" }).click();
+  const dockPlaying = await until(page, () => {
+    const p = window.__editorProbe;
+    return p.transport.playing === true ? p : null;
+  });
+  check("the dock's transport drives the shared clock", dockPlaying.transport.playing === true, "playing");
+  await dock.getByRole("button", { name: "Pause" }).click();
+  await until(page, () => window.__editorProbe.transport.playing === false);
+  await sidebar.getByRole("button", { name: "Stop", exact: true }).click();
+  await until(page, () => window.__editorProbe.transport.driving === false);
+  check("one clock: dock and sidebar transports are the same store", true, "stopped from sidebar");
 
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
