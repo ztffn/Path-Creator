@@ -149,6 +149,9 @@ export interface TimelineLanesTheme {
   moveText?: string;
   live?: string;
   idle?: string;
+  /** Outline for the block in force under the playhead. A bright neutral, not a new hue —
+   *  the block's family color says what it is; the outline says it is what you are seeing. */
+  activeBorder?: string;
   errorText?: string;
   contextMenuBackground?: string;
 }
@@ -173,6 +176,7 @@ const DEFAULT_THEME: Required<TimelineLanesTheme> = {
   moveText: "#cbd5e1",
   live: "#22c55e",
   idle: "#64748b",
+  activeBorder: "rgba(255, 255, 255, 0.85)",
   errorText: "#fca5a5",
   contextMenuBackground: "rgba(10, 16, 28, 0.98)"
 };
@@ -716,13 +720,10 @@ export function TimelineLanes({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     borderRadius: 4,
-                    // Live (playhead-active) beats selected: green means "this is what you are
-                    // seeing"; the accent ring means "this is what you are editing".
-                    boxShadow: style?.active
-                      ? `inset 0 0 0 2px ${t.live}`
-                      : style?.laneSelected
-                        ? `inset 0 0 0 1px ${t.accent}`
-                        : undefined,
+                    // One treatment per state: the outline says "in force under the playhead",
+                    // brightness says "selected for editing" — same hue in every state.
+                    boxShadow: style?.active ? `inset 0 0 0 2px ${t.activeBorder}` : undefined,
+                    filter: style?.laneSelected ? "brightness(1.4)" : undefined,
                     background: style?.color ?? "rgba(148,163,184,0.4)",
                     clipPath:
                       fadeIn > 0 || fadeOut > 0
@@ -790,9 +791,9 @@ export function TimelineLanes({
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   borderRadius: 4,
-                  // Live beats selected: green says "this is what you are seeing", the accent
-                  // border below says "this is what you are editing".
-                  boxShadow: isActive ? `inset 0 0 0 2px ${t.live}` : undefined,
+                  // Live beats selected: the bright outline says "this is what you are
+                  // seeing"; the selected fill/border below say "this is what you are editing".
+                  boxShadow: isActive ? `inset 0 0 0 2px ${t.activeBorder}` : undefined,
                   // The leading blend zone gets Unity's linear-cross look via
                   // a diagonal wedge; the rest is the flat clip color.
                   background:

@@ -61,7 +61,14 @@ const THEME: TimelineLanesTheme = {
   subtleText: "#6b7280",
   fontFamily: "inherit",
   accent: "rgba(249, 115, 22, 0.9)",
-  accentSoft: "rgba(249, 115, 22, 0.22)"
+  accentSoft: "rgba(249, 115, 22, 0.22)",
+  // State never changes a block's family hue: cameras are blue whether idle, selected or
+  // active (selected = brighter blue; active = bright outline). Orange belongs to cues.
+  shotFill: "rgba(96, 165, 250, 0.30)",
+  shotSelectedFill: "rgba(96, 165, 250, 0.55)",
+  shotBorder: "rgba(148, 163, 184, 0.35)",
+  shotSelectedBorder: "rgba(148, 163, 184, 0.35)",
+  activeBorder: "rgba(255, 255, 255, 0.85)"
 };
 const CUE_COLOR = "rgba(249, 115, 22, 0.55)";
 const TRANSFORM_COLOR = "rgba(96, 165, 250, 0.38)";
