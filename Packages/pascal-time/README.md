@@ -265,6 +265,86 @@ The ride **seeks rather than plays**, so arriving at a cue is scrub-exact and do
 events it passed over. Skipping to slide five must not trigger every sound between here and
 there. That is covered in the library's own suite.
 
+## The camera language (M1.8)
+
+The library evaluates far more of a camera than the panel could say, so this phase is **exposure,
+not implementation**: every behaviour below already worked in `@huma/path-creator` and was simply
+unreachable from a Pascal document.
+
+**Where it lives, and why the shot node.** `synthesiseCameraTrack` maps one shot to one camera
+block, so a field on the shot node *is* that block's field. That keeps the shot list the single
+authoring surface an author already uses, and it means none of this needed a new concept. The
+persisted block schema carries the full shapes regardless — see the widening note below.
+
+| What | Authored where | Reaches the library as |
+|---|---|---|
+| Blend curve (preset or hand-shaped) | panel, `EasingEditor` | `blendIn.curve` |
+| FOV push | panel + inspector | `block.lensAnimation.fov` |
+| Rotation-key easing | panel, `EasingEditor` | `TransformKey.easing` |
+| Aim target (instant look-at) | panel, from the selection | `aim: { type: "track", target }` |
+| Damped composer | inspector (`Composer` group) | `aim.settings` |
+| Seeded noise | inspector (`Noise` group) | `definition.noise` |
+
+**The persisted schema was narrower than the library, and that was a latent bug.**
+`BlendInSchema.curve` was `z.string()`, but the library's `TimelineBlendIn.curve` is an `Easing`
+— a preset name **or** a curve. A hand-shaped blend would not merely have lost its curve: the
+block would have failed to parse and `migrateTrackPayload` would have dropped the whole track,
+silently. It is now the full `EasingSchema`, plus `lensAnimation` and an opaque `overrides`
+record. A spec keeps the pre-M1.8 declaration as a **control** and shows it rejecting the same
+payload. Widen, never narrow.
+
+**Rotation easing needed a library change, not a panel one.** Rotation slerps with one shared
+`easing` per key and the curve canvas deliberately disables tangent handles there, so the curve
+has no on-canvas handle to drag — and the panel had no way to learn which key an author meant.
+`KeyframeCurveEditor` now reports its primary selection through an optional `onSelectKey`, and
+the panel mounts an easing editor for whatever is selected.
+
+**The composer is the one stage that is not a pure function of `t`.** It damps from the previous
+frame, which is why the library keeps it out of `resolveVirtualCameraDefinition` and leaves it to
+a drive-loop stage (`stepComposerAim`). The director runs that stage — and resolves the conflict
+with scrub-exactness rather than accepting it: **when the clock is not running, the carried state
+is dropped and delta is 0**, which reduces the correction to the soft-edge clamp with no damping
+term, a pure function of the current frame. So scrubbing to a time always gives the same frame
+and only playback damps. Measured both ways, with a control: 30 played frames at the same `t`
+move the pose, and the same `t` reached by three different scrub routes does not.
+
+`lens.dutchDeg` is deliberately **not** exposed. With a controller mounted the director hands
+over a position and a look-at pivot, and a pivot cannot express roll — so a dutch authored here
+would be a silent no-op in Pascal's editor specifically. It stays available to hosts that own the
+camera outright.
+
+**The PiP** renders what the selected shot sees into a scissored inset while the author keeps
+their working view. Two things make it work:
+
+- It runs at `useFrame` priority **2**. Pascal's post-processing pass renders at priority 1, and
+  any positive-priority subscriber disables R3F's own render — so 2 is the only place a second
+  draw lands *on top of* the composited frame instead of being overwritten by it. It restores the
+  scissor and the full viewport in a `finally`: a scissor left set clips the next frame's main
+  render to one corner, and that failure looks like the editor went blank.
+- It owns a **second camera** (R9). Measured: turning the PiP on moves the viewport camera by 0 m.
+  It also prefers the pose the director actually applied when the previewed shot is the one in
+  force, so the inset agrees with the viewport rather than deriving a second answer.
+
+Standing at a shot's lens is standing inside its own marker, so the pass hides that shot's
+registered group for its own draw and restores it — the same trap the marker's proximity rule
+solves for the main camera, and the measure checks the restore.
+
+**Measured in the browser (system Chrome, WebGPU), all through the panel's own controls:**
+
+| | |
+|---|---|
+| Custom blend curve, node → camera block | authored as a `curve`, arrives as a `curve` |
+| Undo cost of one curve gesture | **1 entry** (10 → 11) |
+| Live lens across a shot's window | **46.91° → 20.10°** |
+| A tracked aim's forward vs. the node it names | dot **1.000000** |
+| Composed shot, same time via three scrub routes | **0.00e+0** drift |
+| PiP pose vs. the shot it names | **0 m** |
+| Viewport camera drift when the PiP turns on | **0 m** |
+| Seeded noise, same time twice | moves the camera 1.19e-2 m, repeats **0.00e+0** |
+
+The suite is 86 checks after this phase, up from 59. Reproduce with
+`pnpm --filter pascal-editor-host verify`.
+
 ## Known, expected, not a gap
 
 Pascal has no runtime `AnimationMixer` for its nodes, so `resolveAnimation` returns null and
@@ -317,7 +397,7 @@ src/plugin/timeline-io.ts  document <-> Timeline: read, putTrack, writeTracks, c
 src/plugin/keying.ts       keyframe + visibility capture (pure cores, one-write impure halves)
 src/render/                renderers — default export, lazy module (trap 1)
 src/bind/scene-binding.ts  any id->Object3D map as an ObjectBindingResolver
-src/drive/                 node driver, camera director, the viewerSceneSlot scene driver
+src/drive/                 node driver, camera director (+ composer stage), scene driver, PiP
 src/transport/store.ts     the shared playback transport (preview/edit semantics live here)
 src/host-panel/            the panel — the SEPARATE entry, editor-coupled
 ```

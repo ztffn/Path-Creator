@@ -852,7 +852,7 @@ arrays by the dock; the demo has path/dolly inspectors and the WebGPU-safe `RigL
 - **Done when:** an author draws a path in the viewport, a shot rides it between two times with
   an eased speed profile, and the dock shows the run with its sparkline. Measured end to end.
 
-### M1.8 — The camera language: blends, easing, lens, overrides, PiP *(M)*
+### M1.8 — The camera language: blends, easing, lens, overrides, PiP — **DONE** (2026-08-19)
 
 The library evaluates far more than the panel lets an author say. All of this is exposure, not
 implementation: per-block **blend curves** (`VirtualCameraBlendCurve`) edited with the already-
@@ -866,6 +866,77 @@ the working view. PiP is the single largest authoring-UX win here and interacts 
 PiP renders from a second camera, never the controller's.
 - **Done when:** a cut/ease/custom-curve blend is authorable per shot, rotation easing is
   editable, and the PiP shows the selected shot live. Browser-measured.
+
+**Delivered, and it was exposure rather than implementation — with two exceptions.**
+
+*Where the language lives.* `synthesiseCameraTrack` maps one shot to one camera block, so a field
+on the shot node **is** that block's field. The shot list stays the single authoring surface and
+nothing new had to be invented: blend curve, FOV push, aim target, composer settings and noise are
+all shot fields, mapped in `readShots` / `synthesiseCameraTrack`. Curves live in the panel (there
+is no declarative field kind for one); the flat composer and noise numbers are `def.parametrics`
+groups in Pascal's own inspector, partitioned by `visibleIf`.
+
+*Exception one: the persisted schema was NARROWER than the library, which was a latent bug rather
+than a limitation.* `BlendInSchema.curve` was `z.string()` while the library's
+`TimelineBlendIn.curve` is an `Easing` — a preset **or** a curve. A hand-shaped blend would not
+have lost its curve; the block would have failed to parse and `migrateTrackPayload` would have
+dropped the entire track with no error. It is now the full `EasingSchema`, plus `lensAnimation`
+(all six lens fields) and an opaque `overrides` record — that one deliberately unvalidated,
+because the library types it as a partial of a recursive union and a mirror would go stale and
+start dropping tracks. A spec keeps the pre-M1.8 declaration as a **control** and shows it
+rejecting the same payload.
+
+*Exception two: rotation easing needed a LIBRARY change.* Rotation slerps with one shared `easing`
+per key and the curve canvas deliberately disables tangent handles there, so that curve has no
+on-canvas handle — and the panel had no way to know which key an author meant.
+`KeyframeCurveEditor` gained an optional `onSelectKey` reporting its primary selection, and the
+panel mounts an easing editor for whatever is selected. Additive; no caller changed.
+
+**The composer, and the property it could have cost.** *(Decided by the product owner 2026-08-19:
+port the stage, rather than exposing look-at only.)* The composer is the one stage in this system
+that is not a pure function of `t` — it damps from the previous frame, which is exactly why the
+library keeps it out of `resolveVirtualCameraDefinition` and leaves it to a drive-loop stage. The
+director now runs that stage (`stepComposerAim`, already in the library) against a scratch camera
+seeded from the resolved snapshot, and writes the composed quaternion back before the R9 apply —
+so the existing controller path carries it with no change. Scrub-exactness was preserved rather
+than traded away: **when the clock is not running the carried state is dropped and delta is 0**,
+which reduces the correction to the soft-edge clamp with no damping term — a pure function of the
+current frame. Scrubbing to a time therefore always yields the same pose and only playback damps.
+Measured both ways, with a control.
+
+**Per-block `overrides` are persisted but not authored, deliberately.** They are a *per-block*
+patch, and the panel has no per-block surface — synthesis makes shots and blocks one-to-one, so an
+override authored on a shot would be indistinguishable from editing the shot itself. The schema
+carries them (as an opaque record) so a document that has them round-trips, and the authoring
+surface arrives with whatever first needs two blocks over one shot — a shot list, most likely.
+
+**Not exposed, deliberately:** `lens.dutchDeg`. With a controller mounted the director hands over
+a position and a look-at pivot, and a pivot cannot express roll — a dutch authored in Pascal's
+editor would be a silent no-op. It stays available to hosts that own the camera outright.
+
+**The PiP was the deepest part, and the frame loop decided its shape.** Pascal's post-processing
+renders at `useFrame` priority 1, and any positive-priority subscriber disables R3F's automatic
+render — so priority **2** is the only place a second draw lands on top of the composited frame
+instead of being overwritten. The PiP is a scissored pass there, from its own `PerspectiveCamera`
+(R9: never the controller's), restoring the scissor and full viewport in a `finally` because a
+scissor left set clips the next frame's main render to one corner. It prefers the pose the
+director actually applied when the previewed shot is the one in force, so the inset agrees with
+the viewport rather than deriving a second answer. Standing at a shot's lens is standing inside
+its own marker, so the pass hides that shot's registered group for its own draw and restores it.
+Which shot the PiP shows is ephemeral transport state, not document state — a way of looking at
+the scene is not a fact about it, and it is also the only thing the two package entries share.
+
+**Evidence.** 59 browser checks became **86**, every new one driven through the panel's own controls: a custom
+blend curve authored in the `EasingEditor` arrives at the camera block as a curve; one curve
+gesture costs exactly one undo entry (10 → 11); the live viewport lens pushes **46.91° → 20.10°**
+across a shot's window; a tracked aim's forward matches the node it names to a dot of
+**1.000000**; a composed shot reached at the same time by three different scrub routes drifts
+**0.00e+0**; the PiP renders from the shot it names to **0 m** and moves the viewport camera by
+**0 m**; seeded noise moves the live camera 1.19e-2 m and repeats exactly at the same time.
+Plus 18 headless plugin tests (137 → 155), and the parametrics groups reach Pascal's own
+inspector. The composer and noise numbers are set through the probe rather than the inspector's
+drag sliders, which a headless run cannot type into — so the check asserts the GROUPS reach the
+real inspector and proves the effect on the live camera.
 
 ### M1.9 — Audio *(M–L; document format interacts with M0.5)*
 
@@ -890,6 +961,12 @@ the opaque payload Pascal stores and only the time layer reads.
 **Sequencing note.** M1.8 is the cheapest win and pure UX; M1.7 is the deepest and unlocks the
 cinematic language (rails) the demo is known for; M1.9 waits on an asset decision; M1.10 is
 independent. Recommended order: M1.8 → M1.7 → M1.10 → M1.9.
+
+M1.8 came in bigger than "cheapest win" predicted, for two reasons worth carrying into M1.7: the
+persisted mirror had drifted narrower than the library in a way only a control test surfaces, and
+the PiP needed a fact about Pascal's frame loop (post-processing owns priority 1) that no amount
+of reading the plugin contract would have supplied. Expect the same shape in M1.7 — the library
+half is done, and the cost is in what Pascal's own machinery already occupies.
 
 ## M2 — Rendering
 
