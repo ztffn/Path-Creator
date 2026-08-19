@@ -8,6 +8,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
+import { useStore } from "zustand";
 import { createPortal } from "react-dom";
 import { useViewer } from "@pascal-app/editor";
 import {
@@ -172,6 +173,43 @@ export function LaneDock({
     };
   }, []);
 
+  // What the viewport has selected drives the shot lane's selected styling — the lane and the
+  // floating inspector always agree on which shot is "the one being edited".
+  const viewportSelectedId = useViewer((s) => s.selection.selectedIds[0] ?? null);
+  const selectedShotId = shots.some((shot) => shot.id === viewportSelectedId)
+    ? viewportSelectedId
+    : null;
+
+  // The blocks in force under the playhead, as a signature string so React re-renders only
+  // when an ACTIVE SET boundary is crossed — never per animation frame.
+  const activeSignature = useStore(pascalTimeTransport, (state) => {
+    if (!state.driving) return "";
+    const t = state.time;
+    const parts: string[] = [];
+    const holder = [...shots]
+      .sort((a, b) => a.timeSeconds - b.timeSeconds)
+      .filter((shot) => shot.timeSeconds <= t)
+      .pop();
+    if (holder) parts.push(`s:${holder.id}`);
+    for (const track of stored.tracks) {
+      if (track.type === "transform") {
+        const span = transformTrackSpan(track);
+        if (span && t >= span.start && t <= span.end) parts.push(`t:${track.id}`);
+      } else if (track.type === "activation") {
+        for (const clip of track.clips) {
+          if (t >= clip.start && t < clip.end) parts.push(`a:${track.id}:${clip.id}`);
+        }
+      }
+    }
+    return parts.join("|");
+  });
+  const activeIds = useMemo(
+    () => new Set(activeSignature.split("|").filter(Boolean)),
+    [activeSignature]
+  );
+  const activeShotId =
+    [...activeIds].find((id) => id.startsWith("s:"))?.slice(2) ?? null;
+
   const transformTracks = stored.tracks.filter(
     (track): track is TransformTrack => track.type === "transform"
   );
@@ -218,6 +256,7 @@ export function LaneDock({
           ? [
               {
                 id: track.id,
+                active: activeIds.has(`t:${track.id}`),
                 start: span.start,
                 // A single-key track still needs a grabbable block.
                 end: Math.max(span.end, span.start + CUE_BLOCK_SECONDS),
@@ -236,6 +275,7 @@ export function LaneDock({
       createLabel: "Add visibility clip here",
       clips: track.clips.map((clip) => ({
         id: clip.id,
+        active: activeIds.has(`a:${track.id}:${clip.id}`),
         start: clip.start,
         end: clip.end,
         label: `${label(track.objectId)} · visible`
@@ -333,7 +373,8 @@ export function LaneDock({
         dollies={[]}
         dollyMoves={[]}
         extraLanes={extraLanes}
-        selectedShotId={null}
+        selectedShotId={selectedShotId}
+        activeShotId={activeShotId}
         selectedLaneId={selectedTrackId ? TRACK_LANE(selectedTrackId) : null}
         playerRef={playerRef}
         duration={stored.durationSeconds}

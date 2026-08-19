@@ -72,6 +72,8 @@ export interface ExtraLaneClip {
   start: number;
   end: number;
   label?: string;
+  /** The clip currently in force under the playhead — rendered with a live outline. */
+  active?: boolean;
   /** Optional sparkline(s) drawn behind the label — e.g. a waveform plus a gain line. */
   series?: BlockSeriesData | BlockSeriesData[];
 }
@@ -225,6 +227,8 @@ export interface TimelineLanesProps {
   showCartShotEntry?: boolean;
   /** Show the "Add dolly" / "Add path" context entries (default true). */
   showDollyEntries?: boolean;
+  /** The shot in force under the playhead — its block gets a live outline. */
+  activeShotId?: string | null;
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
@@ -274,7 +278,8 @@ export function TimelineLanes({
   selectedLaneId = null,
   scaleSeconds = 5,
   showCartShotEntry = true,
-  showDollyEntries = true
+  showDollyEntries = true,
+  activeShotId = null
 }: TimelineLanesProps) {
   const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
@@ -395,12 +400,14 @@ export function TimelineLanes({
   const moveSeries = new Map<string, BlockSeriesData>(
     dollyMoves.flatMap((move) => (move.series ? [[`move-${move.shotId}`, move.series] as [string, BlockSeriesData]] : []))
   );
-  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[]; fadeIn?: number; fadeOut?: number }>();
+  const extraActionStyle = new Map<string, { color: string; label: string; series?: BlockSeriesData | BlockSeriesData[]; fadeIn?: number; fadeOut?: number; active?: boolean; laneSelected?: boolean }>();
   for (const lane of extraLanes) {
     for (const clip of lane.clips)
       extraActionStyle.set(EXTRA_ID(lane.id, clip.id), {
         color: lane.color,
         label: clip.label ?? "",
+        active: clip.active === true,
+        laneSelected: lane.id === selectedLaneId,
         ...(clip.series && { series: clip.series })
       });
     if (lane.crossfade) {
@@ -695,6 +702,8 @@ export function TimelineLanes({
               const fadeOut = (style?.fadeOut ?? 0) * 100;
               return (
                 <div
+                  data-active={style?.active ? "true" : undefined}
+                  data-selected={style?.laneSelected ? "true" : undefined}
                   style={{
                     position: "relative",
                     height: "100%",
@@ -707,6 +716,13 @@ export function TimelineLanes({
                     overflow: "hidden",
                     textOverflow: "ellipsis",
                     borderRadius: 4,
+                    // Live (playhead-active) beats selected: green means "this is what you are
+                    // seeing"; the accent ring means "this is what you are editing".
+                    boxShadow: style?.active
+                      ? `inset 0 0 0 2px ${t.live}`
+                      : style?.laneSelected
+                        ? `inset 0 0 0 1px ${t.accent}`
+                        : undefined,
                     background: style?.color ?? "rgba(148,163,184,0.4)",
                     clipPath:
                       fadeIn > 0 || fadeOut > 0
@@ -755,10 +771,13 @@ export function TimelineLanes({
               );
             }
             const selected = action.id === selectedShotId;
+            const isActive = action.id === activeShotId;
             const blendIn = blendInFractions.get(action.id) ?? 0;
             const base = selected ? t.shotSelectedFill : t.shotFill;
             return (
               <div
+                data-active={isActive ? "true" : undefined}
+                data-selected={selected ? "true" : undefined}
                 style={{
                   height: "100%",
                   display: "flex",
@@ -771,6 +790,9 @@ export function TimelineLanes({
                   overflow: "hidden",
                   textOverflow: "ellipsis",
                   borderRadius: 4,
+                  // Live beats selected: green says "this is what you are seeing", the accent
+                  // border below says "this is what you are editing".
+                  boxShadow: isActive ? `inset 0 0 0 2px ${t.live}` : undefined,
                   // The leading blend zone gets Unity's linear-cross look via
                   // a diagonal wedge; the rest is the flat clip color.
                   background:

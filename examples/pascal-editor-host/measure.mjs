@@ -409,6 +409,27 @@ try {
   await until(page, () => window.__editorProbe.transport.driving === false);
   check("one clock: dock and sidebar transports are the same store", true, "stopped from sidebar");
 
+  // Highlights: green = in force under the playhead, accent = selected for editing.
+  await scrubTo(2); // motion span [0,2] and visibility clip [1,10) both in force; no shot yet
+  const activeAtTwo = await dock.locator('[data-active="true"]').count();
+  check("the blocks in force under the playhead carry the live highlight", activeAtTwo === 2, activeAtTwo);
+  await scrubTo(5); // Shot 1 holds from t=3; the motion span has ended
+  const activeShotBlocks = await dock
+    .locator('[data-active="true"]')
+    .filter({ hasText: "Shot 1" })
+    .count();
+  check("the shot in force is highlighted on the shot lane", activeShotBlocks === 1, activeShotBlocks);
+  const shot1Id = await page.evaluate(() =>
+    window.__editorProbe.findNodeIdsByType("huma-time:shot")[0]
+  );
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), shot1Id);
+  await until(page, () => document.querySelectorAll('[data-selected="true"]').length > 0);
+  const selectedBlocks = await dock
+    .locator('[data-selected="true"]')
+    .filter({ hasText: "Shot 1" })
+    .count();
+  check("the selected shot's block carries the selection highlight", selectedBlocks === 1, selectedBlocks);
+
   // --- I. camera ownership and capture fidelity: frame a view, capture it, get it back ---
   await scrubTo(6); // inside Shot 1's hold; the director owns the camera again
   const poseShotOne = await page.evaluate(() => window.__cameraProbe.pose());
