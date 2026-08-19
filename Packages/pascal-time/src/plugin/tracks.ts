@@ -72,22 +72,60 @@ export const ActivationTrackSchema = z.object({
   postPlaybackState: z.enum(["revert", "active", "inactive", "leaveAsIs"]).default("revert")
 });
 
-/** Mirrors `TimelineBlendIn`. `durationSeconds`, not `seconds` — the shape is the library's. */
+/**
+ * Mirrors `TimelineBlendIn`. `durationSeconds`, not `seconds` — the shape is the library's.
+ *
+ * `curve` is the FULL `EasingSchema`, not a preset name. It was `z.string()` until M1.8, which
+ * was the narrowing this file's header warns about: the library's `TimelineBlendIn.curve` is a
+ * `VirtualCameraBlendCurve`, i.e. an `Easing`, i.e. a preset **or** a custom curve — so a
+ * hand-shaped blend would have failed to parse and the migrator would have dropped the whole
+ * track with no error. Widen, never narrow.
+ */
 export const BlendInSchema = z.object({
   durationSeconds: z.number().min(0),
-  curve: z.string().optional()
+  curve: EasingSchema.optional()
+});
+
+/** Mirrors `LensFieldAnimation`: one lens field eased from `from` to `to` across the block. */
+export const LensFieldAnimationSchema = z.object({
+  from: z.number(),
+  to: z.number(),
+  easing: EasingSchema.optional()
+});
+
+/**
+ * Mirrors `CameraBlockLensAnimation` — every numeric field of `VirtualCameraLens`, each
+ * independently animatable. All six are persisted even though the panel only authors `fov`
+ * today: the evaluator reads whichever are present, and a schema that carried fewer would
+ * silently drop the rest of a document written by a later version of the panel.
+ */
+export const LensAnimationSchema = z.object({
+  fov: LensFieldAnimationSchema.optional(),
+  zoom: LensFieldAnimationSchema.optional(),
+  near: LensFieldAnimationSchema.optional(),
+  far: LensFieldAnimationSchema.optional(),
+  orthographicSize: LensFieldAnimationSchema.optional(),
+  dutchDeg: LensFieldAnimationSchema.optional()
 });
 
 /**
  * Mirrors `CameraBlock`. `vcamId` is a **shot node id** — the same identity every other
  * reference in this system uses, so a block naming a shot is a node reference like any other.
+ *
+ * `overrides` is a shallow per-field patch of the shot's definition while the block is live. It
+ * is persisted as an unvalidated record on purpose: the library types it as
+ * `Partial<Omit<VirtualCameraDefinition, "id">>`, a recursive union this schema cannot mirror
+ * without going stale every time the library gains a body or an aim. An opaque passthrough
+ * round-trips whatever the library understands; a narrower mirror would drop the track.
  */
 export const CameraBlockSchema = z.object({
   id: z.string(),
   vcamId: z.string(),
   start: z.number(),
   end: z.number(),
-  blendIn: BlendInSchema.optional()
+  blendIn: BlendInSchema.optional(),
+  overrides: z.record(z.string(), z.unknown()).optional(),
+  lensAnimation: LensAnimationSchema.optional()
 });
 
 export const CameraTrackSchema = z.object({

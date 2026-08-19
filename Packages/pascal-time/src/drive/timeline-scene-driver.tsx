@@ -16,7 +16,8 @@ import { PascalNodeDriver } from "./node-driver";
 import {
   PascalCameraDirector,
   pascalTargetContext,
-  type CameraControlsLike
+  type CameraControlsLike,
+  type CameraFrame
 } from "./camera-director";
 
 /** The evaluation inputs, rebuilt only when the document (or the subject) changes. */
@@ -76,6 +77,16 @@ export function getViewportCameraPose(): ViewportCameraPose | null {
   return viewportCamera;
 }
 
+// What the director applied on the last driven frame. Same reason as the pose above: the panel
+// is in the DOM and cannot reach into R3F, and the PiP overlay's chrome wants to name the shot
+// that is actually in force rather than the one it guesses from the clock.
+let lastCameraFrame: CameraFrame | null = null;
+
+/** The camera frame the director last applied, or null when no shot was in force. */
+export function getLastCameraFrame(): CameraFrame | null {
+  return lastCameraFrame;
+}
+
 export function PascalTimeSceneDriver(): null {
   const driver = useMemo(() => new PascalNodeDriver(pascalSceneBinding()), []);
   const director = useMemo(() => new PascalCameraDirector(), []);
@@ -102,6 +113,7 @@ export function PascalTimeSceneDriver(): null {
       if (!wasDriving.current) return;
       driver.release();
       wasDriving.current = false;
+      lastCameraFrame = null;
     };
 
     if (!timelineId) {
@@ -147,15 +159,22 @@ export function PascalTimeSceneDriver(): null {
     // the director stands down entirely. Without this, framing a new shot is a fight the
     // director wins every frame, and "add shot from view" captures the fight instead of the
     // view. A transport action (play, seek, preview-on) reclaims the camera.
-    if (!clock.cameraFollow) return;
+    if (!clock.cameraFollow) {
+      lastCameraFrame = null;
+      return;
+    }
 
     const mounted = state.controls;
-    director.sync(state.camera, {
+    lastCameraFrame = director.sync(state.camera, {
       timeline,
       vcams,
       time: clock.time,
       controls: looksLikeCameraControls(mounted) ? mounted : null,
-      getTargetPosition: targets.getTargetPosition
+      getTargetPosition: targets.getTargetPosition,
+      // The composer damps from the previous frame, so it needs both of these. Everything else
+      // in the director is a pure function of `time`.
+      deltaSeconds: delta,
+      playing: clock.playing
     });
   });
 

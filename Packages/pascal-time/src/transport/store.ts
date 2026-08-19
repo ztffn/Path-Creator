@@ -34,6 +34,16 @@ export interface PascalTimeTransportState {
    * reclaims it: diverge, then snap back on advance. Object driving is unaffected.
    */
   cameraFollow: boolean;
+  /**
+   * The shot the picture-in-picture previews, or null when the PiP is off (M1.8).
+   *
+   * Ephemeral like everything else here, and that is the point: the PiP is a way of LOOKING at
+   * the scene, not a fact about it, so turning it on must not touch the document or Pascal's
+   * undo. It also has to live in this store rather than in the panel's React state, because the
+   * two halves are in different entries — the panel (DOM) chooses the shot, the renderer (R3F)
+   * draws it, and this store is the only thing they share.
+   */
+  pipShotId: string | null;
   /** Point the transport at a timeline. Resets the clock; a new subject is a new session. */
   setTimeline(id: string | null): void;
   play(): void;
@@ -44,6 +54,8 @@ export interface PascalTimeTransportState {
   setRate(rate: number): void;
   /** The author took the camera (started a viewport drag). The director stands down. */
   userGrabbedCamera(): void;
+  /** Preview a shot in the PiP, or null to turn it off. Never writes to the document. */
+  setPipShot(shotId: string | null): void;
   /** Stop and hand the scene back. The clock keeps its position for a later re-engage. */
   release(): void;
   /**
@@ -63,6 +75,7 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   preview: true,
   rate: 1,
   cameraFollow: true,
+  pipShotId: null,
 
   setTimeline: (id) => {
     if (get().timelineId === id) return;
@@ -72,7 +85,9 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
       playing: false,
       driving: false,
       preview: true,
-      cameraFollow: true
+      cameraFollow: true,
+      // A new clock is a new session: a shot id from the old scene names nothing here.
+      pipShotId: null
     });
   },
 
@@ -105,6 +120,8 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   },
 
   userGrabbedCamera: () => set({ cameraFollow: false }),
+
+  setPipShot: (shotId) => set({ pipShotId: shotId }),
 
   release: () => set({ playing: false, driving: false }),
 

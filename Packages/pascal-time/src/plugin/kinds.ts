@@ -5,7 +5,7 @@
 // exactly as it round-trips a wall's thickness. Scope: schema only, no runtime behaviour.
 import { z } from "zod";
 import { BaseNode } from "@pascal-app/core";
-import { PersistedTrackSchema, TRACK_PAYLOAD_VERSION } from "./tracks";
+import { EasingSchema, PersistedTrackSchema, TRACK_PAYLOAD_VERSION } from "./tracks";
 
 /** Plugin id. Recorded by `loadPlugin` and gated per project by `installedPlugins`. */
 export const PASCAL_TIME_PLUGIN_ID = "huma-time";
@@ -120,6 +120,91 @@ export const ShotNode = BaseNode.extend({
   radius: z.number().min(0).default(8),
 
   /** Vertical field of view in degrees. */
-  fov: z.number().min(1).max(179).default(50)
+  fov: z.number().min(1).max(179).default(50),
+
+  // ---- M1.8: the camera language ----
+  // Everything below is exposure of evaluation `@huma/path-creator` already does. The shot node
+  // is the authoring surface because the panel has no per-block surface: `synthesiseCameraTrack`
+  // maps one shot to one camera block, so a field here IS the block's field.
+
+  /**
+   * How this shot's blend from the previous one is shaped. A preset name or a full custom curve
+   * — the library's `VirtualCameraBlendCurve` is an `Easing`, and this carries all of it. It
+   * only matters when `blendSeconds > 0`; a cut ignores the curve entirely.
+   *
+   * Not an inspector field: there is no declarative field kind for a curve. The panel mounts
+   * `EasingEditor` for it, which is the widget the library already shipped for exactly this.
+   */
+  blendCurve: EasingSchema.default("easeInOut"),
+
+  /**
+   * Lens animation across the shot's own window — a FOV push. `fov` is the start value (the
+   * shot's static lens) and `fovEnd` the end; the panel authors the curve. Off by default, so a
+   * shot with no push resolves to a constant lens and no `lensAnimation` is emitted at all.
+   */
+  animateFov: z.boolean().default(false),
+  fovEnd: z.number().min(1).max(179).default(50),
+  fovEasing: EasingSchema.default("easeInOut"),
+
+  /**
+   * Where the shot LOOKS, independent of where it is. `body` keeps the body's own orientation
+   * (a static shot's `rotationDeg`, an orbit shot looking back at what it circles). `track`
+   * aims at a node — so a static camera can follow a moving object, and an orbit shot can
+   * frame something other than its own pivot.
+   *
+   * Distinct from `targetNodeId`, which is the ORBIT body's position source. The library keeps
+   * them separate for the same reason: what you circle and what you watch need not be the same.
+   */
+  aimMode: z.enum(["body", "track"]).default("body"),
+  /** Track aim: the node to watch. Empty means use `aimTargetPoint`. */
+  aimTargetNodeId: z.string().default(""),
+  aimTargetPoint: Vec3Tuple.default([0, 0, 0]),
+
+  /**
+   * The damped screen composer, on top of a `track` aim. Off means an instant look-at: the
+   * target is centred every frame, purely and deterministically. On means the target is only
+   * reframed once it leaves the dead zone, damped per axis — the Cinemachine framing model.
+   *
+   * This is the one stage in the system that is NOT a pure function of `t`: it damps from the
+   * previous frame. The director therefore resets it and passes `delta = 0` whenever the
+   * transport is not playing, which makes a scrub deterministic (the clamp applies, the damping
+   * does not) while playback stays damped.
+   */
+  composerEnabled: z.boolean().default(false),
+  /** Framing anchor in normalized screen space; 0,0 is the centre. */
+  composerScreenX: z.number().min(-0.5).max(0.5).default(0),
+  composerScreenY: z.number().min(-0.5).max(0.5).default(0),
+  /** Inside the dead zone nothing reframes. */
+  composerDeadWidth: z.number().min(0).max(1).default(0.18),
+  composerDeadHeight: z.number().min(0).max(1).default(0.14),
+  /** At the soft edge the reframe becomes a hard clamp. */
+  composerSoftWidth: z.number().min(0).max(1).default(0.55),
+  composerSoftHeight: z.number().min(0).max(1).default(0.45),
+  /** Per-axis heaviness: larger is slower. alpha = 1 - e^(-(12/damping)·dt). */
+  composerDampingX: z.number().min(0).default(6),
+  composerDampingY: z.number().min(0).default(8),
+  /** World-space offset added to the tracked target before framing (aim above a head, say). */
+  composerTargetOffset: Vec3Tuple.default([0, 0, 0]),
+  /** Lead a moving target by this many seconds of its smoothed velocity. */
+  composerLookaheadTime: z.number().min(0).default(0.2),
+  composerLookaheadSmoothing: z.number().min(0).default(8),
+  composerLookaheadIgnoreY: z.boolean().default(false),
+  /** Centre the target exactly on the composer's first frame, ignoring the dead zone. */
+  composerCenterOnActivate: z.boolean().default(false),
+
+  /**
+   * Seeded procedural wobble — the handheld/impact layer. Pure: it is a function of the seed and
+   * the resolve clock, so the same `t` always yields the same wobble and scrubbing is exact.
+   * Amplitudes and frequencies are per-axis; the library also accepts a scalar, and a vec3 is
+   * strictly the wider of the two shapes.
+   */
+  noiseEnabled: z.boolean().default(false),
+  noiseSeed: z.number().int().default(1),
+  /** Camera-local position wobble, in scene units per axis. */
+  noisePositionAmplitude: Vec3Tuple.default([0.02, 0.02, 0.02]),
+  noisePositionFrequency: Vec3Tuple.default([1, 1, 1]),
+  /** Local pitch/yaw/roll wobble, in degrees per axis. */
+  noiseRotationAmplitudeDeg: Vec3Tuple.default([0.2, 0.2, 0.1]),
+  noiseRotationFrequencyDeg: Vec3Tuple.default([1, 1, 1])
 });
 export type ShotNodeType = z.infer<typeof ShotNode>;

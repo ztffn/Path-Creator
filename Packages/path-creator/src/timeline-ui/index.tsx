@@ -23,7 +23,7 @@ import { seekTimelinePlayer, type TimelinePlayer } from "../timeline";
 import { BlockSeries, type BlockSeriesData } from "./block-series";
 export { BlockSeries, type BlockSeriesData, type BlockSeriesKind } from "./block-series";
 export { EasingEditor, type EasingEditorTheme } from "./easing-editor";
-export { KeyframeCurveEditor, type CurveChannel, type CurveChannelKey, type KeyframeCurveEditorTheme } from "./keyframe-curve-editor";
+export { KeyframeCurveEditor, type CurveChannel, type CurveChannelKey, type CurveKeySelection, type KeyframeCurveEditorTheme } from "./keyframe-curve-editor";
 
 const SHOT_EFFECTS = {
   shot: { id: "shot", name: "Shot" },

@@ -3,7 +3,8 @@
 // The write discipline is the section's whole reason to exist as one file: the curve editor
 // fires onChange per pointer-move, so edits buffer in a draft and the pointerup — which pointer
 // capture guarantees bubbles back through the wrapper — commits ONE putTrack; number inputs
-// commit on blur. One gesture, one undo entry, always.
+// commit on blur. One gesture, one undo entry, always. Rotation keys also get an easing editor
+// (M1.8): slerp has no per-axis tangents to drag, so that curve has no on-canvas handle.
 "use client";
 
 import { useEffect, useRef, useState, type ReactNode } from "react";
@@ -11,12 +12,15 @@ import { useStore } from "zustand";
 import {
   KeyframeCurveEditor,
   type CurveChannel,
-  type CurveChannelKey
+  type CurveChannelKey,
+  type CurveKeySelection
 } from "@huma/path-creator/timeline-ui";
+import type { Easing } from "@huma/path-creator/core";
 import { deleteTrack, putTrack, type StoredTimeline } from "../plugin/timeline-io";
 import type { PersistedTrack } from "../plugin/tracks";
 import { pascalTimeTransport } from "../transport/store";
 import { formatSeconds, styles, useNodeLabel } from "./panel-shared";
+import { BufferedEasingEditor } from "./shot-camera-section";
 
 type TransformTrack = Extract<PersistedTrack, { type: "transform" }>;
 type ActivationTrack = Extract<PersistedTrack, { type: "activation" }>;
@@ -72,6 +76,10 @@ function TrackCurves({
   const [draft, setDraft] = useState<TransformTrack | null>(null);
   const draftRef = useRef<TransformTrack | null>(null);
   const pointerDown = useRef(false);
+  // Which key the canvas has selected. Rotation slerps with one shared `easing` per key and the
+  // canvas deliberately disables tangent handles there, so that curve is only editable if the
+  // panel knows which key is selected — which is what `onSelectKey` reports.
+  const [selectedKey, setSelectedKey] = useState<CurveKeySelection | null>(null);
   const [shown, setShown] = useState<Record<TransformChannelName, boolean>>({
     position: true,
     rotation: false,
@@ -122,46 +130,93 @@ function TrackCurves({
     onChange: (keys) => applyChannel(c.name, keys)
   }));
 
+  // The rotation key whose easing is editable right now: the canvas's selection, if it is on the
+  // rotation channel and still exists (an undo can shorten the track under a live selection).
+  const rotationKeys = current.rotation ?? [];
+  const easingKeyIndex =
+    selectedKey?.channelId === "rotation" && selectedKey.keyIndex < rotationKeys.length
+      ? selectedKey.keyIndex
+      : null;
+
+  const commitRotationEasing = (keyIndex: number, easing: Easing): void => {
+    // Reads the COMMITTED track, not the draft: an easing edit and a curve drag cannot overlap
+    // (the drag's pointerup commits first), and spreading a draft here would persist a pose the
+    // author was still moving.
+    const keys = track.rotation ?? [];
+    putTrack(stored.id, {
+      ...track,
+      rotation: keys.map((key, i) =>
+        i === keyIndex ? { ...key, easing } : key
+      ) as TransformTrack["rotation"]
+    });
+  };
+
   return (
-    <div
-      onPointerDownCapture={() => {
-        pointerDown.current = true;
-      }}
-      onPointerUpCapture={() => {
-        pointerDown.current = false;
-        commit();
-      }}
-      onPointerCancelCapture={() => {
-        pointerDown.current = false;
-        commit();
-      }}
-    >
-      <div style={{ ...styles.row, marginBottom: 6 }}>
-        {CHANNELS.map((c) => (
-          <button
-            key={c.name}
-            style={{ ...styles.chip, ...(shown[c.name] ? styles.chipOn : {}) }}
-            type="button"
-            aria-pressed={shown[c.name]}
-            title={`Show the ${c.name} channel`}
-            onClick={() => setShown((s) => ({ ...s, [c.name]: !s[c.name] }))}
-          >
-            {c.label}
-          </button>
-        ))}
-        <span style={{ ...styles.muted, fontSize: 11, marginLeft: "auto" }}>
-          drag key · dbl-click add/del
-        </span>
+    <>
+      <div
+        onPointerDownCapture={() => {
+          pointerDown.current = true;
+        }}
+        onPointerUpCapture={() => {
+          pointerDown.current = false;
+          commit();
+        }}
+        onPointerCancelCapture={() => {
+          pointerDown.current = false;
+          commit();
+        }}
+      >
+        <div style={{ ...styles.row, marginBottom: 6 }}>
+          {CHANNELS.map((c) => (
+            <button
+              key={c.name}
+              style={{ ...styles.chip, ...(shown[c.name] ? styles.chipOn : {}) }}
+              type="button"
+              aria-pressed={shown[c.name]}
+              title={`Show the ${c.name} channel`}
+              onClick={() => setShown((s) => ({ ...s, [c.name]: !s[c.name] }))}
+            >
+              {c.label}
+            </button>
+          ))}
+          <span style={{ ...styles.muted, fontSize: 11, marginLeft: "auto" }}>
+            drag key · dbl-click add/del
+          </span>
+        </div>
+        <KeyframeCurveEditor
+          channels={channels}
+          timeStart={0}
+          timeEnd={stored.durationSeconds}
+          playhead={time}
+          height={150}
+          snap={0.05}
+          onSelectKey={setSelectedKey}
+        />
       </div>
-      <KeyframeCurveEditor
-        channels={channels}
-        timeStart={0}
-        timeEnd={stored.durationSeconds}
-        playhead={time}
-        height={150}
-        snap={0.05}
-      />
-    </div>
+      {/* Outside the wrapper above on purpose: this editor batches its own gesture, and nesting
+          it would run both commit paths on one pointerup. */}
+      {shown.rotation ? (
+        <div style={{ marginTop: 6 }} data-rotation-easing={easingKeyIndex ?? "none"}>
+          {easingKeyIndex === null ? (
+            <span style={styles.muted}>
+              Select a rotation key to shape how it slerps in.
+            </span>
+          ) : (
+            <>
+              <span style={styles.muted}>
+                Rotation key {easingKeyIndex + 1} at{" "}
+                {formatSeconds(rotationKeys[easingKeyIndex]!.time)} s — easing into this key.
+              </span>
+              <BufferedEasingEditor
+                value={(rotationKeys[easingKeyIndex]!.easing as Easing | undefined) ?? "linear"}
+                height={120}
+                onCommit={(easing) => commitRotationEasing(easingKeyIndex, easing)}
+              />
+            </>
+          )}
+        </div>
+      ) : null}
+    </>
   );
 }
 

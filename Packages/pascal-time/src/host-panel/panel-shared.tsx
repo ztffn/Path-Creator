@@ -1,10 +1,10 @@
 // Shared plumbing for the timeline panel's sections: the inline style vocabulary (host CSS
 // variables so the panel reads as Pascal chrome, longhand borders because React warns when a
-// shorthand fights a longhand override across rerenders), and the reactive document hooks —
-// the scene's timeline id, its stored payload, and node display names. Every hook subscribes
-// to useScene's nodes map, whose identity changes on ANY edit, undo or redo — that is the
-// document-changed signal the whole panel re-reads on. Scope: host-panel internals only.
-import { useMemo, type CSSProperties } from "react";
+// shorthand fights a longhand override across rerenders), the one numeric field every section
+// needs, and the reactive document hooks — the scene's timeline id, its stored payload, and node
+// display names. Every hook subscribes to useScene's nodes map, whose identity changes on ANY
+// edit, undo or redo — the document-changed signal the panel re-reads on. Scope: panel internals.
+import { useMemo, useState, type CSSProperties, type ReactNode } from "react";
 import { useScene } from "@pascal-app/core";
 import { TIMELINE_KIND } from "../plugin/kinds";
 import { readStoredTimeline, type StoredTimeline } from "../plugin/timeline-io";
@@ -137,6 +137,51 @@ export const styles = {
 } satisfies Record<string, CSSProperties>;
 
 export const formatSeconds = (value: number): string => value.toFixed(2);
+
+/**
+ * One numeric field on a node. Commits on blur or Enter, so the whole edit is ONE store write
+ * and therefore one undo entry — an onChange-per-keystroke field would put a history step behind
+ * every digit. A value outside the range, or unchanged, commits nothing.
+ */
+export function NodeNumberField({
+  value,
+  label,
+  min,
+  max,
+  width = 52,
+  onCommit
+}: {
+  value: number;
+  label: string;
+  min?: number;
+  max?: number;
+  width?: number;
+  onCommit: (next: number) => void;
+}): ReactNode {
+  const [text, setText] = useState<string | null>(null);
+  return (
+    <input
+      style={{ ...styles.numberInput, width }}
+      value={text ?? String(value)}
+      aria-label={label}
+      inputMode="decimal"
+      onChange={(event) => setText(event.target.value)}
+      onBlur={() => {
+        if (text === null) return;
+        const parsed = Number(text);
+        const inRange =
+          Number.isFinite(parsed) &&
+          (min === undefined || parsed >= min) &&
+          (max === undefined || parsed <= max);
+        if (inRange && parsed !== value) onCommit(parsed);
+        setText(null);
+      }}
+      onKeyDown={(event) => {
+        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
+      }}
+    />
+  );
+}
 
 /** The scene's timeline node id, reactively. First one wins; one clock per scene by design. */
 export function useSceneTimelineId(): string | null {

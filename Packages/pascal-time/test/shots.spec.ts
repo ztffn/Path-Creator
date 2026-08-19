@@ -184,6 +184,9 @@ describe("M1.4 — the shot in force is a pure function of time", () => {
     // still plays its shots, and loading it does not rewrite it.
     const track = synthesiseCameraTrack(CLOCK, 20)!;
     expect(track.type).toBe("camera");
+    // The blend carries the shot's `blendCurve` (M1.8). Its default is "easeInOut", which is
+    // also what the library falls back to for a curveless blend — so an existing document plays
+    // back identically and the field only changes anything once an author shapes it.
     expect("blocks" in track && track.blocks).toEqual([
       { id: "block_shot_wide", vcamId: "shot_wide", start: 0, end: 10 },
       {
@@ -191,7 +194,7 @@ describe("M1.4 — the shot in force is a pure function of time", () => {
         vcamId: "shot_close",
         start: 10,
         end: 20,
-        blendIn: { durationSeconds: 4 }
+        blendIn: { durationSeconds: 4, curve: "easeInOut" }
       }
     ]);
   });

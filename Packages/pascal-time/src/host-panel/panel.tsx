@@ -1,6 +1,7 @@
 // The timeline panel Pascal's editor mounts in its icon rail — M1.3's authoring surface,
 // composed from the section files beside it: transport (with cue/shot markers), keyframe and
-// visibility capture, the track list with curve and clip editors, cues, and shots. It receives
+// visibility capture, the track list with curve and clip editors, cues, shots, and the selected
+// shot's camera language (M1.8: blend curve, lens push, aim). It receives
 // NO props (the host-panel contract renders <Panel /> bare); everything comes from stores — the
 // scene document via useScene, playback via pascalTimeTransport. Every document write goes
 // through timeline-io/scene-ops, batched per gesture, one undo entry each.
@@ -20,6 +21,7 @@ import { KeyingSection } from "./keying-section";
 import { TracksSection } from "./tracks-section";
 import { CuesSection, useCueRows } from "./cues-section";
 import { ShotsSection, useShotRows } from "./shots-section";
+import { ShotCameraSection } from "./shot-camera-section";
 import { LaneDock } from "./lane-dock";
 
 function EmptyState(): ReactNode {
@@ -81,6 +83,7 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
       />
       <CuesSection stored={stored} cues={cues} />
       <ShotsSection stored={stored} shots={shots} />
+      <ShotCameraSection />
       <div style={styles.muted}>
         {stored.tracks.length} track{stored.tracks.length === 1 ? "" : "s"}
         {stored.loop ? " · loops" : ""}

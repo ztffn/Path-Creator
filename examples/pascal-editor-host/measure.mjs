@@ -1,9 +1,9 @@
-// Drives the editor-host headlessly in system Chrome (WebGPU) and measures M1.3 steps 1-3:
-// the panel registers and mounts from the icon rail, an author-shaped gesture creates the
-// timeline node, and the transport drives a real object inside the editor's own frame loop —
-// scrub-exact, restore-exact, and invisible to Pascal's undo history. Spawns its own Next dev
-// server; exits non-zero when any claim misses, so it gates a build rather than printing numbers.
-// Run with `pnpm --filter pascal-editor-host verify`.
+// Drives the editor-host headlessly in system Chrome (WebGPU) and measures the authored loop end
+// to end: the panel mounts from the icon rail, gestures create the timeline, keyframes, cues,
+// shots and visibility clips, the transport drives real objects inside the editor's own frame
+// loop, and (M1.8, section K) the camera language — blend curves, rotation easing, a lens push,
+// a tracked aim, the damped composer and the shot PiP. Spawns its own Next dev server; exits
+// non-zero when any claim misses. Run with `pnpm --filter pascal-editor-host verify`.
 import { spawn } from "node:child_process";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -42,11 +42,13 @@ async function waitForServer() {
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function until(page, predicate, { timeout = 30_000, interval = 250 } = {}) {
+async function until(page, predicate, { timeout = 30_000, interval = 250 } = {}, arg) {
   const deadline = Date.now() + timeout;
   let last;
   while (Date.now() < deadline) {
-    last = await page.evaluate(predicate);
+    // `arg` is forwarded into the page, so a predicate can name a node id without a closure —
+    // the predicate runs in the browser and cannot see anything on this side.
+    last = await page.evaluate(predicate, arg);
     if (last) return last;
     await sleep(interval);
   }
@@ -524,6 +526,383 @@ try {
   await page.getByRole("button", { name: "Add cue here" }).waitFor({ timeout: 5_000 });
   check("the cue lane's entry speaks cue, not clip", true, "Add cue here");
   await page.mouse.click(10, 10); // dismiss via the menu's backdrop
+
+
+
+  // --- K. M1.8, the camera language: blend curve, rotation easing, lens push, aim, PiP ---
+  // Driven through the panel's own controls, and each claim checked where it has to land: the
+  // shot NODE (the document), the camera BLOCK (what the evaluator actually reads), and where it
+  // can be seen at all, the live viewport camera.
+  const shotOneId = await page.evaluate(() =>
+    window.__editorProbe.findNodeIdsByType("huma-time:shot")[0]
+  );
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), shotOneId);
+  const cameraSection = page.locator(`[data-shot-camera="${shotOneId}"]`);
+  await cameraSection.waitFor({ state: "visible", timeout: 10_000 });
+  check("selecting a shot opens its camera language in the panel", true, "visible");
+
+  // K1. The blend curve — the EasingEditor the library shipped and the panel never mounted.
+  await cameraSection.getByRole("button", { name: "blend", exact: true }).click();
+  const blendCurveSelect = cameraSection.locator("select").first();
+  await blendCurveSelect.waitFor({ state: "visible", timeout: 5_000 });
+  check("the blend facet mounts the easing editor", true, "preset picker visible");
+
+  // Live reads, not the 250 ms snapshot: a snapshot pair can straddle one refresh and report
+  // zero for a write that landed.
+  const undoBeforeCurve = await page.evaluate(() => window.__editorProbe.undoDepthNow());
+  await blendCurveSelect.selectOption("easeOutQuint");
+  await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "blendCurve") === "easeOutQuint",
+    { timeout: 10_000 },
+    shotOneId
+  );
+  const undoAfterCurve = await page.evaluate(() => window.__editorProbe.undoDepthNow());
+  check("choosing a blend preset writes it to the shot", true, "easeOutQuint");
+  check(
+    "and costs exactly one undo entry — one gesture, one step",
+    undoAfterCurve - undoBeforeCurve === 1,
+    `${undoBeforeCurve} -> ${undoAfterCurve}`
+  );
+
+  // A hand-shaped curve is the case the pre-M1.8 persisted schema dropped outright.
+  await blendCurveSelect.selectOption("__custom__");
+  const authoredCurve = await until(
+    page,
+    (id) => {
+      const value = window.__editorProbe.nodeField(id, "blendCurve");
+      return value && typeof value === "object" ? value : null;
+    },
+    { timeout: 10_000 },
+    shotOneId
+  );
+  check(
+    "switching to a custom curve stores a real curve, not a preset name",
+    authoredCurve.type === "curve" && Array.isArray(authoredCurve.keys),
+    JSON.stringify(authoredCurve).slice(0, 80)
+  );
+  const blockCurve = await page.evaluate((id) => {
+    const block = window.__editorProbe.cameraBlocks().find((entry) => entry.vcamId === id);
+    return block?.blendIn?.curve ?? null;
+  }, shotOneId);
+  check(
+    "the curve reaches the camera BLOCK the evaluator reads, not just the node",
+    blockCurve !== null && typeof blockCurve === "object" && blockCurve.type === "curve",
+    JSON.stringify(blockCurve).slice(0, 80)
+  );
+
+  // K2. Rotation easing — uneditable before M1.8: slerp has no per-axis handle to drag, so the
+  // panel could not know which key an author meant.
+  // The column now has TWO tracks (transform and activation) and both rows carry its name, so
+  // pick the transform row by its own glyph. The row TOGGLES, so only click it when it is closed.
+  const transformRow = page
+    .locator('div[role="button"][aria-pressed]')
+    .filter({ hasText: "◆" })
+    .first();
+  await transformRow.waitFor({ state: "visible", timeout: 10_000 });
+  if ((await transformRow.getAttribute("aria-pressed")) !== "true") await transformRow.click();
+  const rotationChip = sidebar.getByRole("button", { name: "R", exact: true });
+  await rotationChip.waitFor({ state: "visible", timeout: 5_000 });
+  await rotationChip.click();
+  const easingHint = sidebar.locator("[data-rotation-easing]");
+  await easingHint.waitFor({ state: "visible", timeout: 5_000 });
+  check(
+    "showing the rotation channel offers its easing, and says when nothing is selected",
+    (await easingHint.getAttribute("data-rotation-easing")) === "none",
+    await easingHint.getAttribute("data-rotation-easing")
+  );
+
+  // Click keyframe anchors on the curve canvas until one of them is a rotation key. The canvas
+  // reports the selection through the new onSelectKey prop — that is the seam under test.
+  const anchors = sidebar.locator("svg circle");
+  const anchorCount = await anchors.count();
+  let rotationKeyIndex = "none";
+  for (let i = 0; i < anchorCount && rotationKeyIndex === "none"; i += 1) {
+    await anchors.nth(i).click({ force: true });
+    await sleep(150);
+    rotationKeyIndex = (await easingHint.getAttribute("data-rotation-easing")) ?? "none";
+  }
+  check(
+    "clicking a rotation key opens an easing editor for that key",
+    rotationKeyIndex !== "none",
+    `key ${rotationKeyIndex} of ${anchorCount} anchors`
+  );
+
+  const easingSelect = easingHint.locator("select").first();
+  await easingSelect.selectOption("easeInQuad");
+  const keyEasing = await until(
+    page,
+    (index) => {
+      const p = window.__editorProbe;
+      if (!p.timelineId) return null;
+      const tracks = p.nodeField(p.timelineId, "tracks") ?? [];
+      const transform = tracks.find((entry) => entry.type === "transform");
+      const key = transform?.rotation?.[Number(index)];
+      return key?.easing === "easeInQuad" ? key.easing : null;
+    },
+    { timeout: 10_000 },
+    rotationKeyIndex
+  );
+  check(
+    "the easing lands on that rotation key in the document",
+    keyEasing === "easeInQuad",
+    keyEasing
+  );
+
+  // K3. The lens push — authored on the shot, evaluated on the block, visible on the camera.
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), shotOneId);
+  await cameraSection.getByRole("button", { name: "lens", exact: true }).click();
+  await cameraSection.getByRole("button", { name: "FOV push", exact: true }).click();
+  await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "animateFov") === true,
+    { timeout: 10_000 },
+    shotOneId
+  );
+  const fovEndField = cameraSection.getByRole("textbox", { name: /end field of view/ });
+  await fovEndField.fill("20");
+  await fovEndField.press("Enter");
+  await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "fovEnd") === 20,
+    { timeout: 10_000 },
+    shotOneId
+  );
+  check("a FOV push is authorable from the panel", true, "50° -> 20°");
+
+  const blockLens = await page.evaluate((id) => {
+    const block = window.__editorProbe.cameraBlocks().find((entry) => entry.vcamId === id);
+    return block?.lensAnimation?.fov ?? null;
+  }, shotOneId);
+  check(
+    "the push reaches the block as a lensAnimation",
+    blockLens !== null && blockLens.to === 20,
+    JSON.stringify(blockLens)
+  );
+
+  // Shot 1 holds from t=3 until Shot 2 takes over at 6. Sample the LIVE camera inside that.
+  await scrubTo(3.6);
+  const fovEarly = (await page.evaluate(() => window.__cameraProbe.pose())).fov;
+  await scrubTo(5.9);
+  const fovLate = (await page.evaluate(() => window.__cameraProbe.pose())).fov;
+  check(
+    "the live viewport lens actually pushes across the shot's window",
+    fovEarly - fovLate > 1,
+    `${fovEarly.toFixed(2)}° -> ${fovLate.toFixed(2)}°`
+  );
+
+  // K4. The aim — a static shot made to watch a node, wherever that node is.
+  await cameraSection.getByRole("button", { name: "aim", exact: true }).click();
+  await cameraSection.getByRole("button", { name: "track a node", exact: true }).click();
+  await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "aimMode") === "track",
+    { timeout: 10_000 },
+    shotOneId
+  );
+  // Both selected: the shot being edited, and the thing to watch. The panel takes the target
+  // from the selection because there is no inspector field kind that can name a node.
+  await page.evaluate(
+    (ids) => window.__editorProbe.selectNodes(ids),
+    [shotOneId, COLUMN_ID]
+  );
+  await cameraSection.locator("button[title*='Aim at']").first().click();
+  const aimTarget = await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "aimTargetNodeId") || null,
+    { timeout: 10_000 },
+    shotOneId
+  );
+  check("the aim target comes from the viewport selection", aimTarget === COLUMN_ID, aimTarget);
+
+  await scrubTo(4.5);
+  const aimed = await page.evaluate(() => window.__cameraProbe.pose());
+  const columnAt = await page.evaluate(
+    (id) => window.__editorProbe.objectPosition(id),
+    COLUMN_ID
+  );
+  const toColumn = [
+    columnAt[0] - aimed.position[0],
+    columnAt[1] - aimed.position[1],
+    columnAt[2] - aimed.position[2]
+  ];
+  const toColumnLength = Math.hypot(toColumn[0], toColumn[1], toColumn[2]);
+  const aimDot =
+    (aimed.forward[0] * toColumn[0] +
+      aimed.forward[1] * toColumn[1] +
+      aimed.forward[2] * toColumn[2]) /
+    toColumnLength;
+  check("the shot actually looks at the node it names", aimDot > 0.999, aimDot.toFixed(6));
+
+  // K5. The composer — the one stateful stage, and the property it must not cost us.
+  await cameraSection.getByRole("button", { name: "composer", exact: true }).click();
+  await until(
+    page,
+    (id) => window.__editorProbe.nodeField(id, "composerEnabled") === true,
+    { timeout: 10_000 },
+    shotOneId
+  );
+  check("the composer is switchable from the panel", true, "composerEnabled=true");
+
+  await scrubTo(4.2);
+  const composedFirst = await page.evaluate(() => window.__cameraProbe.pose());
+  await scrubTo(3.2);
+  await scrubTo(5.5);
+  await scrubTo(4.2);
+  const composedAgain = await page.evaluate(() => window.__cameraProbe.pose());
+  const composerScrubDrift = Math.hypot(
+    composedAgain.forward[0] - composedFirst.forward[0],
+    composedAgain.forward[1] - composedFirst.forward[1],
+    composedAgain.forward[2] - composedFirst.forward[2]
+  );
+  check(
+    "a composed shot still scrubs exactly — same time, same frame, whatever route",
+    composerScrubDrift < 1e-6,
+    composerScrubDrift.toExponential(2)
+  );
+
+  // K6. The PiP — a second render pass from a second camera, never the controller's.
+  const pipBefore = await probe(page);
+  check(
+    "CONTROL: with the PiP off nothing is drawn and nothing is reported",
+    pipBefore.pipFrame === null && pipBefore.transport.pipShotId === null,
+    JSON.stringify(pipBefore.pipFrame)
+  );
+
+  const viewportBeforePip = await page.evaluate(() => window.__cameraProbe.pose());
+  const pipToggle = cameraSection.getByRole("button", {
+    name: /Preview .* in a picture-in-picture/
+  });
+  await pipToggle.click();
+  await page.locator(`[data-huma-pip="${shotOneId}"]`).waitFor({ state: "visible", timeout: 10_000 });
+  check("the PiP frames an inset over the viewport", true, "overlay visible");
+
+  const pipRunning = await until(
+    page,
+    () => {
+      const frame = window.__editorProbe.pipFrame;
+      return frame && frame.frames > 3 ? frame : null;
+    },
+    { timeout: 15_000 }
+  );
+  check(
+    "the inset renders its own pass, frame after frame",
+    pipRunning.frames > 3 && pipRunning.shotId === shotOneId,
+    `${pipRunning.frames} frames of ${pipRunning.shotId}`
+  );
+
+  const expectedPip = await page.evaluate(
+    (args) => window.__editorProbe.shotSnapshotAt(args.id, args.time),
+    { id: shotOneId, time: 4.2 }
+  );
+  const pipDrift = Math.hypot(
+    pipRunning.position[0] - expectedPip.position[0],
+    pipRunning.position[1] - expectedPip.position[1],
+    pipRunning.position[2] - expectedPip.position[2]
+  );
+  check(
+    "and renders from the shot it names, not from somewhere merely plausible",
+    pipDrift < 1e-3,
+    `${pipDrift} m`
+  );
+
+  // R9's half of the PiP: owning a second camera means the controller's is untouched.
+  const viewportAfterPip = await page.evaluate(() => window.__cameraProbe.pose());
+  const viewportDrift = Math.hypot(
+    viewportAfterPip.position[0] - viewportBeforePip.position[0],
+    viewportAfterPip.position[1] - viewportBeforePip.position[1],
+    viewportAfterPip.position[2] - viewportBeforePip.position[2]
+  );
+  check(
+    "turning the PiP on does not move the viewport camera (R9: it owns a second one)",
+    viewportDrift < 1e-6,
+    `${viewportDrift} m`
+  );
+
+  // The pass hides the previewed shot's marker (standing at its lens is inside its own cone)
+  // and must put it back. A visibility flag or a scissor left set is the failure that looks
+  // like the editor broke somewhere else entirely.
+  const markerAfterPip = await page.evaluate(
+    (id) => window.__editorProbe.objectVisible(id),
+    shotOneId
+  );
+  check(
+    "the previewed shot's marker is restored after the pass",
+    markerAfterPip === true,
+    markerAfterPip
+  );
+
+  // K7. Noise and the composer's own settings are declarative inspector fields, so the real UI
+  // for them is Pascal's own ParametricInspector. Its number and vec3 controls are DRAG sliders
+  // rather than inputs, so the honest instrument is: assert the GROUPS reach the real inspector,
+  // then prove the effect through the document.
+  // Pascal's inspector needs a SINGLE selection — the aim step above deliberately left two
+  // selected (the shot and its subject), which shows no per-node parametrics at all.
+  await page.evaluate((id) => window.__editorProbe.selectNode(id), shotOneId);
+  const expandInspector = page.getByRole("button", { name: "Expand panel" });
+  if (await expandInspector.count()) await expandInspector.first().click();
+  const inspectorGroups = await until(
+    page,
+    () => {
+      const text = document.body.innerText;
+      return ["Aim", "Composer", "Noise"].every((group) => text.includes(group)) ? true : null;
+    },
+    { timeout: 10_000 }
+  );
+  check(
+    "the new parametrics groups reach Pascal's own inspector (Aim, Composer, Noise)",
+    inspectorGroups === true,
+    "all three groups present"
+  );
+
+  await scrubTo(4.4);
+  const noiselessPose = await page.evaluate(() => window.__cameraProbe.pose());
+  await page.evaluate(
+    (id) => window.__editorProbe.setNodeFields(id, { noiseEnabled: true, noiseSeed: 7 }),
+    shotOneId
+  );
+  await scrubTo(4.4);
+  const noisyPose = await page.evaluate(() => window.__cameraProbe.pose());
+  const noiseShift = Math.hypot(
+    noisyPose.position[0] - noiselessPose.position[0],
+    noisyPose.position[1] - noiselessPose.position[1],
+    noisyPose.position[2] - noiselessPose.position[2]
+  );
+  check(
+    "noise actually moves the live camera once the shot asks for it",
+    noiseShift > 1e-4,
+    `${noiseShift.toExponential(2)} m`
+  );
+
+  // Scrub away and back: noise is a pure function of the seed and the clock, so the same time
+  // must give the same wobble. This is what makes it safe to ship as animation rather than as
+  // an effect that only looks right while playing.
+  await scrubTo(2.5);
+  await scrubTo(4.4);
+  const noisyAgain = await page.evaluate(() => window.__cameraProbe.pose());
+  const noiseRepeatDrift = Math.hypot(
+    noisyAgain.position[0] - noisyPose.position[0],
+    noisyAgain.position[1] - noisyPose.position[1],
+    noisyAgain.position[2] - noisyPose.position[2]
+  );
+  check(
+    "and repeats exactly at the same time — seeded, not stochastic",
+    noiseRepeatDrift < 1e-9,
+    noiseRepeatDrift.toExponential(2)
+  );
+
+  await pipToggle.click();
+  const pipOff = await until(
+    page,
+    () => (window.__editorProbe.pipFrame === null ? { off: true } : null),
+    { timeout: 10_000 }
+  );
+  check("turning it off stops the pass entirely", pipOff.off === true, "pipFrame=null");
+  check(
+    "and the camera-language session left the document consistent",
+    (await probe(page)).hasCameraTrack === true,
+    "camera track still resolves"
+  );
 
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));

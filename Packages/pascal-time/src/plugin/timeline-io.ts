@@ -82,9 +82,15 @@ export function synthesiseCameraTrack(timelineId: string, duration: number): Per
       vcamId: shot.id,
       start: shot.time,
       end,
+      // The first shot has nothing to blend FROM, so it never carries a blend however it is
+      // authored — the library would look up block -1 and find no previous snapshot.
       ...(shot.blendSeconds > 0 && index > 0
-        ? { blendIn: { durationSeconds: shot.blendSeconds } }
-        : {})
+        ? { blendIn: { durationSeconds: shot.blendSeconds, curve: shot.blendCurve } }
+        : {}),
+      // A FOV push is block-local (the evaluator samples it on the block's own window), which
+      // is exactly why it belongs here rather than on the resolved definition: two blocks naming
+      // the same shot can push differently, and the blend between them interpolates both lenses.
+      ...(shot.lensAnimation ? { lensAnimation: shot.lensAnimation } : {})
     };
   });
 

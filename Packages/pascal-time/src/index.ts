@@ -48,8 +48,12 @@ export {
 } from "./bind/scene-binding";
 export {
   ActivationTrackSchema,
+  BlendInSchema,
   CameraBlockSchema,
   CameraTrackSchema,
+  EasingSchema,
+  LensAnimationSchema,
+  LensFieldAnimationSchema,
   isObjectBoundTrack,
   migrateTrackPayload,
   PersistedTrackSchema,
@@ -77,10 +81,17 @@ export {
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
 export {
   captureViewportPose,
+  getLastCameraFrame,
   getViewportCameraPose,
   PascalTimeSceneDriver,
   type ViewportCameraPose
 } from "./drive/timeline-scene-driver";
+export {
+  getPipFrame,
+  PascalTimeCameraPip,
+  pipRect,
+  type PipFrameInfo
+} from "./drive/camera-pip";
 export { pascalTimeTransport, type PascalTimeTransportState } from "./transport/store";
 export {
   PascalCameraDirector,

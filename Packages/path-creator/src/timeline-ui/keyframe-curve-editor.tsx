@@ -108,8 +108,14 @@ function fitChannelAxis(channel: CurveChannel): Axis {
 /** A single-anchor drag; `multi` shifts all `orig` keys in time together, clamped to [dLo, dHi]. */
 type Drag = { channel: number; keyIndex: number; component: number; yAxis: Axis; multi: boolean; startTime: number; orig: { i: number; time: number }[]; dLo: number; dHi: number };
 type HandleDrag = { channel: number; keyIndex: number; component: number; side: "in" | "out"; yAxis: Axis };
-/** The primary selection (drives tangent handles + readout): a specific component of one key. */
-type Primary = { channelId: string; keyIndex: number; component: number };
+/**
+ * The primary selection (drives tangent handles + readout): a specific component of one key.
+ * Reported through `onSelectKey` so a host can open an editor for whatever is selected — some
+ * per-key properties have no on-canvas handle at all (rotation's shared `easing`, since slerp
+ * has no per-axis tangents to drag), so their editor has to live outside this canvas.
+ */
+export type CurveKeySelection = { channelId: string; keyIndex: number; component: number };
+type Primary = CurveKeySelection;
 
 export function KeyframeCurveEditor({
   channels,
@@ -118,7 +124,8 @@ export function KeyframeCurveEditor({
   playhead,
   height = 160,
   theme,
-  snap
+  snap,
+  onSelectKey
 }: {
   channels: CurveChannel[];
   timeStart: number;
@@ -128,6 +135,8 @@ export function KeyframeCurveEditor({
   theme?: KeyframeCurveEditorTheme;
   /** Snap step (seconds) for dragged / added key times; hold Alt to bypass. Undefined = no snapping. */
   snap?: number;
+  /** Called with the primary selection whenever it changes, and with null when it clears. */
+  onSelectKey?: (selection: CurveKeySelection | null) => void;
 }) {
   const t = { ...DEFAULT_THEME, ...theme };
   const wrapRef = useRef<HTMLDivElement>(null);
@@ -136,7 +145,16 @@ export function KeyframeCurveEditor({
   const [drag, setDrag] = useState<Drag | null>(null);
   // The selected keyframe component reveals its tangent handles; a handle drag reshapes
   // the adjacent segment(s) by writing this key's per-component cubic-bezier tangents.
-  const [selected, setSelected] = useState<Primary | null>(null);
+  const [selected, setSelectedState] = useState<Primary | null>(null);
+  const onSelectKeyRef = useRef(onSelectKey);
+  onSelectKeyRef.current = onSelectKey;
+  // One setter for every selection write, so a host cannot be told about some selections and not
+  // others. Notifying from the setter rather than an effect keeps it in the same tick as the
+  // gesture — a host committing a per-key edit on pointerup must already know which key it is.
+  const setSelected = (next: Primary | null): void => {
+    setSelectedState(next);
+    onSelectKeyRef.current?.(next);
+  };
   // Multi-key selection, scoped to ONE channel (so every edit is a single channel.onChange
   // and never races the host's per-channel state). Keyed by channel id + key index so it
   // survives the `channels` array reindexing when the host toggles which channels show.

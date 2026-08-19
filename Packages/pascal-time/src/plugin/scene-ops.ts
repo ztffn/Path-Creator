@@ -5,7 +5,14 @@
 // the cast, explain it, and mint ids in the shape Pascal's own kinds use.
 import { generateId, nodeRegistry, useScene } from "@pascal-app/core";
 import type { Cue } from "@huma/path-creator/timeline";
-import type { VirtualCameraDefinition } from "@huma/path-creator/core";
+import type {
+  CameraBlockLensAnimation,
+  ComposerSettings,
+  Easing,
+  VirtualCameraAimDefinition,
+  VirtualCameraDefinition,
+  VirtualCameraNoiseSettings
+} from "@huma/path-creator/core";
 import { CUE_KIND, SHOT_KIND, TIMELINE_KIND } from "./kinds";
 
 /**
@@ -163,6 +170,10 @@ export interface Shot {
   time: number;
   blendSeconds: number;
   definition: VirtualCameraDefinition;
+  /** Shape of the blend from the previous shot. Becomes the block's `blendIn.curve`. */
+  blendCurve: Easing;
+  /** Lens fields animating across the shot's window, or absent. Becomes `block.lensAnimation`. */
+  lensAnimation?: CameraBlockLensAnimation;
 }
 
 const degToRad = (degrees: number): number => (degrees * Math.PI) / 180;
@@ -227,12 +238,23 @@ export function readShots(timelineId?: string): Shot[] {
             quaternion: quatOf(quaternionFromEulerDeg(node.rotationDeg as [number, number, number]))
           };
 
+    const noise = noiseOf(node);
+    const lensAnimation = lensAnimationOf(node);
+
     shots.push({
       id,
       name: (node.name as string | undefined) ?? id,
       time: (node.timeSeconds as number | undefined) ?? 0,
       blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
-      definition: { id, body, aim: { type: "body" }, lens: { fov } }
+      blendCurve: (node.blendCurve as Easing | undefined) ?? "easeInOut",
+      ...(lensAnimation && { lensAnimation }),
+      definition: {
+        id,
+        body,
+        aim: aimOf(node),
+        lens: { fov },
+        ...(noise && { noise })
+      }
     });
   }
 
@@ -240,4 +262,77 @@ export function readShots(timelineId?: string): Shot[] {
 }
 
 const vec3Of = ([x, y, z]: readonly [number, number, number]) => ({ x, y, z });
+
+/**
+ * The shot's aim. `body` keeps the body's own orientation. `track` watches a node (or a point),
+ * and adding `settings` promotes it from an instant look-at to the damped composer — the library
+ * distinguishes the two by exactly that presence, so this function is the whole switch.
+ */
+function aimOf(node: Record<string, unknown>): VirtualCameraAimDefinition {
+  if (node.aimMode !== "track") return { type: "body" };
+  const targetId = (node.aimTargetNodeId as string | undefined) ?? "";
+  const target = targetId
+    ? { targetId }
+    : vec3Of((node.aimTargetPoint as [number, number, number] | undefined) ?? [0, 0, 0]);
+  if (node.composerEnabled !== true) return { type: "track", target };
+  return { type: "track", target, settings: composerSettingsOf(node) };
+}
+
+/** The flat ComposerSettings the library reads, from the node's flattened composer fields. */
+function composerSettingsOf(node: Record<string, unknown>): ComposerSettings {
+  const offset = (node.composerTargetOffset as [number, number, number] | undefined) ?? [0, 0, 0];
+  return {
+    screenX: (node.composerScreenX as number | undefined) ?? 0,
+    screenY: (node.composerScreenY as number | undefined) ?? 0,
+    deadWidth: (node.composerDeadWidth as number | undefined) ?? 0.18,
+    deadHeight: (node.composerDeadHeight as number | undefined) ?? 0.14,
+    softWidth: (node.composerSoftWidth as number | undefined) ?? 0.55,
+    softHeight: (node.composerSoftHeight as number | undefined) ?? 0.45,
+    dampingX: (node.composerDampingX as number | undefined) ?? 6,
+    dampingY: (node.composerDampingY as number | undefined) ?? 8,
+    targetOffsetX: offset[0],
+    targetOffsetY: offset[1],
+    targetOffsetZ: offset[2],
+    lookaheadTime: (node.composerLookaheadTime as number | undefined) ?? 0.2,
+    lookaheadSmoothing: (node.composerLookaheadSmoothing as number | undefined) ?? 8,
+    lookaheadIgnoreY: (node.composerLookaheadIgnoreY as boolean | undefined) ?? false,
+    centerOnActivate: (node.composerCenterOnActivate as boolean | undefined) ?? false
+  };
+}
+
+/** Seeded wobble, or null when the shot has none. Per-axis: the wider of the library's shapes. */
+function noiseOf(node: Record<string, unknown>): VirtualCameraNoiseSettings | null {
+  if (node.noiseEnabled !== true) return null;
+  return {
+    seed: (node.noiseSeed as number | undefined) ?? 1,
+    positionAmplitude: vec3Of(
+      (node.noisePositionAmplitude as [number, number, number] | undefined) ?? [0, 0, 0]
+    ),
+    positionFrequency: vec3Of(
+      (node.noisePositionFrequency as [number, number, number] | undefined) ?? [1, 1, 1]
+    ),
+    rotationAmplitudeDeg: vec3Of(
+      (node.noiseRotationAmplitudeDeg as [number, number, number] | undefined) ?? [0, 0, 0]
+    ),
+    rotationFrequencyDeg: vec3Of(
+      (node.noiseRotationFrequencyDeg as [number, number, number] | undefined) ?? [1, 1, 1]
+    )
+  };
+}
+
+/**
+ * The shot's lens animation, or null. Only the FOV push is authorable today; the persisted block
+ * schema carries all six lens fields, so a later panel can add one without a migration.
+ *
+ * A push whose end equals its start is NOT emitted: the evaluator would fold a constant into the
+ * snapshot every frame for no visible reason, and the absence is what tells a reader the shot
+ * has a fixed lens.
+ */
+function lensAnimationOf(node: Record<string, unknown>): CameraBlockLensAnimation | null {
+  if (node.animateFov !== true) return null;
+  const from = (node.fov as number | undefined) ?? 50;
+  const to = (node.fovEnd as number | undefined) ?? from;
+  if (Math.abs(to - from) < 1e-9) return null;
+  return { fov: { from, to, easing: (node.fovEasing as Easing | undefined) ?? "easeInOut" } };
+}
 const quatOf = ([x, y, z, w]: readonly [number, number, number, number]) => ({ x, y, z, w });

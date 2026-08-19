@@ -19,7 +19,7 @@ import {
 import { SHOT_KIND } from "../plugin/kinds";
 import type { StoredTimeline } from "../plugin/timeline-io";
 import { pascalTimeTransport } from "../transport/store";
-import { formatSeconds, styles, useKindNodes, useNodeLabel } from "./panel-shared";
+import { formatSeconds, NodeNumberField, styles, useKindNodes, useNodeLabel } from "./panel-shared";
 
 export interface ShotRow {
   id: string;
@@ -75,39 +75,6 @@ function OrbitTargetButton({ shot }: { shot: ShotRow }): ReactNode {
     >
       ⊚ {shot.targetNodeId ? label(shot.targetNodeId) : "target ⇐ sel"}
     </button>
-  );
-}
-
-/** One numeric field; commits on blur/Enter as one node update. */
-function ShotNumberField({
-  value,
-  label,
-  min,
-  onCommit
-}: {
-  value: number;
-  label: string;
-  min: number;
-  onCommit: (next: number) => void;
-}): ReactNode {
-  const [text, setText] = useState<string | null>(null);
-  return (
-    <input
-      style={{ ...styles.numberInput, width: 44 }}
-      value={text ?? String(value)}
-      aria-label={label}
-      inputMode="decimal"
-      onChange={(event) => setText(event.target.value)}
-      onBlur={() => {
-        if (text === null) return;
-        const parsed = Number(text);
-        if (Number.isFinite(parsed) && parsed >= min && parsed !== value) onCommit(parsed);
-        setText(null);
-      }}
-      onKeyDown={(event) => {
-        if (event.key === "Enter") (event.target as HTMLInputElement).blur();
-      }}
-    />
   );
 }
 
@@ -168,17 +135,19 @@ export function ShotsSection({
             {shot.name}
           </span>
           <span style={{ ...styles.muted, fontSize: 11 }}>@</span>
-          <ShotNumberField
+          <NodeNumberField
             value={shot.timeSeconds}
             label={`Shot ${shot.name} time in seconds`}
             min={0}
+            width={44}
             onCommit={(timeSeconds) => updatePluginNode(shot.id, { timeSeconds })}
           />
           <span style={{ ...styles.muted, fontSize: 11 }}>blend</span>
-          <ShotNumberField
+          <NodeNumberField
             value={shot.blendSeconds}
             label={`Shot ${shot.name} blend in seconds`}
             min={0}
+            width={44}
             onCommit={(blendSeconds) => updatePluginNode(shot.id, { blendSeconds })}
           />
           {shot.body === "orbit" ? <OrbitTargetButton shot={shot} /> : null}
