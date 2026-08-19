@@ -274,15 +274,21 @@ stays `@huma/path-creator`'s job, on objects it registers itself.
 
 ## The authoring panel (M1.3), and the two-entry split
 
-The timeline panel is the editor-facing half: transport (play/pause/stop and a **preview/edit
-toggle** — preview scrubs the animation, edit mode parks the playhead WITHOUT driving so a
-tracked object can be posed with Pascal's own tools and then keyed), keyframe capture for the
-viewport selection (full TRS, one `putTrack`, one undo entry per press), the reused
-`KeyframeCurveEditor` over the selected track with **per-gesture write batching** (the editor
-fires onChange per pointer-move; edits buffer in a draft and pointerup commits once), a clip
-editor for visibility (an object is visible inside any activation clip and hidden outside all
-of them), cue and shot lists ("+ shot from view" captures the viewport camera through the
-scene driver's per-frame snapshot), and `def.parametrics` inspectors for all three kinds.
+The panel has two surfaces. **The lane dock** — path-creator's real `TimelineLanes` editor,
+docked over the viewport bottom while the panel is open — is the timeline: a draggable shot
+lane (dragging the seam between two shots retimes both, one undo entry), a pinned cue lane,
+one lane per transform track whose block carries the motion sparkline and a marker per
+keyframe and retimes the whole track on drag/resize (tangent time-components scale with it),
+and clip lanes for visibility. Double-click a motion lane to key the object's current pose at
+that moment; double-click the cue lane to drop a cue. **The sidebar** keeps what a sidebar is
+good at: transport (play/pause/stop and the **preview/edit toggle** — preview scrubs the
+animation, edit mode parks the playhead WITHOUT driving so a tracked object can be posed with
+Pascal's own tools and then keyed), keyframe capture for the viewport selection (full TRS, one
+`putTrack`, one undo entry per press), the `KeyframeCurveEditor` over the selected track with
+**per-gesture write batching** (the editor fires onChange per pointer-move; edits buffer in a
+draft and pointerup commits once), naming and blend/target fields, and `def.parametrics`
+inspectors for all three kinds. Both surfaces share one clock: the lanes drive a
+`TimelinePlayer` facade over the same transport store.
 
 A host using Pascal's editor mounts it in two lines next to the manifest registration:
 
