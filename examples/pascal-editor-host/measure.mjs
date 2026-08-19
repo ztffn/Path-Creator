@@ -455,6 +455,45 @@ try {
     forwardDot.toFixed(6)
   );
 
+  // --- J. the marker and the menu: the two reported paper cuts ---
+  // The camera is parked at Shot 2's own position: its marker must hide (a from-view shot's
+  // gizmo sits exactly at the lens — visible, its cone fills the screen as a blue wash), while
+  // Shot 1's marker, elsewhere in the scene, stays shown.
+  const shotIds = await page.evaluate(() =>
+    window.__editorProbe.findNodeIdsByType("huma-time:shot")
+  );
+  const markerStates = await page.evaluate(
+    (ids) => ids.map((id) => window.__editorProbe.markerShown(id)),
+    shotIds
+  );
+  check(
+    "the shot marker hides while the camera stands inside it (the blue-wash bug)",
+    markerStates.includes(false),
+    JSON.stringify(markerStates)
+  );
+  check(
+    "markers elsewhere in the scene stay visible",
+    markerStates.includes(true),
+    JSON.stringify(markerStates)
+  );
+
+  // Right-click on the lanes: camera creation is offered on EVERY row now. The edit area
+  // starts at the first lane row (the ruler is a sibling above it), 36px per lane.
+  const editArea = dock.locator(".timeline-editor-edit-area");
+  await editArea.click({ button: "right", position: { x: 300, y: 96 } });
+  const addCamera = page.getByRole("button", { name: "Add camera here (capture viewport)" });
+  await addCamera.waitFor({ state: "visible", timeout: 5_000 });
+  check("right-clicking the lanes opens the editor's own menu (not the browser's)", true, "visible");
+  await addCamera.click();
+  await until(page, () => window.__editorProbe.shotsCount === 3);
+  check("the menu's camera entry captures a shot at the clicked time", true, "3 shots");
+
+  // The per-lane create entry carries the lane's own vocabulary (cues = row 0, pinned).
+  await editArea.click({ button: "right", position: { x: 300, y: 18 } });
+  await page.getByRole("button", { name: "Add cue here" }).waitFor({ timeout: 5_000 });
+  check("the cue lane's entry speaks cue, not clip", true, "Add cue here");
+  await page.mouse.click(10, 10); // dismiss via the menu's backdrop
+
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));
   check("no console errors", consoleErrors.length === 0, consoleErrors.slice(0, 3).join(" | "));
 

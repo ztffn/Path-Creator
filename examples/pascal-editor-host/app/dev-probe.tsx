@@ -47,6 +47,9 @@ type EditorProbe = {
   undoDepth: number;
   rafBeats: number;
   findNodeIdByType(type: string): string | null;
+  findNodeIdsByType(type: string): string[];
+  /** Whether a shot's MARKER meshes render (hidden when the camera stands inside them). */
+  markerShown(id: string): boolean | null;
   nodeField(id: string, field: string): unknown;
   objectPosition(id: string): [number, number, number] | null;
   objectVisible(id: string): boolean | null;
@@ -77,6 +80,17 @@ const findNodeIdByType = (type: string): string | null => {
   }
   return null;
 };
+
+const findNodeIdsByType = (type: string): string[] => {
+  const ids: string[] = [];
+  for (const [id, node] of Object.entries(useScene.getState().nodes)) {
+    if ((node as { type?: string }).type === type) ids.push(id);
+  }
+  return ids;
+};
+
+const markerShown = (id: string): boolean | null =>
+  sceneRegistry.nodes.get(id)?.children[0]?.visible ?? null;
 
 const objectPosition = (id: string): [number, number, number] | null => {
   const object = sceneRegistry.nodes.get(id);
@@ -203,6 +217,8 @@ export function DevProbe() {
         undoDepth: temporal.getState().pastStates.length,
         rafBeats,
         findNodeIdByType,
+        findNodeIdsByType,
+        markerShown,
         nodeField,
         objectPosition,
         objectVisible,

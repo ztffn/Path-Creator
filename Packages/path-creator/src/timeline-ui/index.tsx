@@ -90,6 +90,8 @@ export interface ExtraLane {
   crossfade?: boolean;
   /** Render this lane ABOVE the shot/dolly lanes instead of below them. */
   pinned?: boolean;
+  /** Context-menu label for creating on this lane (default "Add clip here"). */
+  createLabel?: string;
   clips: ExtraLaneClip[];
 }
 
@@ -219,6 +221,10 @@ export interface TimelineLanesProps {
    * under the default; pass ~duration/10 to fill the width. Snapping is unaffected.
    */
   scaleSeconds?: number;
+  /** Show the "Add cart camera here" context entry (default true). Meaningless without rails. */
+  showCartShotEntry?: boolean;
+  /** Show the "Add dolly" / "Add path" context entries (default true). */
+  showDollyEntries?: boolean;
   onShotTiming: (shotId: string, start: number, end: number) => void;
   onSelectShot: (shotId: string) => void;
   onSeek: (timeSeconds: number) => void;
@@ -266,7 +272,9 @@ export function TimelineLanes({
   onCreateExtraClip,
   onSelectLane,
   selectedLaneId = null,
-  scaleSeconds = 5
+  scaleSeconds = 5,
+  showCartShotEntry = true,
+  showDollyEntries = true
 }: TimelineLanesProps) {
   const t: Required<TimelineLanesTheme> = { ...DEFAULT_THEME, ...theme };
   const [contextMenu, setContextMenu] = useState<{
@@ -275,6 +283,7 @@ export function TimelineLanes({
     time: number;
     onShotTrack: boolean;
     dollyId?: string;
+    laneId?: string;
   } | null>(null);
   const laneStateRef = useRef<TimelineState>(null);
   const pointerYRef = useRef<number | null>(null);
@@ -622,24 +631,24 @@ export function TimelineLanes({
           }}
           onContextMenuRow={(event, { row, time }) => {
             event.preventDefault();
-            if (row.id.startsWith("xrow|")) return; // extra lanes: create by double-click, delete off-lane
             setContextMenu({
               x: event.clientX,
               y: event.clientY,
               time,
               onShotTrack: row.id === "shot-track",
-              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) })
+              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) }),
+              ...(row.id.startsWith("xrow|") && { laneId: row.id.slice(5) })
             });
           }}
           onContextMenuAction={(event, { row, time }) => {
             event.preventDefault();
-            if (row.id.startsWith("xrow|")) return;
             setContextMenu({
               x: event.clientX,
               y: event.clientY,
               time,
               onShotTrack: row.id === "shot-track",
-              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) })
+              ...(row.id.startsWith("dolly-") && { dollyId: row.id.slice(6) }),
+              ...(row.id.startsWith("xrow|") && { laneId: row.id.slice(5) })
             });
           }}
           onChange={(rows) => {
@@ -813,67 +822,73 @@ export function TimelineLanes({
               }}
               onClick={(event) => event.stopPropagation()}
             >
-              {contextMenu.onShotTrack ? (
-                <>
-                  <button
-                    style={{ textAlign: "left" }}
-                    onClick={() => {
-                      onCreateShot("capture", contextMenu.time);
-                      setContextMenu(null);
-                    }}
-                  >
-                    Add camera here (capture viewport)
-                  </button>
-                  <button
-                    style={{ textAlign: "left" }}
-                    onClick={() => {
-                      onCreateShot("cart", contextMenu.time);
-                      setContextMenu(null);
-                    }}
-                  >
-                    Add cart camera here
-                  </button>
-                  <div
-                    style={{
-                      height: 1,
-                      margin: "4px 0",
-                      background: t.panelBorder
-                    }}
-                  />
-                </>
+              {/* Camera creation acts at a TIME, not a lane — offered on every row. */}
+              <button
+                style={{ textAlign: "left" }}
+                onClick={() => {
+                  onCreateShot("capture", contextMenu.time);
+                  setContextMenu(null);
+                }}
+              >
+                Add camera here (capture viewport)
+              </button>
+              {showCartShotEntry ? (
+                <button
+                  style={{ textAlign: "left" }}
+                  onClick={() => {
+                    onCreateShot("cart", contextMenu.time);
+                    setContextMenu(null);
+                  }}
+                >
+                  Add cart camera here
+                </button>
+              ) : null}
+              {contextMenu.laneId && onCreateExtraClip ? (
+                <button
+                  style={{ textAlign: "left" }}
+                  onClick={() => {
+                    if (contextMenu.laneId) onCreateExtraClip(contextMenu.laneId, contextMenu.time);
+                    setContextMenu(null);
+                  }}
+                >
+                  {extraLanes.find((lane) => lane.id === contextMenu.laneId)?.createLabel ??
+                    "Add clip here"}
+                </button>
               ) : null}
               {contextMenu.dollyId ? (
+                <button
+                  style={{ textAlign: "left" }}
+                  onClick={() => {
+                    if (contextMenu.dollyId) onCreateDollyRun(contextMenu.dollyId, contextMenu.time);
+                    setContextMenu(null);
+                  }}
+                >
+                  Add dolly move here
+                </button>
+              ) : null}
+              {showDollyEntries ? (
                 <>
+                  <div style={{ height: 1, margin: "4px 0", background: t.panelBorder }} />
                   <button
                     style={{ textAlign: "left" }}
                     onClick={() => {
-                      if (contextMenu.dollyId) onCreateDollyRun(contextMenu.dollyId, contextMenu.time);
+                      onCreateDolly();
                       setContextMenu(null);
                     }}
                   >
-                    Add dolly move here
+                    Add dolly
                   </button>
-                  <div style={{ height: 1, margin: "4px 0", background: t.panelBorder }} />
+                  <button
+                    style={{ textAlign: "left" }}
+                    onClick={() => {
+                      onCreatePath();
+                      setContextMenu(null);
+                    }}
+                  >
+                    Add path
+                  </button>
                 </>
               ) : null}
-              <button
-                style={{ textAlign: "left" }}
-                onClick={() => {
-                  onCreateDolly();
-                  setContextMenu(null);
-                }}
-              >
-                Add dolly
-              </button>
-              <button
-                style={{ textAlign: "left" }}
-                onClick={() => {
-                  onCreatePath();
-                  setContextMenu(null);
-                }}
-              >
-                Add path
-              </button>
             </div>
           </div>
         ) : null}

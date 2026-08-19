@@ -196,6 +196,7 @@ export function LaneDock({
       color: CUE_COLOR,
       icon: "◆",
       pinned: true,
+      createLabel: "Add cue here",
       clips: cues.map((cue) => ({
         id: cue.id,
         start: cue.timeSeconds,
@@ -212,6 +213,7 @@ export function LaneDock({
         name: label(track.objectId),
         color: TRANSFORM_COLOR,
         icon: "◆",
+        createLabel: "Key current pose here",
         clips: span
           ? [
               {
@@ -231,6 +233,7 @@ export function LaneDock({
       name: label(track.objectId),
       color: ACTIVATION_COLOR,
       icon: "◎",
+      createLabel: "Add visibility clip here",
       clips: track.clips.map((clip) => ({
         id: clip.id,
         start: clip.start,
@@ -338,6 +341,10 @@ export function LaneDock({
         // ~10 major ticks across the show, so a 10-second timeline fills the dock instead of
         // rendering as a sliver on the library's 5s-per-tick default.
         scaleSeconds={Math.max(0.5, Math.ceil(stored.durationSeconds / 10 / 0.5) * 0.5)}
+        // No rails here: a cart camera entry would be a dead button, and dolly/path creation
+        // belongs to path-creator hosts. The capture entry is the one this editor wants.
+        showCartShotEntry={false}
+        showDollyEntries={false}
         shotIcon="▲"
         onShotTiming={(shotId, start, end) => {
           // One gesture, one undo entry — even when the drag retimes the NEXT shot's cut too.
