@@ -128,6 +128,30 @@ export const CameraBlockSchema = z.object({
   lensAnimation: LensAnimationSchema.optional()
 });
 
+/**
+ * Mirrors `CartKey`: where the cart is on its rail at a moment, and how it eases to the next
+ * key. `distance` is metres along the path, not a fraction — a rail can be reshaped without
+ * rewriting every run, which is the whole point of measuring along a vertex path.
+ */
+export const CartKeySchema = z.object({
+  time: z.number(),
+  distance: z.number(),
+  easing: EasingSchema.optional()
+});
+
+/**
+ * Mirrors `CartTrack` (M1.7): a dolly run. `cartId` is a **cart node id**, like every other
+ * reference here. One track per cart — the library keys its cart tracks by `cartId`, so a second
+ * track naming the same cart would be silently ignored by whichever lost the map race.
+ */
+export const CartTrackSchema = z.object({
+  type: z.literal("cart"),
+  id: z.string(),
+  name: z.string().optional(),
+  cartId: z.string(),
+  keys: z.array(CartKeySchema).default([])
+});
+
 export const CameraTrackSchema = z.object({
   type: z.literal("camera"),
   id: z.string(),
@@ -143,7 +167,8 @@ export const CameraTrackSchema = z.object({
 export const PersistedTrackSchema = z.discriminatedUnion("type", [
   TransformTrackSchema,
   ActivationTrackSchema,
-  CameraTrackSchema
+  CameraTrackSchema,
+  CartTrackSchema
 ]);
 
 export type PersistedTrack = z.infer<typeof PersistedTrackSchema>;
@@ -193,8 +218,9 @@ export function removeTracksForObject(
   tracks: readonly PersistedTrack[],
   objectId: string
 ): PersistedTrack[] {
-  // A camera track binds to shots through its blocks, not through an `objectId`, so it is
-  // never object-scoped and must survive this filter rather than being dropped by accident.
+  // Camera tracks bind to shots through their blocks and cart tracks bind to a cart, neither
+  // through an `objectId` — so neither is object-scoped, and both must survive this filter
+  // rather than being dropped by accident.
   return tracks.filter((track) => !("objectId" in track) || track.objectId !== objectId);
 }
 
@@ -243,8 +269,8 @@ export function remapTracksForClone(
 ): PersistedTrack[] {
   const added: PersistedTrack[] = [];
   for (const track of tracks) {
-    // Camera tracks reference shots, not driven objects; cloning a subtree of geometry does not
-    // duplicate the shot list, so they are skipped rather than mis-remapped.
+    // Camera tracks reference shots and cart tracks reference carts, not driven objects; cloning
+    // a subtree of geometry duplicates neither, so both are skipped rather than mis-remapped.
     if (!("objectId" in track)) continue;
     const cloneObjectId = idMap.get(track.objectId);
     if (!cloneObjectId) continue;

@@ -7,7 +7,7 @@
 // through timeline-io/scene-ops, batched per gesture, one undo entry each.
 "use client";
 
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import { useViewer } from "@pascal-app/editor";
 import {
   buildTimelineNode,
@@ -15,12 +15,14 @@ import {
 } from "../plugin/scene-ops";
 import { installPascalTimeOnScene } from "../plugin/install";
 import { pascalTimeTransport } from "../transport/store";
+import { readShotBlocks } from "../plugin/timeline-io";
 import { styles, useSceneTimelineId, useStoredTimeline } from "./panel-shared";
 import { DurationField, TransportSection, type TimeMarker } from "./transport-section";
 import { KeyingSection } from "./keying-section";
 import { TracksSection } from "./tracks-section";
 import { CuesSection, useCueRows } from "./cues-section";
 import { ShotsSection, useShotRows } from "./shots-section";
+import { RailsSection } from "./rails-section";
 import { ShotCameraSection } from "./shot-camera-section";
 import { LaneDock } from "./lane-dock";
 
@@ -55,6 +57,16 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
   // Shared between the sidebar's detail editors and the lane dock: clicking a lane opens the
   // matching curve/clip editor here, and vice versa.
   const [selectedTrackId, setSelectedTrackId] = useState<string | null>(null);
+  // The resolved spans, in one place: the shot list, the markers and the lane dock must agree on
+  // what block a shot owns, and the span rule (authored end, else the legacy layout) lives in the
+  // resolver rather than being re-derived by each of them.
+  const blocks = useMemo(() => {
+    const duration = stored?.durationSeconds ?? 0;
+    return new Map(
+      readShotBlocks(timelineId, duration).map((block) => [block.id, block] as const)
+    );
+    // `shots` changes with the document, which is exactly when a span can change.
+  }, [timelineId, stored?.durationSeconds, shots]);
   if (!stored) return <EmptyState />;
 
   const markers: TimeMarker[] = [
@@ -63,7 +75,10 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
       (shot): TimeMarker => ({
         ...shot,
         kind: "shot",
-        seekSeconds: Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds)
+        seekSeconds: Math.min(
+          shot.timeSeconds + (blocks.get(shot.id)?.blendSeconds ?? 0),
+          stored.durationSeconds
+        )
       })
     )
   ];
@@ -82,8 +97,9 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
         onSelectTrack={setSelectedTrackId}
       />
       <CuesSection stored={stored} cues={cues} />
-      <ShotsSection stored={stored} shots={shots} />
-      <ShotCameraSection />
+      <ShotsSection stored={stored} shots={shots} blocks={blocks} />
+      <ShotCameraSection blocks={blocks} />
+      <RailsSection stored={stored} />
       <div style={styles.muted}>
         {stored.tracks.length} track{stored.tracks.length === 1 ? "" : "s"}
         {stored.loop ? " · loops" : ""}
@@ -92,6 +108,7 @@ function PanelBody({ timelineId }: { timelineId: string }): ReactNode {
         stored={stored}
         cues={cues}
         shots={shots}
+        blocks={blocks}
         selectedTrackId={selectedTrackId}
         onSelectTrack={setSelectedTrackId}
       />

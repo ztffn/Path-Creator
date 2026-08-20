@@ -184,11 +184,13 @@ describe("M1.4 — the shot in force is a pure function of time", () => {
     // still plays its shots, and loading it does not rewrite it.
     const track = synthesiseCameraTrack(CLOCK, 20)!;
     expect(track.type).toBe("camera");
-    // The blend carries the shot's `blendCurve` (M1.8). Its default is "easeInOut", which is
-    // also what the library falls back to for a curveless blend — so an existing document plays
-    // back identically and the field only changes anything once an author shapes it.
+    // These shots predate spans — they carry `blendSeconds` and no `endSeconds` — so the legacy
+    // layout is reconstructed AS AN OVERLAP: Wide's block now reaches to 14, which is Close's
+    // start plus the 4s blend it used to describe, and Close inherits exactly that 4s crossover.
+    // Same hand-off, now visible on the lane as two blocks crossing. The blend carries the shot's
+    // `blendCurve` (M1.8), whose default matches the library's own fallback.
     expect("blocks" in track && track.blocks).toEqual([
-      { id: "block_shot_wide", vcamId: "shot_wide", start: 0, end: 10 },
+      { id: "block_shot_wide", vcamId: "shot_wide", start: 0, end: 14 },
       {
         id: "block_shot_close",
         vcamId: "shot_close",

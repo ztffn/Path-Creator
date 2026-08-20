@@ -44,6 +44,15 @@ export interface PascalTimeTransportState {
    * draws it, and this store is the only thing they share.
    */
   pipShotId: string | null;
+  /**
+   * The path node whose control points are editable in the viewport, or null (M1.7).
+   *
+   * Ephemeral for the same reason as the PiP: which rail an author is shaping is a mode they are
+   * in, not a fact about the scene, so entering it must not touch the document or Pascal's undo.
+   * The panel sets it and the viewport overlay reads it — and they live in different package
+   * entries, so this store is the only thing they share.
+   */
+  pathEditId: string | null;
   /** Point the transport at a timeline. Resets the clock; a new subject is a new session. */
   setTimeline(id: string | null): void;
   play(): void;
@@ -56,6 +65,8 @@ export interface PascalTimeTransportState {
   userGrabbedCamera(): void;
   /** Preview a shot in the PiP, or null to turn it off. Never writes to the document. */
   setPipShot(shotId: string | null): void;
+  /** Edit a path's control points in the viewport, or null to stop. Never writes the document. */
+  setPathEdit(pathId: string | null): void;
   /** Stop and hand the scene back. The clock keeps its position for a later re-engage. */
   release(): void;
   /**
@@ -76,6 +87,7 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   rate: 1,
   cameraFollow: true,
   pipShotId: null,
+  pathEditId: null,
 
   setTimeline: (id) => {
     if (get().timelineId === id) return;
@@ -86,8 +98,9 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
       driving: false,
       preview: true,
       cameraFollow: true,
-      // A new clock is a new session: a shot id from the old scene names nothing here.
-      pipShotId: null
+      // A new clock is a new session: an id from the old scene names nothing here.
+      pipShotId: null,
+      pathEditId: null
     });
   },
 
@@ -122,6 +135,8 @@ export const pascalTimeTransport = createStore<PascalTimeTransportState>()((set,
   userGrabbedCamera: () => set({ cameraFollow: false }),
 
   setPipShot: (shotId) => set({ pipShotId: shotId }),
+
+  setPathEdit: (pathId) => set({ pathEditId: pathId }),
 
   release: () => set({ playing: false, driving: false }),
 

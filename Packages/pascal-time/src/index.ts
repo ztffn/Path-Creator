@@ -4,33 +4,46 @@
 // imports @pascal-app/core but never @pascal-app/editor. The authoring-only surface (the
 // timeline panel, M1.3) belongs behind a separate `/host-panel` entry, NOT in this file.
 export {
+  CART_KIND,
+  CartNode,
   CUE_KIND,
   CueNode,
+  PATH_KIND,
+  PathNode,
   SHOT_KIND,
   ShotNode,
   PASCAL_TIME_PLUGIN_ID,
   TIMELINE_KIND,
   TimelineNode,
+  type CartNodeType,
   type CueNodeType,
+  type PathNodeType,
   type ShotNodeType,
   type TimelineNodeType
 } from "./plugin/kinds";
 export {
-  cueDefinition, pascalTimePlugin, shotDefinition, timelineDefinition
+  cartDefinition, cueDefinition, pascalTimePlugin, pathDefinition, shotDefinition, timelineDefinition
 } from "./plugin/definitions";
 export { installPascalTimeOnScene, registerPascalTimeKinds } from "./plugin/install";
 export {
+  buildCartNode,
   buildCueNode,
+  buildPathNode,
   buildShotNode,
   buildTimelineNode,
   createPluginNode,
   deletePluginNode,
   newPascalTimeNodeId,
+  readCarts,
   readCues,
+  readPaths,
   readPluginNode,
   readShots,
   updatePluginNode,
   updatePluginNodes,
+  type CartRead,
+  type Matrix4Like,
+  type PathRead,
   type Shot
 } from "./plugin/scene-ops";
 export {
@@ -40,7 +53,23 @@ export {
   withCapturedPose,
   type CapturedPose
 } from "./plugin/keying";
-export { retimeTransformTrack, transformTrackSpan } from "./plugin/retiming";
+export {
+  anchorAt,
+  anchorCount,
+  dollyRunEasing,
+  newDollyRun,
+  starterRailPoints,
+  withAppendedAnchor,
+  withDollyRunEasing,
+  withoutAnchor,
+  type Point3
+} from "./plugin/rails";
+export {
+  cartTrackSpan,
+  retimeCartTrack,
+  retimeTransformTrack,
+  transformTrackSpan
+} from "./plugin/retiming";
 export {
   pascalObjectBinding,
   pascalSceneBinding,
@@ -51,6 +80,8 @@ export {
   BlendInSchema,
   CameraBlockSchema,
   CameraTrackSchema,
+  CartKeySchema,
+  CartTrackSchema,
   EasingSchema,
   LensAnimationSchema,
   LensFieldAnimationSchema,
@@ -69,23 +100,36 @@ export {
 export {
   deleteTrack,
   dropTracksForObject,
+  emptyRig,
   putTrack,
+  readRig,
+  remapRailsAfterClone,
+  readShotBlocks,
   readShotDefinitions,
   readStoredTimeline,
   readTimeline,
   synthesiseCameraTrack,
   remapTracksAfterClone,
   writeTracks,
+  type PascalRig,
+  type ShotBlock,
   type StoredTimeline
 } from "./plugin/timeline-io";
 export { PascalNodeDriver, type PascalDriveClock } from "./drive/node-driver";
 export {
   captureViewportPose,
+  getCartFrames,
   getLastCameraFrame,
   getViewportCameraPose,
   PascalTimeSceneDriver,
+  type CartFrameLike,
   type ViewportCameraPose
 } from "./drive/timeline-scene-driver";
+export {
+  PascalTimePathEditOverlay,
+  PASCAL_OVERLAY_LAYER,
+  PATH_EDIT_GROUP
+} from "./drive/path-edit-overlay";
 export {
   getPipFrame,
   PascalTimeCameraPip,

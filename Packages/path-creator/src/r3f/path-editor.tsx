@@ -1,8 +1,9 @@
 // In-viewport spline editing UX for a BezierPath/VertexPath pair: the active
 // path line, dashed sibling paths, control-handle connectors, midpoint normal
 // gizmos, anchor/handle glyphs, and the drag/rotate PivotControls. Themable via
-// PathEditorProps.theme. The subtree renders inside <EditorHelpers>, so hosts
-// must call useEditorHelpersVisible(editing) on their viewport camera to see it.
+// PathEditorProps.theme. The subtree renders inside <EditorHelpers>, so hosts must
+// call useEditorHelpersVisible(editing) on their viewport camera to see it — and a
+// host whose renderer composes fixed layer sets per pass must also pass helpersLayer.
 import { Billboard } from "@react-three/drei";
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { Euler, Matrix4, Quaternion, Vector3 } from "three";
@@ -51,9 +52,18 @@ export interface PathEditorProps {
   pathStyle?: "line" | "rail";
   /** Tuning for the "rail" style. */
   railOptions?: DollyRailOptions;
-  /** Drag gizmo for the selected handle; defaults to drei PivotControls. A
-   *  WebGPU host injects TransformGizmo. (The midpoint pivot is WebGL-only.) */
+  /** Drag gizmo for BOTH the selected handle and the selected midpoint normal;
+   *  defaults to drei PivotControls. A WebGPU host injects TransformGizmo. */
   gizmo?: RigGizmoComponent;
+  /**
+   * Layer the helper subtree renders on. Defaults to this package's reserved
+   * EDITOR_HELPERS_LAYER, which suits a host that renders the scene with the
+   * camera's own layer mask. A host whose renderer composes the frame from
+   * passes with FIXED layer sets (three's WebGPU post-processing pipeline does)
+   * must pass its own overlay layer instead — on any other layer the subtree is
+   * in no pass, so it is silently never drawn however the camera is configured.
+   */
+  helpersLayer?: number;
   onSelectHandle: (index: number | null) => void;
   onSelectMidpoint: (index: number | null) => void;
   onMovePoint: (index: number, point: Vec3) => void;
@@ -229,6 +239,7 @@ export function PathEditor({
   selectedMidpointIndex,
   anchorScales = [],
   useWorldSpaceGizmo = false,
+  helpersLayer,
   theme,
   pathStyle = "line",
   railOptions,
@@ -340,7 +351,7 @@ export function PathEditor({
   }, [bezierPath, isTransforming, selectedHandleIndex, selectedHandleIsAnchor, useWorldSpaceGizmo, vertexPath]);
 
   return (
-    <EditorHelpers>
+    <EditorHelpers {...(helpersLayer === undefined ? {} : { layer: helpersLayer })}>
       <PathVisual
         vertexPath={vertexPath}
         version={pathVersion}

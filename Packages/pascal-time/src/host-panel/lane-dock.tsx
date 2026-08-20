@@ -1,6 +1,6 @@
 // The lane dock: path-creator's real TimelineLanes editor, docked over the viewport bottom
 // while the timeline panel is open — the NLE-style surface the sidebar cannot be. Shots are a
-// draggable shot lane (dragging the cut between two shots retimes BOTH in one undo entry),
+// draggable shot lane where a block OVERLAPPING its predecessor is the crossover between them,
 // cues are a pinned lane of markers, every transform track is a lane whose block carries the
 // motion sparkline and keyframe markers and retimes the whole track on drag/resize, and
 // activation tracks are clip lanes. All writes stay one store operation per gesture. The lanes
@@ -10,31 +10,53 @@
 import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useStore } from "zustand";
 import { createPortal } from "react-dom";
+import { useScene } from "@pascal-app/core";
 import { useViewer } from "@pascal-app/editor";
 import {
   TimelineLanes,
   type BlockSeriesData,
   type ExtraLane,
+  type LaneDollyMove,
   type TimelineLanesTheme
 } from "@huma/path-creator/timeline-ui";
 import type { TimelinePlayer } from "@huma/path-creator/timeline";
-import { transformComponentAt, type TransformKeyLike } from "@huma/path-creator/core";
+import {
+  sampleEasingDerivative,
+  transformComponentAt,
+  type Easing,
+  type TransformKeyLike
+} from "@huma/path-creator/core";
 import { getViewportCameraPose } from "../drive/timeline-scene-driver";
 import { captureTransformKey, withActivationClip } from "../plugin/keying";
-import { retimeTransformTrack, transformTrackSpan } from "../plugin/retiming";
 import {
+  cartTrackSpan,
+  retimeCartTrack,
+  retimeTransformTrack,
+  transformTrackSpan
+} from "../plugin/retiming";
+import {
+  buildCartNode,
   buildCueNode,
+  buildPathNode,
   buildShotNode,
   createPluginNode,
-  updatePluginNode,
-  updatePluginNodes
+  updatePluginNode
 } from "../plugin/scene-ops";
 import {
   putTrack,
+  readRig,
   readStoredTimeline,
   writeTracks,
+  type ShotBlock,
   type StoredTimeline
 } from "../plugin/timeline-io";
+import {
+  dollyRunEasing,
+  newDollyRun,
+  starterRailPoints,
+  type Point3
+} from "../plugin/rails";
+import { CART_KIND, PATH_KIND } from "../plugin/kinds";
 import type { PersistedTrack } from "../plugin/tracks";
 import { pascalTimeTransport } from "../transport/store";
 import { useNodeLabel } from "./panel-shared";
@@ -43,6 +65,7 @@ import type { ShotRow } from "./shots-section";
 
 type TransformTrack = Extract<PersistedTrack, { type: "transform" }>;
 type ActivationTrack = Extract<PersistedTrack, { type: "activation" }>;
+type CartTrack = Extract<PersistedTrack, { type: "cart" }>;
 
 const CUES_LANE = "cues";
 const TRACK_LANE = (trackId: string): string => `track|${trackId}`;
@@ -70,6 +93,18 @@ const THEME: TimelineLanesTheme = {
   shotSelectedBorder: "rgba(148, 163, 184, 0.35)",
   activeBorder: "rgba(255, 255, 255, 0.85)"
 };
+/**
+ * A dolly run's speed profile: the derivative of its easing, max-normalized — so the sparkline
+ * shows the accel/decel SHAPE of the ride rather than its distance. Same primitive the demo's
+ * dolly lanes use, and the derivative comes from the core sampler the evaluator itself uses, so
+ * the graph cannot disagree with the motion.
+ */
+function dollySpeedSeries(easing: Easing): BlockSeriesData {
+  const speed = sampleEasingDerivative(easing, 48).map(Math.abs);
+  const max = Math.max(1e-6, ...speed);
+  return { kind: "line", points: speed.map((value) => value / max) };
+}
+
 const CUE_COLOR = "rgba(249, 115, 22, 0.55)";
 const TRANSFORM_COLOR = "rgba(96, 165, 250, 0.38)";
 const ACTIVATION_COLOR = "rgba(45, 212, 191, 0.35)";
@@ -147,12 +182,15 @@ export function LaneDock({
   stored,
   cues,
   shots,
+  blocks,
   selectedTrackId,
   onSelectTrack
 }: {
   stored: StoredTimeline;
   cues: CueRow[];
   shots: ShotRow[];
+  /** The resolved spans. The lane draws these, so an overlap is visible as an overlap. */
+  blocks: Map<string, ShotBlock>;
   selectedTrackId: string | null;
   onSelectTrack: (trackId: string | null) => void;
 }): ReactNode {
@@ -217,6 +255,56 @@ export function LaneDock({
   const activeShotId =
     [...activeIds].find((id) => id.startsWith("s:"))?.slice(2) ?? null;
 
+  // The rails, for the dolly lanes. Carts come from the document (they are nodes); their runs
+  // come from the persisted payload (they are tracks) — which is why one lane needs both.
+  const cartNodes = useScene((state) => state.nodes);
+  const carts = useMemo(() => {
+    const out: { id: string; name: string; pathId: string }[] = [];
+    for (const [id, raw] of Object.entries(cartNodes)) {
+      const node = raw as Record<string, unknown>;
+      if (node.type !== CART_KIND) continue;
+      if (node.timelineId !== stored.id) continue;
+      out.push({
+        id,
+        name: (node.name as string | undefined) ?? id,
+        pathId: (node.pathId as string | undefined) ?? ""
+      });
+    }
+    return out;
+  }, [cartNodes, stored.id]);
+
+  const cartTracks = stored.tracks.filter(
+    (track): track is CartTrack => track.type === "cart"
+  );
+
+  const laneDollies = carts.map((cart) => ({ id: cart.id, name: cart.name }));
+  const laneDollyMoves: LaneDollyMove[] = cartTracks.flatMap((track) => {
+    const span = cartTrackSpan(track);
+    const cart = carts.find((entry) => entry.id === track.cartId);
+    if (!span || !cart) return [];
+    const from = track.keys[0]?.distance ?? 0;
+    const to = track.keys[track.keys.length - 1]?.distance ?? from;
+    const travels = Math.abs(to - from) > 1e-6;
+    return [
+      {
+        // The lane calls this `shotId` but uses it as the RUN's id — it is what comes back to
+        // `onDollyRunTiming` as `runId`, so the track's own id is what belongs here.
+        shotId: track.id,
+        dollyId: cart.id,
+        dollyName: cart.name,
+        start: span.start,
+        end: span.end,
+        label: `${from.toFixed(1)} → ${to.toFixed(1)} m`,
+        // A run that does not travel has no speed shape to draw.
+        // The persisted schema is deliberately wider on `easing` (zod infers plain string for a
+        // preset name); the shapes are runtime-identical. Same cast the curve editors make.
+        ...(travels
+          ? { series: dollySpeedSeries((dollyRunEasing(track) ?? "linear") as Easing) }
+          : {})
+      }
+    ];
+  });
+
   const transformTracks = stored.tracks.filter(
     (track): track is TransformTrack => track.type === "transform"
   );
@@ -224,15 +312,25 @@ export function LaneDock({
     (track): track is ActivationTrack => track.type === "activation"
   );
 
-  // Shot blocks: a shot holds from its own time to the next shot's (or the end). Dragging the
-  // seam between two shots therefore retimes both — batched below into one undo entry.
+  // Shot blocks are the RESOLVED spans, which is what makes the crossover visible: a shot whose
+  // block reaches past the next one's start overlaps it, and that overlap IS the blend. Before
+  // this the lane drew abutting blocks and a hand-off had no representation at all — the seam
+  // looked like a cut whatever the blend said.
   const orderedShots = [...shots].sort((a, b) => a.timeSeconds - b.timeSeconds);
-  const laneShots = orderedShots.map((shot, index) => ({
-    id: shot.id,
-    name: shot.name,
-    start: shot.timeSeconds,
-    end: orderedShots[index + 1]?.timeSeconds ?? Math.max(stored.durationSeconds, shot.timeSeconds)
-  }));
+  const laneShots = orderedShots.map((shot) => {
+    const block = blocks.get(shot.id);
+    const start = block?.start ?? shot.timeSeconds;
+    const end = block?.end ?? Math.max(stored.durationSeconds, start);
+    const overlap = block?.blendSeconds ?? 0;
+    return {
+      id: shot.id,
+      // The overlap is worth saying in the block, because two adjacent blocks on one lane read as
+      // abutting at a glance even when they are drawn crossing.
+      name: overlap > 0.01 ? `${shot.name} ↹${overlap.toFixed(1)}s` : shot.name,
+      start,
+      end
+    };
+  });
 
   const extraLanes: ExtraLane[] = [
     {
@@ -350,10 +448,63 @@ export function LaneDock({
         name: `Shot ${shots.length + 1}`,
         timelineId: stored.id,
         timeSeconds: Math.max(0, time),
+        // A block with a real span, so the new shot is draggable at both edges immediately.
+        endSeconds: Math.max(0, time) + 4,
         body: "static",
         position: pose.position,
         rotationDeg: pose.rotationDeg,
         fov: pose.fov
+      })
+    );
+  };
+
+  /** A rail laid across the view, so a new one appears where the author is looking. */
+  const createRail = (): string | null => {
+    const pose = getViewportCameraPose();
+    const points: Point3[] = pose
+      ? (() => {
+          const yaw = (pose.rotationDeg[1] * Math.PI) / 180;
+          const forward = { x: -Math.sin(yaw), y: 0, z: -Math.cos(yaw) };
+          return starterRailPoints(
+            {
+              x: pose.position[0] + forward.x * 6,
+              y: Math.max(0, pose.position[1] - 1.5),
+              z: pose.position[2] + forward.z * 6
+            },
+            { x: forward.z, y: 0, z: -forward.x },
+            8
+          );
+        })()
+      : starterRailPoints({ x: 0, y: 0, z: 0 }, { x: 1, y: 0, z: 0 }, 8);
+    const node = buildPathNode({ name: "Rail", points });
+    createPluginNode(node);
+    return node.id as string;
+  };
+
+  /** A cart on the newest rail — creating one first if the scene has none. */
+  const createCart = (): void => {
+    const existing = Object.entries(cartNodes)
+      .filter(([, raw]) => (raw as { type?: string }).type === PATH_KIND)
+      .map(([id]) => id);
+    const pathId = existing[existing.length - 1] ?? createRail();
+    if (!pathId) return;
+    createPluginNode(
+      buildCartNode({ name: `Cart ${carts.length + 1}`, timelineId: stored.id, pathId })
+    );
+  };
+
+  /** A camera riding the newest cart, taking over at `time`. */
+  const createCartShot = (time: number): void => {
+    const cart = carts[carts.length - 1];
+    if (!cart) return;
+    createPluginNode(
+      buildShotNode({
+        name: `Shot on ${cart.name}`,
+        timelineId: stored.id,
+        timeSeconds: Math.max(0, time),
+        endSeconds: Math.max(0, time) + 4,
+        body: "cart",
+        cartId: cart.id
       })
     );
   };
@@ -377,8 +528,8 @@ export function LaneDock({
       <TimelineLanes
         theme={THEME}
         shots={laneShots}
-        dollies={[]}
-        dollyMoves={[]}
+        dollies={laneDollies}
+        dollyMoves={laneDollyMoves}
         extraLanes={extraLanes}
         selectedShotId={selectedShotId}
         activeShotId={activeShotId}
@@ -389,25 +540,23 @@ export function LaneDock({
         // ~10 major ticks across the show, so a 10-second timeline fills the dock instead of
         // rendering as a sliver on the library's 5s-per-tick default.
         scaleSeconds={Math.max(0.5, Math.ceil(stored.durationSeconds / 10 / 0.5) * 0.5)}
-        // No rails here: a cart camera entry would be a dead button, and dolly/path creation
-        // belongs to path-creator hosts. The capture entry is the one this editor wants.
-        showCartShotEntry={false}
-        showDollyEntries={false}
+        // M1.7 gave this host rails, so both entries are live: a cart camera is a real shot body
+        // and dolly/path creation is a real gesture here.
+        showCartShotEntry={carts.length > 0}
+        showDollyEntries
         shotIcon="▲"
         onShotTiming={(shotId, start, end) => {
-          // One gesture, one undo entry — even when the drag retimes the NEXT shot's cut too.
-          const index = orderedShots.findIndex((shot) => shot.id === shotId);
-          const current = orderedShots[index];
-          const next = orderedShots[index + 1];
+          // The dragged shot alone, and BOTH its edges. Retiming the neighbour — which is what
+          // this did while blocks abutted — is exactly what made an overlap impossible: pushing
+          // one block over the next just pushed the next along in front of it. One shot, one
+          // updateNode, one undo entry, and the crossover is whatever the spans say it is.
+          const current = orderedShots.find((shot) => shot.id === shotId);
           if (!current) return;
-          const updates: { id: string; data: Record<string, unknown> }[] = [];
-          if (Math.abs(start - current.timeSeconds) > 1e-6) {
-            updates.push({ id: shotId, data: { timeSeconds: start } });
-          }
-          if (next && Math.abs(end - next.timeSeconds) > 1e-6) {
-            updates.push({ id: next.id, data: { timeSeconds: end } });
-          }
-          updatePluginNodes(updates);
+          const block = blocks.get(shotId);
+          const data: Record<string, unknown> = {};
+          if (Math.abs(start - current.timeSeconds) > 1e-6) data.timeSeconds = Math.max(0, start);
+          if (Math.abs(end - (block?.end ?? 0)) > 1e-6) data.endSeconds = Math.max(0, end);
+          if (Object.keys(data).length > 0) updatePluginNode(shotId, data);
         }}
         onSelectShot={(shotId) => {
           setSelection({ selectedIds: [shotId] });
@@ -415,11 +564,26 @@ export function LaneDock({
         }}
         onSeek={(time) => pascalTimeTransport.getState().seek(time)}
         onTransport={() => undefined}
-        onCreateShot={(_kind, time) => createShotFromView(time)}
-        onCreateDolly={() => undefined}
-        onCreatePath={() => undefined}
-        onDollyRunTiming={() => undefined}
-        onCreateDollyRun={() => undefined}
+        onCreateShot={(kind, time) => {
+          if (kind === "cart") createCartShot(time);
+          else createShotFromView(time);
+        }}
+        onCreateDolly={createCart}
+        onCreatePath={createRail}
+        onDollyRunTiming={(_cartId, runId, start, end) => {
+          const fresh = readStoredTimeline(stored.id);
+          const track = fresh?.tracks.find(
+            (entry): entry is CartTrack => entry.type === "cart" && entry.id === runId
+          );
+          if (!track) return;
+          putTrack(stored.id, retimeCartTrack(track, start, end));
+        }}
+        onCreateDollyRun={(cartId, time) => {
+          const cart = carts.find((entry) => entry.id === cartId);
+          const rail = cart ? readRig().paths.get(cart.pathId) : undefined;
+          if (!rail) return;
+          putTrack(stored.id, newDollyRun(cartId, rail.length, Math.max(0, time)));
+        }}
         onExtraClipTiming={handleExtraClipTiming}
         onCreateExtraClip={handleCreateExtraClip}
         onSelectLane={(laneId) => {

@@ -1,7 +1,7 @@
-// The shot list: cameras and the moments they take over. "+ shot from view" captures the
+// The shot list: cameras and the blocks of time they own. "+ shot from view" captures the
 // viewport camera's pose (via the scene driver's per-frame snapshot — the DOM can't reach into
-// R3F) as a static shot at the playhead; time and blend edit inline, committing on blur as one
-// node update each. A shot is a spatial node, so it is created at the scene root where placed
+// R3F) as a static shot starting at the playhead; start and end edit inline, committing on blur
+// as one node update each. Reaching past the next shot's start is what authors a crossover. A shot is a spatial node, so it is created at the scene root where placed
 // things live, and deleting or renaming it is Pascal's ordinary node lifecycle. Orbit shots
 // author through the inspector (parametrics), not here — this list owns timing and creation.
 "use client";
@@ -21,10 +21,16 @@ import type { StoredTimeline } from "../plugin/timeline-io";
 import { pascalTimeTransport } from "../transport/store";
 import { formatSeconds, NodeNumberField, styles, useKindNodes, useNodeLabel } from "./panel-shared";
 
+/** A captured shot owns this much time by default — long enough to see, short enough to drag. */
+const DEFAULT_SHOT_SECONDS = 4;
+
 export interface ShotRow {
   id: string;
   name: string;
   timeSeconds: number;
+  /** Block end as AUTHORED. 0 (or <= start) means unset; the resolver fills it in. */
+  endSeconds: number;
+  /** Legacy blend duration, kept only so the resolver can reconstruct a span without one. */
   blendSeconds: number;
   body: string;
   targetNodeId: string;
@@ -38,6 +44,7 @@ export function useShotRows(timelineId: string): ShotRow[] {
           id,
           name: (node.name as string | undefined) ?? id,
           timeSeconds: (node.timeSeconds as number | undefined) ?? 0,
+          endSeconds: (node.endSeconds as number | undefined) ?? 0,
           blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
           body: (node.body as string | undefined) ?? "static",
           targetNodeId: (node.targetNodeId as string | undefined) ?? ""
@@ -80,10 +87,13 @@ function OrbitTargetButton({ shot }: { shot: ShotRow }): ReactNode {
 
 export function ShotsSection({
   stored,
-  shots
+  shots,
+  blocks
 }: {
   stored: StoredTimeline;
   shots: ShotRow[];
+  /** The resolved spans, so a row shows the block it actually owns rather than its raw fields. */
+  blocks: Map<string, { start: number; end: number; blendSeconds: number }>;
 }): ReactNode {
   const time = useStore(pascalTimeTransport, (s) => s.time);
   const transport = pascalTimeTransport.getState();
@@ -105,6 +115,7 @@ export function ShotsSection({
                 timelineId: stored.id,
                 timeSeconds: time,
                 body: "static",
+                endSeconds: time + DEFAULT_SHOT_SECONDS,
                 position: pose.position,
                 rotationDeg: pose.rotationDeg,
                 fov: pose.fov
@@ -115,19 +126,23 @@ export function ShotsSection({
           + shot from view @ {formatSeconds(time)} s
         </button>
       </div>
-      {shots.map((shot) => (
+      {shots.map((shot) => {
+        const block = blocks.get(shot.id);
+        const landsAt = Math.min(
+          shot.timeSeconds + (block?.blendSeconds ?? 0),
+          stored.durationSeconds
+        );
+        return (
         <div key={shot.id} style={styles.listRow}>
           <button
             style={styles.iconButton}
             type="button"
             aria-label={`Seek to shot ${shot.name}`}
-            // A shot takes over ACROSS its blend: at timeSeconds it is still 100% the previous
-            // shot. Land where this shot fully owns the frame, or a seek "to" it shows its
-            // predecessor and every edit looks like it hit the wrong shot.
-            title={`Seek to ${formatSeconds(Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds))} s — where this shot fully owns the frame`}
-            onClick={() =>
-              transport.seek(Math.min(shot.timeSeconds + shot.blendSeconds, stored.durationSeconds))
-            }
+            // A shot takes over ACROSS its overlap with the previous one: at its own start it is
+            // still 100% the predecessor. Land where this shot fully owns the frame, or a seek
+            // "to" it shows the shot before and every edit looks like it hit the wrong one.
+            title={`Seek to ${formatSeconds(landsAt)} s — where this shot fully owns the frame`}
+            onClick={() => transport.seek(landsAt)}
           >
             ▲
           </button>
@@ -137,19 +152,30 @@ export function ShotsSection({
           <span style={{ ...styles.muted, fontSize: 11 }}>@</span>
           <NodeNumberField
             value={shot.timeSeconds}
-            label={`Shot ${shot.name} time in seconds`}
+            label={`Shot ${shot.name} start in seconds`}
             min={0}
             width={44}
             onCommit={(timeSeconds) => updatePluginNode(shot.id, { timeSeconds })}
           />
-          <span style={{ ...styles.muted, fontSize: 11 }}>blend</span>
+          <span style={{ ...styles.muted, fontSize: 11 }}>to</span>
           <NodeNumberField
-            value={shot.blendSeconds}
-            label={`Shot ${shot.name} blend in seconds`}
+            value={block?.end ?? shot.timeSeconds}
+            label={`Shot ${shot.name} end in seconds`}
             min={0}
             width={44}
-            onCommit={(blendSeconds) => updatePluginNode(shot.id, { blendSeconds })}
+            // Editing the end is editing the crossover: past the next shot's start, the excess
+            // IS the blend. Committing the RESOLVED end when the field was never authored keeps
+            // the number the author sees and the number they change the same one.
+            onCommit={(endSeconds) => updatePluginNode(shot.id, { endSeconds })}
           />
+          {block && block.blendSeconds > 0 ? (
+            <span
+              style={{ ...styles.muted, fontSize: 11 }}
+              title="Overlap with the previous shot — this is the crossover"
+            >
+              ↹{formatSeconds(block.blendSeconds)}
+            </span>
+          ) : null}
           {shot.body === "orbit" ? <OrbitTargetButton shot={shot} /> : null}
           <button
             style={styles.iconButton}
@@ -161,7 +187,8 @@ export function ShotsSection({
             ✕
           </button>
         </div>
-      ))}
+        );
+      })}
     </div>
   );
 }

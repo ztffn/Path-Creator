@@ -5,7 +5,8 @@
 // module import time. Scope: the Pascal-facing boundary; nothing in here knows about time.
 import type { NodeDefinition, Plugin } from "@pascal-app/core";
 import {
-  CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, SHOT_KIND, ShotNode, TIMELINE_KIND, TimelineNode
+  CART_KIND, CartNode, CUE_KIND, CueNode, PASCAL_TIME_PLUGIN_ID, PATH_KIND, PathNode,
+  SHOT_KIND, ShotNode, TIMELINE_KIND, TimelineNode
 } from "./kinds";
 import { TRACK_PAYLOAD_VERSION } from "./tracks";
 
@@ -125,6 +126,7 @@ export const cueDefinition = {
  *  spec pins every one of them against `defaults()` instead. */
 type ShotFields = {
   body?: string;
+  pathId?: string;
   aimMode?: string;
   composerEnabled?: boolean;
   animateFov?: boolean;
@@ -149,10 +151,13 @@ export const shotDefinition = {
     metadata: {},
     timelineId: "",
     timeSeconds: 0,
+    endSeconds: 0,
     blendSeconds: 1,
     body: "static" as const,
     position: [0, 2, 6] as [number, number, number],
     rotationDeg: [0, 0, 0] as [number, number, number],
+    cartId: "",
+    cartOffset: [0, 0, 0] as [number, number, number],
     targetNodeId: "",
     targetPoint: [0, 0, 0] as [number, number, number],
     azimuthDeg: 25,
@@ -206,13 +211,16 @@ export const shotDefinition = {
         label: "Timing",
         fields: [
           { key: "timeSeconds", kind: "number", unit: "s", min: 0, step: 0.1 },
-          { key: "blendSeconds", kind: "number", unit: "s", min: 0, step: 0.1 }
+          // The block's end. Reaching past the next shot's start is what authors a crossover —
+          // the overlap IS the blend, so there is no separate blend duration to set.
+          // `blendSeconds` is legacy: nothing authors it, and it is deliberately not here.
+          { key: "endSeconds", kind: "number", unit: "s", min: 0, step: 0.1 }
         ]
       },
       {
         label: "Camera",
         fields: [
-          { key: "body", kind: "enum", options: ["static", "orbit"], display: "segmented" },
+          { key: "body", kind: "enum", options: ["static", "orbit", "cart"], display: "segmented" },
           { key: "fov", kind: "number", unit: "°", min: 1, max: 179, step: 1 },
           // A FOV push: `fov` is the start, `fovEnd` the end, eased across the shot's own
           // window. The curve itself has no declarative field kind, so the panel owns it.
@@ -242,6 +250,14 @@ export const shotDefinition = {
           { key: "radius", kind: "number", unit: "m", min: 0, step: 0.5, visibleIf: (n: { body: string }) => n.body === "orbit" },
           { key: "azimuthDeg", kind: "number", unit: "°", step: 1, visibleIf: (n: { body: string }) => n.body === "orbit" },
           { key: "elevationDeg", kind: "number", unit: "°", step: 1, visibleIf: (n: { body: string }) => n.body === "orbit" }
+        ]
+      },
+      {
+        // The rail body (M1.7). `cartId` is absent for the same reason every other node
+        // reference here is: no free-text field kind, and `ref` filters by a single kind.
+        label: "Cart",
+        fields: [
+          { key: "cartOffset", kind: "vec3", visibleIf: (n: ShotFields) => n.body === "cart" }
         ]
       },
       {
@@ -305,11 +321,163 @@ export const shotDefinition = {
   }
 } as unknown as NodeDefinition<typeof ShotNode>;
 
+
+/**
+ * The rail. Fully spatial: an author places every control point, and Pascal's own move and rotate
+ * gizmos transform the whole thing — the reader folds this node's world matrix into its local
+ * points, so the library receives a world-space path and needs no rig transform of its own.
+ *
+ * `points` and `perAnchorNormalsAngle` are deliberately absent from the inspector: they are
+ * lists, there is no field kind for one, and the surface for editing them is the viewport (the
+ * library's `PathEditor`, mounted by the host) with the panel for add/remove.
+ */
+export const pathDefinition = {
+  kind: PATH_KIND,
+  schemaVersion: 1,
+  schema: PathNode,
+  category: "analysis",
+  defaults: () => ({
+    object: "node" as const,
+    parentId: null,
+    visible: true,
+    metadata: {},
+    points: [],
+    perAnchorNormalsAngle: [],
+    isClosed: false,
+    space: "xyz" as const,
+    controlMode: "automatic" as const,
+    autoControlLength: 0.3,
+    flipNormals: false,
+    globalNormalsAngle: 0,
+    maxAngleError: 0.3,
+    minVertexDistance: 0.01,
+    spacing: 0,
+    position: [0, 0, 0] as [number, number, number]
+  }),
+  renderer: { kind: "parametric", module: () => import("../render/path-renderer") },
+  presentation: {
+    label: "Path",
+    icon: { kind: "svg", viewBox: "0 0 24 24", path: "M4 18c4-10 12 2 16-10" },
+    hidden: true
+  },
+  parametrics: {
+    groups: [
+      {
+        label: "Shape",
+        fields: [
+          { key: "position", kind: "vec3" },
+          { key: "isClosed", kind: "boolean" },
+          // Constrains the axes an author can drag a point in: `xz` keeps a rail on the ground.
+          { key: "space", kind: "enum", options: ["xyz", "xz", "xy"], display: "segmented" },
+          {
+            key: "controlMode",
+            kind: "enum",
+            options: ["automatic", "aligned", "mirrored", "free"]
+          },
+          { key: "autoControlLength", kind: "number", unit: "m", min: 0.01, step: 0.05 }
+        ]
+      },
+      {
+        // How finely the curve is walked into the vertex path distance is measured along. These
+        // decide how faithfully a cart follows a tight corner.
+        label: "Sampling",
+        fields: [
+          { key: "maxAngleError", kind: "number", unit: "°", min: 0, step: 0.05 },
+          { key: "minVertexDistance", kind: "number", unit: "m", min: 0, step: 0.01 },
+          { key: "spacing", kind: "number", unit: "m", min: 0, step: 0.1 }
+        ]
+      },
+      {
+        label: "Normals",
+        fields: [
+          { key: "flipNormals", kind: "boolean" },
+          { key: "globalNormalsAngle", kind: "number", unit: "°", step: 1 }
+        ]
+      }
+    ]
+  },
+  presettable: false,
+  capabilities: {
+    selectable: { hitVolume: "bbox" },
+    // Moving and rotating the rail as a whole is Pascal's job, with Pascal's undo — which is the
+    // entire reason the points are stored local and baked to world on read.
+    movable: { axes: ["x", "y", "z"] as const },
+    rotatable: {},
+    deletable: true,
+    duplicable: true
+  }
+} as unknown as NodeDefinition<typeof PathNode>;
+
+/**
+ * The cart. It draws, so it lives where spatial things live (trap 11 applies to anything that
+ * draws, not only to anything with a position) — but it has NO position field and is NOT movable,
+ * because its world position is derived from its rail every frame. Storing one would be a second,
+ * always stale answer to where it is. An author moves it by `distance`, or by a cart track.
+ */
+export const cartDefinition = {
+  kind: CART_KIND,
+  schemaVersion: 1,
+  schema: CartNode,
+  category: "analysis",
+  defaults: () => ({
+    object: "node" as const,
+    parentId: null,
+    visible: true,
+    metadata: {},
+    timelineId: "",
+    pathId: "",
+    distance: 0,
+    speed: 0,
+    endOfPathInstruction: "loop" as const,
+    orientationMode: "path-frame" as const,
+    positionOffset: [0, 0, 0] as [number, number, number]
+  }),
+  renderer: { kind: "parametric", module: () => import("../render/cart-renderer") },
+  presentation: {
+    label: "Cart",
+    icon: { kind: "svg", viewBox: "0 0 24 24", path: "M3 16c4-8 14-8 18 0M8 16a2 2 0 104 0 2 2 0 10-4 0" },
+    hidden: true
+  },
+  parametrics: {
+    groups: [
+      {
+        label: "Ride",
+        fields: [
+          { key: "distance", kind: "number", unit: "m", step: 0.1 },
+          { key: "speed", kind: "number", unit: "m/s", step: 0.1 },
+          {
+            key: "endOfPathInstruction",
+            kind: "enum",
+            options: ["loop", "reverse", "stop"],
+            display: "segmented"
+          },
+          { key: "orientationMode", kind: "enum", options: ["path-frame", "path-yaw", "fixed"] },
+          { key: "positionOffset", kind: "vec3" }
+        ]
+      }
+    ]
+  },
+  presettable: false,
+  capabilities: {
+    selectable: { hitVolume: "bbox" },
+    deletable: true,
+    // Duplicating a cart to run a second camera along the same rail is a reasonable way to
+    // author. The clone remap rebinds `pathId` only when the PATH was cloned too.
+    duplicable: true
+  }
+} as unknown as NodeDefinition<typeof CartNode>;
+
 /**
  * The manifest. `apiVersion` is Pascal's plugin contract version, not ours.
  */
 export const pascalTimePlugin: Plugin = {
   id: PASCAL_TIME_PLUGIN_ID,
   apiVersion: 1,
-  nodes: [timelineDefinition as never, cueDefinition as never, shotDefinition as never]
+  nodes: [
+    timelineDefinition as never,
+    cueDefinition as never,
+    shotDefinition as never,
+    pathDefinition as never,
+    cartDefinition as never
+  ]
 };

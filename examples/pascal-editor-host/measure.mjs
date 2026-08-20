@@ -104,7 +104,7 @@ try {
   check("hydration ran and the probe reports", boot !== null, JSON.stringify(boot?.transport));
   check(
     "the browser registry holds Pascal's builtins plus huma-time (49 kinds)",
-    boot.nodeRegistrySize === 49,
+    boot.nodeRegistrySize === 51,
     boot.nodeRegistrySize
   );
 
@@ -329,9 +329,16 @@ try {
   await page.getByRole("button", { name: "Seek to shot Shot 1" }).click();
   const pastBlend = await until(page, () => {
     const p = window.__editorProbe;
-    return Math.abs(p.transport.time - 4) < 1e-6 ? p : null;
+    return Math.abs(p.transport.time - 3) < 1e-6 ? p : null;
   });
-  check("seeking to a shot lands past its blend (t=3 + blend 1 -> 4)", true, pastBlend.transport.time);
+  // A shot takes over ACROSS its overlap with the previous one, and this is the FIRST shot — it
+  // has nothing to come from, so there is no crossover and seeking to it lands on its own start.
+  // Section L authors a real overlap and checks that the same affordance then lands past it.
+  check(
+    "seeking to the first shot lands on its start — nothing to blend from",
+    true,
+    pastBlend.transport.time
+  );
 
   // The inspector is def.parametrics, hand-declared (M1.3 milestone C). Selecting the shot
   // must surface our groups through Pascal's own ParametricInspector. The desktop inspector
@@ -791,10 +798,17 @@ try {
     `${pipRunning.frames} frames of ${pipRunning.shotId}`
   );
 
-  const expectedPip = await page.evaluate(
-    (args) => window.__editorProbe.shotSnapshotAt(args.id, args.time),
-    { id: shotOneId, time: 4.2 }
-  );
+  // The inset prefers the pose the director APPLIED when the previewed shot is the one in force,
+  // so it agrees with the viewport instead of deriving a second answer. Which means the reference
+  // depends on which path it took — and a mid-blend applied frame belongs to no single shot, so
+  // comparing it against a pure resolve of one would fail for the right reason and read as a bug.
+  const applied = await page.evaluate(() => window.__editorProbe.appliedCamera());
+  const expectedPip = pipRunning.fromDirector
+    ? applied
+    : await page.evaluate(
+        (args) => window.__editorProbe.shotSnapshotAt(args.id, args.time),
+        { id: shotOneId, time: 4.2 }
+      );
   const pipDrift = Math.hypot(
     pipRunning.position[0] - expectedPip.position[0],
     pipRunning.position[1] - expectedPip.position[1],
@@ -803,7 +817,7 @@ try {
   check(
     "and renders from the shot it names, not from somewhere merely plausible",
     pipDrift < 1e-3,
-    `${pipDrift} m`
+    `${pipDrift} m ${pipRunning.fromDirector ? "(director's applied pose)" : "(own resolve)"}`
   );
 
   // R9's half of the PiP: owning a second camera means the controller's is untouched.
@@ -902,6 +916,443 @@ try {
     "and the camera-language session left the document consistent",
     (await probe(page)).hasCameraTrack === true,
     "camera track still resolves"
+  );
+
+
+  // --- L. the overlap model: a crossover you can see and drag ---
+  // Before this, blocks abutted and the blend was a number typed elsewhere, so the lane drew a
+  // hard seam over a real ramp. Now a shot's block reaching past the next one's start IS the
+  // crossover, which is how the library's own demo authors it.
+  const shotIdsForSpan = await page.evaluate(() =>
+    window.__editorProbe.findNodeIdsByType("huma-time:shot")
+  );
+  const spanA = shotIdsForSpan[0];
+  const spanB = shotIdsForSpan[1];
+
+  const blockOf = (id) =>
+    page.evaluate(
+      (shotId) => window.__editorProbe.cameraBlocks().find((b) => b.vcamId === shotId) ?? null,
+      id
+    );
+
+  const blockA = await blockOf(spanA);
+  const blockB = await blockOf(spanB);
+  check(
+    "each shot owns a block with a real span, not a point",
+    blockA && blockB && blockA.end > blockA.start && blockB.end > blockB.start,
+    `A ${blockA?.start}–${blockA?.end}, B ${blockB?.start}–${blockB?.end}`
+  );
+  check(
+    "the second shot's blend is the OVERLAP with the first, not a stored number",
+    blockB?.blendIn?.durationSeconds !== undefined &&
+      Math.abs(blockB.blendIn.durationSeconds - (blockA.end - blockB.start)) < 1e-6,
+    `overlap ${(blockA.end - blockB.start).toFixed(3)}s, blend ${blockB?.blendIn?.durationSeconds}`
+  );
+
+  // Lengthen the crossover by moving the incoming shot's start earlier — one field, one write.
+  // BY NAME, not by index: the list is ordered by TIME and these ids are in document order, and a
+  // shot created from the lane's context menu sits between the first two.
+  const spanBName = await page.evaluate(
+    (id) => window.__editorProbe.nodeField(id, "name"),
+    spanB
+  );
+  const startField = sidebar.getByRole("textbox", {
+    name: `Shot ${spanBName} start in seconds`,
+    exact: true
+  });
+  await startField.fill("4");
+  await startField.press("Enter");
+  const widened = await until(
+    page,
+    (id) => {
+      const block = window.__editorProbe.cameraBlocks().find((b) => b.vcamId === id);
+      return block?.blendIn?.durationSeconds > 2 ? block : null;
+    },
+    { timeout: 10_000 },
+    spanB
+  );
+  check(
+    "moving a shot's start back over its predecessor lengthens the crossover",
+    widened.blendIn.durationSeconds > 2,
+    `${widened.blendIn.durationSeconds.toFixed(2)}s`
+  );
+
+  // And the crossover is real: mid-blend the camera is at neither shot's pose.
+  const poseA = await page.evaluate(
+    (args) => window.__editorProbe.shotSnapshotAt(args.id, args.t),
+    { id: spanA, t: 5 }
+  );
+  const poseB = await page.evaluate(
+    (args) => window.__editorProbe.shotSnapshotAt(args.id, args.t),
+    { id: spanB, t: 5 }
+  );
+  await scrubTo(5);
+  const midBlend = await page.evaluate(() => window.__cameraProbe.pose());
+  const distanceTo = (target) =>
+    Math.hypot(
+      midBlend.position[0] - target.position[0],
+      midBlend.position[1] - target.position[1],
+      midBlend.position[2] - target.position[2]
+    );
+  const gap = Math.hypot(
+    poseA.position[0] - poseB.position[0],
+    poseA.position[1] - poseB.position[1],
+    poseA.position[2] - poseB.position[2]
+  );
+  check(
+    "mid-crossover the viewport camera is between the two shots, not at either",
+    gap > 1 && distanceTo(poseA) > 0.05 * gap && distanceTo(poseB) > 0.05 * gap,
+    `${distanceTo(poseA).toFixed(2)} m from A, ${distanceTo(poseB).toFixed(2)} m from B, gap ${gap.toFixed(2)}`
+  );
+
+  // The lane says so too: an overlapping block names its crossover, so two blocks drawn crossing
+  // are not mistaken for two blocks abutting.
+  const overlapLabelled = await dock.locator(".timeline-editor-action").filter({ hasText: "↹" }).count();
+  check("the overlapping block names its crossover on the lane", overlapLabelled >= 1, overlapLabelled);
+
+  // Seek-to-shot now lands past a REAL overlap, which the first-shot check could not show.
+  await sidebar
+    .getByRole("button", { name: `Seek to shot ${spanBName}`, exact: true })
+    .click();
+  const landed = await until(
+    page,
+    (args) => {
+      const p = window.__editorProbe;
+      return Math.abs(p.transport.time - args.expected) < 1e-3 ? p.transport.time : null;
+    },
+    { timeout: 10_000 },
+    { expected: 4 + widened.blendIn.durationSeconds }
+  );
+  check("seeking to an overlapped shot lands where it fully owns the frame", true, landed);
+
+  // --- M. rails: a path, a cart, a run, and a camera riding it ---
+  const railsSection = sidebar.locator("[data-rails]");
+  await railsSection.waitFor({ state: "visible", timeout: 10_000 });
+  await railsSection.getByRole("button", { name: "+ rail", exact: true }).click();
+  const railId = await until(
+    page,
+    () => window.__editorProbe.findNodeIdByType("huma-time:path"),
+    { timeout: 10_000 }
+  );
+  check("a rail is authorable from the panel", Boolean(railId), railId);
+
+  const lengths = await page.evaluate(() => window.__editorProbe.railLengths());
+  check(
+    "the rail is samplable the moment it exists — a starter has a real segment",
+    (lengths[railId] ?? 0) > 1,
+    `${(lengths[railId] ?? 0).toFixed(2)} m`
+  );
+
+  // Shape mode: the handles mount into the SCENE, on Pascal's own overlay layer. The layer is
+  // re-asserted inside a useFrame (async children — gizmo internals, text — mount after their
+  // parent), so it lands on the first frame AFTER mount. Sampling once races that; wait for it.
+  const handlesBefore = await until(
+    page,
+    () => {
+      const handles = window.__editorProbe.pathHandles();
+      return handles.mounted && handles.objects > 1 && handles.objects === handles.onOverlayLayer
+        ? handles
+        : null;
+    },
+    { timeout: 15_000 }
+  );
+  check(
+    "with shape mode on from creation, the handles are mounted",
+    handlesBefore.mounted === true && handlesBefore.objects > 1,
+    `${handlesBefore.objects} objects`
+  );
+  check(
+    "and every one of them is on Pascal's overlay layer, or the post pass never draws them",
+    handlesBefore.objects === handlesBefore.onOverlayLayer,
+    `${handlesBefore.onOverlayLayer}/${handlesBefore.objects}`
+  );
+
+  // Shaping for real: click the rail's first anchor in the VIEWPORT, then drag the gizmo that
+  // appears. The handles are meshes in the R3F scene, so the check has to be told where they
+  // landed on screen — that is what the camera probe's `project` is for.
+  //
+  // Frame the rail first. A new rail is laid out in front of wherever the author was looking, so
+  // an end of it can sit outside the frustum — and a click at an off-canvas coordinate lands on
+  // whatever chrome happens to be there, which then drags something else entirely.
+  const canvasBox = await page.locator("canvas").first().boundingBox();
+  const railWorld = await page.evaluate(
+    (id) => {
+      const points = window.__editorProbe.nodeField(id, "points");
+      const origin = window.__editorProbe.nodeField(id, "position");
+      if (!points?.length || !origin) return null;
+      const at = (point) => [point.x + origin[0], point.y + origin[1], point.z + origin[2]];
+      const first = at(points[0]);
+      const last = at(points[points.length - 1]);
+      return {
+        first,
+        centre: [(first[0] + last[0]) / 2, (first[1] + last[1]) / 2, (first[2] + last[2]) / 2]
+      };
+    },
+    railId
+  );
+  // The author takes the camera to frame it, exactly as section I does — a direct write past the
+  // controller would be lost on its next update (R9).
+  await page.evaluate(() => window.__editorProbe.setInputDragging(true));
+  await until(page, () => window.__editorProbe.transport.cameraFollow === false);
+  await page.evaluate(
+    (rail) =>
+      window.__cameraProbe.look(
+        [rail.centre[0], rail.centre[1] + 7, rail.centre[2] + 14],
+        rail.centre
+      ),
+    railWorld
+  );
+  await page.evaluate(() => window.__editorProbe.setInputDragging(false));
+  await sleep(500);
+
+  const anchorScreen = await page.evaluate(
+    (point) => window.__cameraProbe.project(point),
+    railWorld.first
+  );
+  const onCanvas =
+    anchorScreen !== null &&
+    anchorScreen.x > 4 &&
+    anchorScreen.y > 4 &&
+    anchorScreen.x < canvasBox.width - 4 &&
+    anchorScreen.y < canvasBox.height - 4;
+  check(
+    "framing the rail puts its first anchor on screen, so a drag can reach it",
+    onCanvas,
+    JSON.stringify(anchorScreen)
+  );
+
+  if (onCanvas) {
+    // Clear Pascal's selection first. A selected node mounts PASCAL's own move gizmo, and with the
+    // rail selected that gizmo sits exactly where ours does — the drag then moves the path NODE as
+    // well as the anchor, which is two document writes and reads as a batching bug in our code.
+    await page.evaluate(() => window.__editorProbe.selectNodes([]));
+    await sleep(200);
+
+    const ax = canvasBox.x + anchorScreen.x;
+    const ay = canvasBox.y + anchorScreen.y;
+    await page.mouse.click(ax, ay);
+    await sleep(400);
+
+    // One drag, measured twice at different pointer-move counts. That is the claim worth making:
+    // the cost of a gesture must not scale with how many frames the pointer took. Asserting an
+    // exact count would instead pin how many transform cycles the library's editor happens to
+    // emit for one press, which is not this package's behaviour and not a promise it can keep.
+    const dragBy = async (steps) => {
+      const before = await page.evaluate(() => window.__editorProbe.undoDepthNow());
+      const pointsBefore = await page.evaluate(
+        (id) => window.__editorProbe.nodeField(id, "points"),
+        railId
+      );
+      await page.mouse.move(ax, ay);
+      await page.mouse.down();
+      for (let step = 1; step <= steps; step += 1) {
+        await page.mouse.move(ax + step * (72 / steps), ay - step * (36 / steps));
+        await sleep(16);
+      }
+      await page.mouse.up();
+      await sleep(500);
+      const pointsAfter = await page.evaluate(
+        (id) => window.__editorProbe.nodeField(id, "points"),
+        railId
+      );
+      return {
+        entries: (await page.evaluate(() => window.__editorProbe.undoDepthNow())) - before,
+        moved: Math.hypot(
+          (pointsAfter?.[0]?.x ?? 0) - (pointsBefore?.[0]?.x ?? 0),
+          (pointsAfter?.[0]?.y ?? 0) - (pointsBefore?.[0]?.y ?? 0),
+          (pointsAfter?.[0]?.z ?? 0) - (pointsBefore?.[0]?.z ?? 0)
+        )
+      };
+    };
+
+    const shortDrag = await dragBy(6);
+    check(
+      "dragging a handle in the viewport reshapes the rail in the document",
+      shortDrag.moved > 0.05,
+      `${shortDrag.moved.toFixed(3)} m over 6 pointer moves`
+    );
+
+    const longDrag = await dragBy(24);
+    check(
+      "the drag's undo cost does not grow with pointer moves — 4x the moves, no more entries",
+      longDrag.entries <= shortDrag.entries && longDrag.entries <= 2,
+      `${shortDrag.entries} entries at 6 moves, ${longDrag.entries} at 24`
+    );
+  }
+
+  await railsSection.getByRole("button", { name: /Shape .* in the viewport/ }).click();
+  const handlesOff = await until(
+    page,
+    () => {
+      const handles = window.__editorProbe.pathHandles();
+      return handles.mounted === false ? handles : null;
+    },
+    { timeout: 10_000 }
+  );
+  check("turning shape mode off unmounts them entirely", handlesOff.mounted === false, "unmounted");
+
+  // Extend the rail: one more anchor, and it gets longer.
+  await railsSection.getByRole("button", { name: /Extend / }).click();
+  const grown = await until(
+    page,
+    (id) => {
+      const lengths = window.__editorProbe.railLengths();
+      return (lengths[id] ?? 0) > 9 ? lengths[id] : null;
+    },
+    { timeout: 10_000 },
+    railId
+  );
+  check("extending the rail adds to its length", grown > 9, `${grown.toFixed(2)} m`);
+
+  // A cart on the rail, and a run for it.
+  await railsSection.getByRole("button", { name: /Add a cart to / }).click();
+  const cartId = await until(
+    page,
+    () => window.__editorProbe.findNodeIdByType("huma-time:cart"),
+    { timeout: 10_000 }
+  );
+  check("a cart rides the rail", Boolean(cartId), cartId);
+
+  // Put the run and the cart shot on the SAME window, and place that window after EVERY other
+  // shot's start: the last start wins, so anything less is a sample that might belong to another
+  // shot. Lengthen the clock first, through the panel's own duration field, so the window fits.
+  const durationField = sidebar.getByRole("textbox", { name: "Timeline duration in seconds" });
+  await durationField.fill("30");
+  await durationField.press("Enter");
+  await until(page, () => {
+    const p = window.__editorProbe;
+    return p.nodeField(p.timelineId, "durationSeconds") === 30 ? true : null;
+  });
+  // Past every existing block's END, not merely past their starts. A shot whose block still runs
+  // into this window overlaps it, and an overlap IS a crossover — so the camera would sit part-way
+  // between two shots for perfectly correct reasons, and "the camera is on its cart" would fail
+  // while measuring a blend. That is the model working, not the rail failing.
+  const RIDE_START = await page.evaluate(() => {
+    const ends = window.__editorProbe.cameraBlocks().map((block) => block.end ?? 0);
+    return Math.ceil(Math.max(0, ...ends)) + 1;
+  });
+  await scrubTo(RIDE_START);
+  await railsSection.getByRole("button", { name: /Add a dolly run for / }).click();
+  const runTrack = await until(
+    page,
+    (id) => {
+      const p = window.__editorProbe;
+      const tracks = p.nodeField(p.timelineId, "tracks") ?? [];
+      return tracks.find((track) => track.type === "cart" && track.cartId === id) ?? null;
+    },
+    { timeout: 10_000 },
+    cartId
+  );
+  check(
+    "the run rides the whole rail, eased from its FIRST key",
+    runTrack.keys.length === 2 &&
+      runTrack.keys[0].easing === "easeInOut" &&
+      Math.abs(runTrack.keys[1].distance - grown) < 0.5,
+    `0 → ${runTrack.keys[1].distance.toFixed(2)} m, easing on key 0`
+  );
+
+  // The dolly lane comes alive: a block for the run, with its speed sparkline.
+  const dollyBlock = dock.locator(".timeline-editor-action").filter({ hasText: "→" });
+  await dollyBlock.first().waitFor({ state: "visible", timeout: 10_000 });
+  check("the dolly lane shows the run as a block", (await dollyBlock.count()) >= 1, await dollyBlock.count());
+  const sparklines = await dollyBlock.first().locator("svg path, svg polyline").count();
+  check("with its speed profile drawn inside it", sparklines >= 1, sparklines);
+
+  // The cart shot goes on NOW, while the playhead is still at the run's start — a shot is created
+  // wherever the playhead is, and the sampling below moves it. Created later, its window would sit
+  // past the run entirely and the samples would belong to whichever other shot owns that moment.
+  await railsSection.getByRole("button", { name: /Add a shot on / }).click();
+  const cartShotId = await until(
+    page,
+    (id) =>
+      window.__editorProbe
+        .findNodeIdsByType("huma-time:shot")
+        .find((shot) => window.__editorProbe.nodeField(shot, "cartId") === id) ?? null,
+    { timeout: 10_000 },
+    cartId
+  );
+  check("a cart-bodied shot is authorable from the rail", Boolean(cartShotId), cartShotId);
+
+  // The cart's position is DERIVED from the clock, never stored.
+  await scrubTo(RIDE_START + 0.5);
+  const cartAtStart = (await page.evaluate(() => window.__editorProbe.cartPositions()))[cartId];
+  await scrubTo(RIDE_START + 3.5);
+  const cartLater = (await page.evaluate(() => window.__editorProbe.cartPositions()))[cartId];
+  const rode = Math.hypot(
+    cartLater[0] - cartAtStart[0],
+    cartLater[1] - cartAtStart[1],
+    cartLater[2] - cartAtStart[2]
+  );
+  check("the cart rides the rail as the clock advances", rode > 1, `${rode.toFixed(2)} m`);
+  const storedCartPosition = await page.evaluate(
+    (id) => window.__editorProbe.nodeField(id, "position"),
+    cartId
+  );
+  check(
+    "and its position is nowhere in the document — it is derived every frame",
+    storedCartPosition === undefined,
+    String(storedCartPosition)
+  );
+
+  // The drag above left the AUTHOR owning the camera (a viewport press is a grab). A seek reclaims
+  // it — without this the "camera rides the rail" checks would measure a parked camera and report
+  // 0 m for the right reason, which reads exactly like the feature not working.
+  await scrubTo(RIDE_START + 0.5);
+  const reclaimed = await until(page, () => {
+    const p = window.__editorProbe;
+    return p.transport.cameraFollow === true ? p : null;
+  });
+  check(
+    "a seek hands the camera back to the director after viewport shaping",
+    reclaimed.transport.cameraFollow === true,
+    "cameraFollow=true"
+  );
+
+  // Whose frame is it? Asserted rather than assumed: with several shots authored, the last start
+  // wins, and measuring "the camera rode the rail" while a static shot owned the frame would
+  // report 0 m for a reason that has nothing to do with rails.
+  const ownsEarly = await page.evaluate(() => window.__editorProbe.appliedCamera());
+  check(
+    "the cart shot owns the frame across the run's window",
+    ownsEarly?.vcamId === cartShotId,
+    `${ownsEarly?.vcamId === cartShotId ? "the cart shot" : ownsEarly?.vcamId} at t=${RIDE_START + 0.5}`
+  );
+
+  const ridingEarly = await page.evaluate(() => window.__cameraProbe.pose());
+  await scrubTo(RIDE_START + 3.5);
+  const ridingLate = await page.evaluate(() => window.__cameraProbe.pose());
+  const cameraRode = Math.hypot(
+    ridingLate.position[0] - ridingEarly.position[0],
+    ridingLate.position[1] - ridingEarly.position[1],
+    ridingLate.position[2] - ridingEarly.position[2]
+  );
+  check(
+    "and the viewport camera actually rides the rail under R9 (through the controller)",
+    cameraRode > 1,
+    `${cameraRode.toFixed(2)} m`
+  );
+
+  // The camera and the cart are at the same place: the shot is ON the rail, not merely moving.
+  const cartAtLate = (await page.evaluate(() => window.__editorProbe.cartPositions()))[cartId];
+  const offRail = Math.hypot(
+    ridingLate.position[0] - cartAtLate[0],
+    ridingLate.position[1] - cartAtLate[1],
+    ridingLate.position[2] - cartAtLate[2]
+  );
+  check("the camera sits exactly on its cart", offRail < 1e-3, `${offRail.toExponential(2)} m`);
+
+  // Moving the RAIL moves the shot, with no timeline edit — the binding-by-id seam again.
+  const railWas = await page.evaluate((id) => window.__editorProbe.nodeField(id, "position"), railId);
+  await page.evaluate(
+    (args) => window.__editorProbe.setNodePosition(args.id, args.position),
+    { id: railId, position: [railWas[0], railWas[1] + 5, railWas[2]] }
+  );
+  await scrubTo(RIDE_START + 3.5);
+  const afterRailMove = await page.evaluate(() => window.__cameraProbe.pose());
+  check(
+    "moving the rail moves the shot riding it, with no timeline edit at all",
+    Math.abs(afterRailMove.position[1] - ridingLate.position[1] - 5) < 0.05,
+    `${(afterRailMove.position[1] - ridingLate.position[1]).toFixed(3)} m of 5`
   );
 
   check("no unhandled page errors", pageErrors.length === 0, pageErrors.slice(0, 3).join(" | "));

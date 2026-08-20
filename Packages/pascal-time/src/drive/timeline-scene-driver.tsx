@@ -8,9 +8,17 @@ import { useFrame } from "@react-three/fiber";
 import { useEffect, useMemo, useRef } from "react";
 import { Euler, type Camera } from "three";
 import { sceneRegistry, useScene } from "@pascal-app/core";
+import { PATH_KIND } from "../plugin/kinds";
 import type { Timeline, VirtualCameraDefinition } from "@huma/path-creator/core";
 import { pascalTimeTransport } from "../transport/store";
-import { readShotDefinitions, readStoredTimeline, readTimeline } from "../plugin/timeline-io";
+import {
+  emptyRig,
+  readRig,
+  readShotDefinitions,
+  readStoredTimeline,
+  readTimeline,
+  type PascalRig
+} from "../plugin/timeline-io";
 import { pascalSceneBinding } from "../bind/scene-binding";
 import { PascalNodeDriver } from "./node-driver";
 import {
@@ -28,6 +36,10 @@ interface EvaluationCache {
   nodes: unknown;
   timeline: Timeline | null;
   vcams: Map<string, VirtualCameraDefinition>;
+  /** The rails. Rebuilt on a document change AND on a rail transform — see `railSignature`. */
+  rig: PascalRig;
+  /** The rail world matrices this rig was baked from. */
+  rails: string;
   durationSeconds: number;
   loop: boolean;
 }
@@ -87,6 +99,63 @@ export function getLastCameraFrame(): CameraFrame | null {
   return lastCameraFrame;
 }
 
+/**
+ * A path node's world matrix, from the live object the registry hands back.
+ *
+ * This is how a path node's LOCAL points become the world-space path the library evaluates: the
+ * reader folds this matrix in. Reading the live object rather than the node's stored position is
+ * what makes a rail under a moved parent (a level, a building) come out in the right place —
+ * `position` alone would ignore every transform above it.
+ */
+function pathWorldMatrix(id: string): { elements: ArrayLike<number> } | null {
+  const object = sceneRegistry.nodes.get(id as never) as
+    | { matrixWorld: { elements: ArrayLike<number> } }
+    | undefined;
+  return object ? { elements: object.matrixWorld.elements } : null;
+}
+
+/**
+ * A signature of every rail's live world transform, so the rig re-bakes when one moves.
+ *
+ * Cheap enough per frame: a handful of rails times the four matrix elements that a translation,
+ * rotation or scale must change. Sampling the whole matrix would be no more correct and this stays
+ * a string comparison. What it must NOT do is rebuild the rig unconditionally — sampling a bezier
+ * into a vertex path walks the curve, and doing that every frame for every rail is the cost this
+ * signature exists to avoid.
+ */
+function railSignature(): string {
+  const nodes = useScene.getState().nodes as Record<string, { type?: string }>;
+  let signature = "";
+  for (const id of Object.keys(nodes)) {
+    if (nodes[id]?.type !== PATH_KIND) continue;
+    const matrix = pathWorldMatrix(id);
+    if (!matrix) continue;
+    const e = matrix.elements;
+    signature += `${id}:${e[12]},${e[13]},${e[14]},${e[0]},${e[5]},${e[10]},${e[1]},${e[4]}|`;
+  }
+  return signature;
+}
+
+// Cart frames from the last driven frame, for the rail gizmos. Same reason as the pose above:
+// the DOM and the renderers cannot reach into the director, and a cart's world position is
+// DERIVED from t rather than stored, so there must be exactly one place it is computed.
+let lastCartFrames: ReadonlyMap<string, CartFrameLike> = new Map();
+
+/** Minimal shape of a cart frame, so a renderer can read one without importing the evaluator. */
+export type CartFrameLike = {
+  position: { x: number; y: number; z: number };
+  forward: { x: number; y: number; z: number };
+  up: { x: number; y: number; z: number };
+  right: { x: number; y: number; z: number };
+  distance: number;
+  time: number;
+};
+
+/** Every cart's frame as of the last driven frame, keyed by cart node id. */
+export function getCartFrames(): ReadonlyMap<string, CartFrameLike> {
+  return lastCartFrames;
+}
+
 export function PascalTimeSceneDriver(): null {
   const driver = useMemo(() => new PascalNodeDriver(pascalSceneBinding()), []);
   const director = useMemo(() => new PascalCameraDirector(), []);
@@ -114,6 +183,7 @@ export function PascalTimeSceneDriver(): null {
       driver.release();
       wasDriving.current = false;
       lastCameraFrame = null;
+      lastCartFrames = new Map();
     };
 
     if (!timelineId) {
@@ -133,11 +203,24 @@ export function PascalTimeSceneDriver(): null {
         nodes,
         timeline: stored ? readTimeline(timelineId) : null,
         vcams: readShotDefinitions(timelineId),
+        rig: stored ? readRig(pathWorldMatrix) : emptyRig(),
+        rails: railSignature(),
         durationSeconds: stored?.durationSeconds ?? 0,
         loop: stored?.loop ?? false
       };
     }
-    const { timeline, vcams, durationSeconds, loop } = cache.current;
+
+    // A rail's world matrix is NOT a document change, and it lags one behind it. Moving a path
+    // node replaces the nodes map, but the live object's matrixWorld is only recomposed during the
+    // render that follows — so a rig baked on the document-change frame captures the OLD transform
+    // and, because the cache key was satisfied, never re-bakes. Measured: moving a rail left the
+    // cart exactly where it was, permanently. So the transforms get their own signal.
+    const rails = railSignature();
+    if (cache.current.rails !== rails) {
+      cache.current = { ...cache.current, rig: readRig(pathWorldMatrix), rails };
+    }
+
+    const { timeline, vcams, rig, durationSeconds, loop } = cache.current;
     if (!timeline) {
       releaseIfHolding();
       return;
@@ -155,15 +238,11 @@ export function PascalTimeSceneDriver(): null {
 
     driver.sync(timeline, { time: clock.time, playing: clock.playing, driving: true });
 
-    // The camera has exactly one owner per frame (R9) — and while the AUTHOR is that owner,
-    // the director stands down entirely. Without this, framing a new shot is a fight the
-    // director wins every frame, and "add shot from view" captures the fight instead of the
-    // view. A transport action (play, seek, preview-on) reclaims the camera.
-    if (!clock.cameraFollow) {
-      lastCameraFrame = null;
-      return;
-    }
-
+    // The camera has exactly one owner per frame (R9) — and while the AUTHOR is that owner, the
+    // director writes nothing. It still EVALUATES, because the rails keep moving and their
+    // gizmos read the resolved cart frames; skipping the call entirely would freeze every cart
+    // the moment an author started framing a shot, which is the camera rule leaking into object
+    // driving. A transport action (play, seek, preview-on) reclaims the camera.
     const mounted = state.controls;
     lastCameraFrame = director.sync(state.camera, {
       timeline,
@@ -171,11 +250,14 @@ export function PascalTimeSceneDriver(): null {
       time: clock.time,
       controls: looksLikeCameraControls(mounted) ? mounted : null,
       getTargetPosition: targets.getTargetPosition,
+      rig,
+      cameraFollow: clock.cameraFollow,
       // The composer damps from the previous frame, so it needs both of these. Everything else
       // in the director is a pure function of `time`.
       deltaSeconds: delta,
       playing: clock.playing
     });
+    lastCartFrames = director.frames() as ReadonlyMap<string, CartFrameLike>;
   });
 
   return null;

@@ -111,7 +111,6 @@ export function BufferedEasingEditor({
 /** The camera-language fields of one shot node, re-read whenever the document changes. */
 interface ShotCameraFields {
   name: string;
-  blendSeconds: number;
   blendCurve: Easing;
   fov: number;
   animateFov: boolean;
@@ -130,7 +129,6 @@ function useShotCameraFields(shotId: string | null): ShotCameraFields | null {
   if (!node || node.type !== SHOT_KIND) return null;
   return {
     name: (node.name as string | undefined) ?? shotId,
-    blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
     blendCurve: (node.blendCurve as Easing | undefined) ?? "easeInOut",
     fov: (node.fov as number | undefined) ?? 50,
     animateFov: node.animateFov === true,
@@ -152,13 +150,19 @@ type Facet = "blend" | "lens" | "aim";
  * dock already styles the selected shot from it, and the floating inspector already edits that
  * shot's declarative fields. One notion of "the shot being edited" across all three.
  */
-export function ShotCameraSection(): ReactNode {
+export function ShotCameraSection({
+  blocks
+}: {
+  /** The resolved spans, so the blend copy names the real overlap rather than a stored number. */
+  blocks: Map<string, { start: number; end: number; blendSeconds: number }>;
+}): ReactNode {
   const selectedId = useViewer((s) => s.selection.selectedIds[0] ?? null);
   const shot = useShotCameraFields(selectedId);
   const [facet, setFacet] = useState<Facet>("blend");
   const label = useNodeLabel();
   const viewportSelection = useViewer((s) => s.selection.selectedIds);
   const pipShotId = useStore(pascalTimeTransport, (state) => state.pipShotId);
+  const block = selectedId ? blocks.get(selectedId) : undefined;
 
   if (!selectedId || !shot) {
     // The overlay still renders: a PiP left on while the author deselects the shot should keep
@@ -220,9 +224,9 @@ export function ShotCameraSection(): ReactNode {
       {facet === "blend" ? (
         <>
           <div style={styles.muted}>
-            {shot.blendSeconds > 0
-              ? `Takes over across ${shot.blendSeconds}s — the curve shapes that hand-off.`
-              : "This shot is a cut (blend 0s), so the curve has nothing to shape yet."}
+            {block && block.blendSeconds > 0
+              ? `Overlaps the previous shot by ${block.blendSeconds.toFixed(2)}s — the curve shapes that hand-off. Drag the block's left edge on the lane to lengthen it.`
+              : "A cut: this shot does not overlap the previous one, so there is no hand-off to shape yet. Drag its left edge back over the shot before it."}
           </div>
           <BufferedEasingEditor
             value={shot.blendCurve}

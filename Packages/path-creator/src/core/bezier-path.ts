@@ -20,6 +20,29 @@ export interface SerializedBezierPath {
   globalNormalsAngle: number;
 }
 
+/**
+ * The anchor count implied by an interleaved point list: 3 points per segment plus the final
+ * anchor when open, exactly 3 per anchor when closed.
+ */
+export function bezierAnchorCount(pointCount: number, isClosed: boolean): number {
+  return isClosed ? Math.floor(pointCount / 3) : Math.floor((pointCount + 2) / 3);
+}
+
+/** Pad with 0 / trim to one entry per anchor. See the note in {@link BezierPath.fromJSON}. */
+function normalizeAnchorAngles(
+  angles: readonly number[],
+  pointCount: number,
+  isClosed: boolean
+): number[] {
+  const wanted = bezierAnchorCount(pointCount, isClosed);
+  const out: number[] = [];
+  for (let i = 0; i < wanted; i += 1) {
+    const value = angles[i];
+    out.push(Number.isFinite(value) ? (value as number) : 0);
+  }
+  return out;
+}
+
 export class BezierPath {
   private points: Vec3[];
   private perAnchorNormalsAngle: number[];
@@ -329,8 +352,18 @@ export class BezierPath {
     });
 
     path.points = serialized.points.map((p) => ({ x: p.x, y: p.y, z: p.z }));
-    path.perAnchorNormalsAngle = [...serialized.perAnchorNormalsAngle];
     path.isClosed = serialized.isClosed;
+    // `perAnchorNormalsAngle` is a PARALLEL array to the anchors, and a length mismatch does not
+    // fail — it produces NaN normals, which propagate into every sampled frame's up/right and
+    // then into any cart offset, while `VertexPath.length` still reads correctly. (Measured: an
+    // empty array on a 2-anchor path gives length 10.000 and position NaN.) toJSON always emits
+    // the right length, so this only bites a hand-authored document — which is exactly what a
+    // node-data path in a host application is. Normalize instead of trusting the caller.
+    path.perAnchorNormalsAngle = normalizeAnchorAngles(
+      serialized.perAnchorNormalsAngle,
+      serialized.points.length,
+      serialized.isClosed
+    );
     path.flipNormals = serialized.flipNormals;
     path.globalNormalsAngle = serialized.globalNormalsAngle;
     path.autoControlLength = Math.max(serialized.autoControlLength, 0.01);

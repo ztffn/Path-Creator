@@ -9,11 +9,13 @@ import type {
   CameraBlockLensAnimation,
   ComposerSettings,
   Easing,
+  RigCartDefinition,
+  RigPathDefinition,
   VirtualCameraAimDefinition,
   VirtualCameraDefinition,
   VirtualCameraNoiseSettings
 } from "@huma/path-creator/core";
-import { CUE_KIND, SHOT_KIND, TIMELINE_KIND } from "./kinds";
+import { CART_KIND, CUE_KIND, PATH_KIND, SHOT_KIND, TIMELINE_KIND } from "./kinds";
 
 /**
  * `BaseNode.id` is a plain `z.string()` at runtime — Pascal's own schema file says so, with a
@@ -76,24 +78,34 @@ export function updatePluginNodes(
 }
 
 /**
- * A timeline node with this plugin's defaults, ready to hand to `createPluginNode`. Reads the
- * registered definition rather than duplicating its defaults, so the two cannot drift.
+ * A node of one of this plugin's kinds, with that kind's own defaults. Reads the REGISTERED
+ * definition rather than duplicating its defaults, so the two cannot drift — and throws rather
+ * than silently building a node with no fields when registration has not run, which is trap 3's
+ * failure mode seen from the other side.
  */
-export function buildTimelineNode(
-  overrides: Record<string, unknown> & { id?: string } = {}
+function buildFromDefinition(
+  kind: string,
+  overrides: Record<string, unknown> & { id?: string }
 ): SceneNodeInput {
-  const definition = nodeRegistry.get(TIMELINE_KIND);
+  const definition = nodeRegistry.get(kind);
   if (!definition) {
     throw new Error(
-      `[pascal-time] ${TIMELINE_KIND} is not registered — call registerPascalTimeKinds() at module import time`
+      `[pascal-time] ${kind} is not registered — call registerPascalTimeKinds() at module import time`
     );
   }
   return {
     ...definition.defaults(),
     id: overrides.id ?? newPascalTimeNodeId(),
-    type: TIMELINE_KIND,
+    type: kind,
     ...overrides
   } as SceneNodeInput;
+}
+
+/** A timeline node with this plugin's defaults, ready to hand to `createPluginNode`. */
+export function buildTimelineNode(
+  overrides: Record<string, unknown> & { id?: string } = {}
+): SceneNodeInput {
+  return buildFromDefinition(TIMELINE_KIND, overrides);
 }
 
 /**
@@ -104,18 +116,7 @@ export function buildTimelineNode(
 export function buildCueNode(
   overrides: Record<string, unknown> & { id?: string } = {}
 ): SceneNodeInput {
-  const definition = nodeRegistry.get(CUE_KIND);
-  if (!definition) {
-    throw new Error(
-      `[pascal-time] ${CUE_KIND} is not registered — call registerPascalTimeKinds() at module import time`
-    );
-  }
-  return {
-    ...definition.defaults(),
-    id: overrides.id ?? newPascalTimeNodeId(),
-    type: CUE_KIND,
-    ...overrides
-  } as SceneNodeInput;
+  return buildFromDefinition(CUE_KIND, overrides);
 }
 
 /**
@@ -145,30 +146,37 @@ export function readCues(timelineId?: string): Cue[] {
   return cues;
 }
 
+/** A path node with this plugin's defaults. */
+export function buildPathNode(
+  overrides: Record<string, unknown> & { id?: string } = {}
+): SceneNodeInput {
+  return buildFromDefinition(PATH_KIND, overrides);
+}
+
+/** A cart node with this plugin's defaults. */
+export function buildCartNode(
+  overrides: Record<string, unknown> & { id?: string } = {}
+): SceneNodeInput {
+  return buildFromDefinition(CART_KIND, overrides);
+}
+
 /** A shot node with this plugin's defaults. */
 export function buildShotNode(
   overrides: Record<string, unknown> & { id?: string } = {}
 ): SceneNodeInput {
-  const definition = nodeRegistry.get(SHOT_KIND);
-  if (!definition) {
-    throw new Error(
-      `[pascal-time] ${SHOT_KIND} is not registered — call registerPascalTimeKinds() at module import time`
-    );
-  }
-  return {
-    ...definition.defaults(),
-    id: overrides.id ?? newPascalTimeNodeId(),
-    type: SHOT_KIND,
-    ...overrides
-  } as SceneNodeInput;
+  return buildFromDefinition(SHOT_KIND, overrides);
 }
 
-/** A shot as the time layer sees it: a camera, when it takes over, and how long it takes. */
+/** A shot as the time layer sees it: a camera and the block of time it owns. */
 export interface Shot {
   id: string;
   name: string;
+  /** Block start — when this shot begins taking over. */
   time: number;
-  blendSeconds: number;
+  /** Block end. Past the next shot's start, the excess IS the crossover. */
+  end: number;
+  /** The legacy blend duration, for reconstructing a span on a document that predates one. */
+  legacyBlendSeconds: number;
   definition: VirtualCameraDefinition;
   /** Shape of the blend from the previous shot. Becomes the block's `blendIn.curve`. */
   blendCurve: Easing;
@@ -220,7 +228,15 @@ export function readShots(timelineId?: string): Shot[] {
     const fov = node.fov as number;
 
     const body: VirtualCameraDefinition["body"] =
-      node.body === "orbit"
+      node.body === "cart"
+        ? {
+            type: "cart",
+            cartId: (node.cartId as string | undefined) ?? "",
+            positionOffset: vec3Of(
+              (node.cartOffset as [number, number, number] | undefined) ?? [0, 0, 0]
+            )
+          }
+        : node.body === "orbit"
         ? {
             type: "orbit",
             target:
@@ -245,7 +261,8 @@ export function readShots(timelineId?: string): Shot[] {
       id,
       name: (node.name as string | undefined) ?? id,
       time: (node.timeSeconds as number | undefined) ?? 0,
-      blendSeconds: (node.blendSeconds as number | undefined) ?? 0,
+      end: (node.endSeconds as number | undefined) ?? 0,
+      legacyBlendSeconds: (node.blendSeconds as number | undefined) ?? 0,
       blendCurve: (node.blendCurve as Easing | undefined) ?? "easeInOut",
       ...(lensAnimation && { lensAnimation }),
       definition: {
@@ -336,3 +353,136 @@ function lensAnimationOf(node: Record<string, unknown>): CameraBlockLensAnimatio
   return { fov: { from, to, easing: (node.fovEasing as Easing | undefined) ?? "easeInOut" } };
 }
 const quatOf = ([x, y, z, w]: readonly [number, number, number, number]) => ({ x, y, z, w });
+
+// ---------------------------------------------------------------- rails (M1.7)
+
+/** A path node as the library's rig-document path definition. */
+export interface PathRead {
+  id: string;
+  name: string;
+  definition: RigPathDefinition;
+}
+
+/** A cart node as the library's rig-document cart definition. */
+export interface CartRead {
+  id: string;
+  name: string;
+  definition: RigCartDefinition;
+}
+
+/**
+ * The scene document's rails, as rig path definitions with their points in WORLD space.
+ *
+ * The baking is the whole trick. A path node's points are local to it, so Pascal's own move
+ * gizmo drags the rail with Pascal's own undo — and by folding the node's world matrix in here,
+ * the library still receives a world-space path. Nothing downstream needs a rig transform: cart
+ * frames come out in world space, a cart-bodied camera lands where it looks like it should, and
+ * `resolveVirtualCameraDefinition` never learns that a transform was involved.
+ *
+ * The matrix comes from the LIVE object when the path has mounted, and from the node's own
+ * `position` otherwise — a path read before its renderer mounts (a headless test, the first
+ * frame) still resolves, just without any parent transform above it.
+ */
+export function readPaths(resolveWorldMatrix?: (id: string) => Matrix4Like | null): PathRead[] {
+  const nodes = useScene.getState().nodes as Record<string, Record<string, unknown>>;
+  const paths: PathRead[] = [];
+
+  for (const node of Object.values(nodes)) {
+    if (node.type !== PATH_KIND) continue;
+    const id = node.id as string;
+    const local = (node.points as Vec3Like[] | undefined) ?? [];
+    const world = resolveWorldMatrix?.(id) ?? null;
+    const offset = (node.position as [number, number, number] | undefined) ?? [0, 0, 0];
+
+    paths.push({
+      id,
+      name: (node.name as string | undefined) ?? id,
+      definition: {
+        id,
+        name: (node.name as string | undefined) ?? id,
+        bezier: {
+          points: local.map((point) =>
+            world ? applyMatrix(world, point) : { x: point.x + offset[0], y: point.y + offset[1], z: point.z + offset[2] }
+          ),
+          perAnchorNormalsAngle: [...((node.perAnchorNormalsAngle as number[] | undefined) ?? [])],
+          isClosed: (node.isClosed as boolean | undefined) ?? false,
+          space: (node.space as RigPathDefinition["bezier"]["space"] | undefined) ?? ("xyz" as never),
+          controlMode:
+            (node.controlMode as RigPathDefinition["bezier"]["controlMode"] | undefined) ??
+            ("automatic" as never),
+          autoControlLength: (node.autoControlLength as number | undefined) ?? 0.3,
+          flipNormals: (node.flipNormals as boolean | undefined) ?? false,
+          globalNormalsAngle: (node.globalNormalsAngle as number | undefined) ?? 0
+        },
+        sampling: {
+          maxAngleError: (node.maxAngleError as number | undefined) ?? 0.3,
+          minVertexDistance: (node.minVertexDistance as number | undefined) ?? 0.01,
+          // 0 means adaptive; passing it through would pin every vertex on top of the last.
+          ...((node.spacing as number | undefined) ? { spacing: node.spacing as number } : {})
+        }
+      }
+    });
+  }
+
+  return paths;
+}
+
+/** The scene document's carts. A cart naming no path is returned and skipped by the rig builder. */
+export function readCarts(timelineId?: string): CartRead[] {
+  const nodes = useScene.getState().nodes as Record<string, Record<string, unknown>>;
+  const carts: CartRead[] = [];
+
+  for (const node of Object.values(nodes)) {
+    if (node.type !== CART_KIND) continue;
+    if (timelineId !== undefined && node.timelineId !== timelineId) continue;
+    const id = node.id as string;
+    carts.push({
+      id,
+      name: (node.name as string | undefined) ?? id,
+      definition: {
+        id,
+        name: (node.name as string | undefined) ?? id,
+        pathId: (node.pathId as string | undefined) ?? "",
+        distance: (node.distance as number | undefined) ?? 0,
+        speed: (node.speed as number | undefined) ?? 0,
+        endOfPathInstruction:
+          (node.endOfPathInstruction as RigCartDefinition["endOfPathInstruction"] | undefined) ??
+          ("loop" as never),
+        orientationMode:
+          (node.orientationMode as RigCartDefinition["orientationMode"] | undefined) ??
+          "path-frame",
+        positionOffset: vec3Of(
+          (node.positionOffset as [number, number, number] | undefined) ?? [0, 0, 0]
+        )
+      }
+    });
+  }
+
+  return carts;
+}
+
+/** The 16 elements of a column-major 4x4, which is what three's `Matrix4.elements` is. */
+export interface Matrix4Like {
+  elements: ArrayLike<number>;
+}
+
+interface Vec3Like {
+  x: number;
+  y: number;
+  z: number;
+}
+
+/**
+ * Point times matrix, written out rather than pulled from three — this module is the document
+ * layer and stays free of a runtime three import so it can be read on a server.
+ */
+function applyMatrix(matrix: Matrix4Like, point: Vec3Like): Vec3Like {
+  const e = matrix.elements;
+  const w = e[3]! * point.x + e[7]! * point.y + e[11]! * point.z + e[15]!;
+  const inv = w === 0 ? 1 : 1 / w;
+  return {
+    x: (e[0]! * point.x + e[4]! * point.y + e[8]! * point.z + e[12]!) * inv,
+    y: (e[1]! * point.x + e[5]! * point.y + e[9]! * point.z + e[13]!) * inv,
+    z: (e[2]! * point.x + e[6]! * point.y + e[10]! * point.z + e[14]!) * inv
+  };
+}

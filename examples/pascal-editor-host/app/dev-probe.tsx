@@ -14,6 +14,8 @@ import { Vector3 } from "three";
 import {
   buildTimelineNode,
   createPluginNode,
+  getCartFrames,
+  getLastCameraFrame,
   getPipFrame,
   getViewportCameraPose,
   installPascalTimeOnScene,
@@ -21,6 +23,9 @@ import {
   putTrack,
   readCues,
   readShots,
+  PASCAL_OVERLAY_LAYER,
+  PATH_EDIT_GROUP,
+  readRig,
   readStoredTimeline,
   readTimeline,
   TIMELINE_KIND,
@@ -81,6 +86,23 @@ type EditorProbe = {
   } | null;
   /** The camera blocks evaluation actually reads — persisted, or synthesised from shot nodes. */
   cameraBlocks(): unknown[];
+  /**
+   * What the director last APPLIED, and which shot it resolved. A mid-blend frame belongs to no
+   * single shot, so a check comparing the PiP against "the shot it names" has to know whether the
+   * PiP took the applied pose or resolved the shot itself.
+   */
+  appliedCamera(): { vcamId: string | null; position: [number, number, number] } | null;
+  /** The rails: each path's sampled length, so a dolly run can be checked against the rail. */
+  railLengths(): Record<string, number>;
+  /** Every cart's resolved frame position, derived from the timeline rather than stored. */
+  cartPositions(): Record<string, [number, number, number]>;
+  /**
+   * The rail-handle overlay as the SCENE sees it: how many objects it mounted, and whether they
+   * are on Pascal's overlay layer. The handles are R3F, so the DOM cannot see them, and being on
+   * the wrong layer is a silent failure — Pascal's post pass composes fixed layer sets, so a
+   * subtree anywhere else is in no pass and simply never drawn.
+   */
+  pathHandles(): { mounted: boolean; objects: number; onOverlayLayer: number };
   /** Select a node the way a viewport click would — the Key button reads this. */
   selectNode(id: string): void;
   /** Select several, as a shift-click would. The aim affordance needs a shot AND its subject. */
@@ -229,6 +251,48 @@ const cameraBlocks = (): unknown[] => {
   return track && "blocks" in track ? (track.blocks as unknown[]) : [];
 };
 
+const pathHandles = (): { mounted: boolean; objects: number; onOverlayLayer: number } => {
+  const anyObject = sceneRegistry.nodes.values().next().value;
+  let root = anyObject;
+  while (root?.parent) root = root.parent;
+  const group = root?.getObjectByName(PATH_EDIT_GROUP);
+  if (!group) return { mounted: false, objects: 0, onOverlayLayer: 0 };
+  let objects = 0;
+  let onOverlayLayer = 0;
+  group.traverse((object) => {
+    // Skip the named root: it is this package's own wrapper, added so a headless check can find
+    // the subtree, and it draws nothing. What matters is that everything INSIDE it is on the
+    // layer Pascal's overlay pass renders.
+    if (object === group) return;
+    objects += 1;
+    if (object.layers.isEnabled(PASCAL_OVERLAY_LAYER)) onOverlayLayer += 1;
+  });
+  return { mounted: true, objects, onOverlayLayer };
+};
+
+const appliedCamera = (): { vcamId: string | null; position: [number, number, number] } | null => {
+  const frame = getLastCameraFrame();
+  if (!frame) return null;
+  const { x, y, z } = frame.snapshot.position;
+  return { vcamId: frame.vcamId, position: [x, y, z] };
+};
+
+/** Each rail's sampled length. A run rides `[0, length]`, so this is what a check compares to. */
+const railLengths = (): Record<string, number> => {
+  const out: Record<string, number> = {};
+  for (const [id, path] of readRig().paths) out[id] = path.length;
+  return out;
+};
+
+/** Cart positions as the driver last resolved them — derived from t, never stored on the node. */
+const cartPositions = (): Record<string, [number, number, number]> => {
+  const out: Record<string, [number, number, number]> = {};
+  for (const [id, frame] of getCartFrames()) {
+    out[id] = [frame.position.x, frame.position.y, frame.position.z];
+  }
+  return out;
+};
+
 /**
  * A shot's resolved pose at a time, computed independently of the PiP's own render pass. The
  * measure compares the two: if the inset agreed with itself but not with the shot it names, the
@@ -314,6 +378,10 @@ export function DevProbe() {
         exportGlb,
         shotSnapshotAt,
         cameraBlocks,
+        appliedCamera,
+        railLengths,
+        cartPositions,
+        pathHandles,
         selectNode,
         selectNodes,
         setInputDragging,

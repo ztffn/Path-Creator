@@ -10,7 +10,9 @@ import {
   stepComposerAim,
   type RigComposerState
 } from "@huma/path-creator/three";
+import { emptyRig, type PascalRig } from "../plugin/timeline-io";
 import type {
+  CartFrame,
   QuaternionLike,
   Timeline,
   Vec3,
@@ -50,6 +52,22 @@ export interface CameraDriveInput {
    * camera — that is R9, and it is the whole reason this parameter exists.
    */
   controls?: CameraControlsLike | null;
+  /**
+   * The rails: vertex paths, the carts riding them, and which path each cart is on (M1.7). This
+   * is the library's own `RigRuntime` shape, so a cart-bodied shot resolves with no adapter and
+   * cart tracks position their carts from `t` rather than being stepped. Omit it for a scene
+   * with no rails.
+   */
+  rig?: PascalRig;
+  /**
+   * Whether the director may WRITE the camera this frame. False means the author has taken it
+   * (R9: one owner per frame) — the timeline is still evaluated, because the rails keep moving
+   * and their gizmos read the resolved cart frames, but nothing touches the camera.
+   *
+   * The distinction matters: skipping the whole `sync` instead would freeze every cart the
+   * moment an author started framing a shot, which is a camera rule leaking into object driving.
+   */
+  cameraFollow?: boolean;
   /** Resolves an orbit shot's target by node id. See `pascalTargetContext`. */
   getTargetPosition?: (targetId: string) => Vec3 | null;
   getTargetOrientation?: (targetId: string) => QuaternionLike | null;
@@ -65,6 +83,8 @@ export interface CameraDriveInput {
 
 export interface CameraFrame {
   snapshot: VirtualCameraSnapshot;
+  /** Every cart's frame at this time, keyed by cart node id — what the rail gizmos ride. */
+  cartFrames: Map<string, CartFrame>;
   /** The shot id in force, or null in a gap. */
   vcamId: string | null;
   /** 1 outside a blend window. */
@@ -73,8 +93,9 @@ export interface CameraFrame {
   composedTarget: Vec3 | null;
 }
 
-/** Pascal has no dolly rails, so the rig half of the evaluation context is empty by design. */
-const EMPTY_RIG = { paths: new Map(), carts: new Map(), cartPaths: new Map() };
+/** What a scene with no rails evaluates against. M1.7 gave Pascal rails; a scene may still
+ *  have none, and then this is what a caller omitting `rig` gets. */
+const NO_RAILS = emptyRig();
 
 const forward = new Vector3();
 const lookTarget = new Vector3();
@@ -118,12 +139,23 @@ export class PascalCameraDirector {
    * own, seeded from the resolved snapshot each frame.
    */
   private readonly composerCamera = new PerspectiveCamera();
+  /**
+   * The cart frames from the last evaluation, kept even when no shot is in force. The rail
+   * gizmos read this: a cart's world position is derived from `t`, never stored, so there is
+   * exactly one place it is computed and everything that draws a cart reads that.
+   */
+  private cartFrames: Map<string, CartFrame> = new Map();
+
+  /** Every cart's frame as of the last `sync`, keyed by cart node id. */
+  frames(): ReadonlyMap<string, CartFrame> {
+    return this.cartFrames;
+  }
 
   sync(camera: Camera, input: CameraDriveInput): CameraFrame | null {
     const sample = evaluateTimeline(
       input.timeline,
       {
-        rig: EMPTY_RIG,
+        rig: input.rig ?? NO_RAILS,
         vcams: input.vcams,
         ...(input.getTargetPosition && { getTargetPosition: input.getTargetPosition }),
         ...(input.getTargetOrientation && { getTargetOrientation: input.getTargetOrientation })
@@ -131,9 +163,21 @@ export class PascalCameraDirector {
       input.time
     );
 
+    // Cart frames are resolved whether or not a shot is in force — the rail gizmos ride them,
+    // and a scene can have a moving cart with no camera on it at all.
+    this.cartFrames = sample.cartFrames;
+
     if (!sample.camera) {
       // No shot in force: forget the composed orientation, so the next shot that takes over
       // reseeds from its own body pose instead of damping out of a stale frame.
+      this.composer.vcamId = null;
+      return null;
+    }
+
+    if (input.cameraFollow === false) {
+      // Evaluated, not applied. Forget the composed orientation too: when the author hands the
+      // camera back, the shot that reclaims it should reseed from its own body pose rather than
+      // damping out of wherever the author left the view.
       this.composer.vcamId = null;
       return null;
     }
@@ -145,7 +189,13 @@ export class PascalCameraDirector {
       : null;
 
     this.apply(camera, sample.camera, definition, input.controls ?? null, composedTarget);
-    return { snapshot: sample.camera, vcamId, blendProgress: sample.blendProgress, composedTarget };
+    return {
+      snapshot: sample.camera,
+      cartFrames: sample.cartFrames,
+      vcamId,
+      blendProgress: sample.blendProgress,
+      composedTarget
+    };
   }
 
   /**

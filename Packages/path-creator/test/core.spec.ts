@@ -1,5 +1,14 @@
 import { describe, expect, it } from "vitest";
-import { BezierPath, ControlMode, EndOfPathInstruction, PathSpace, VertexPath } from "../src/core";
+import {
+  bezierAnchorCount,
+  BezierPath,
+  ControlMode,
+  createPathCart,
+  EndOfPathInstruction,
+  PathSpace,
+  sampleCartFrame,
+  VertexPath
+} from "../src/core";
 
 describe("VertexPath.resolveDistance", () => {
   const path = new VertexPath(
@@ -165,5 +174,54 @@ describe("BezierPath editing operations", () => {
 
     expect(bezier.numAnchorPoints).toBe(beforeAnchors);
     expect(afterControl.x !== beforeControl.x || afterControl.y !== beforeControl.y || afterControl.z !== beforeControl.z).toBe(true);
+  });
+});
+
+describe("fromJSON normalizes the per-anchor normals array", () => {
+  const straight = {
+    points: [
+      { x: 0, y: 0, z: 0 },
+      { x: 3, y: 0, z: 0 },
+      { x: 7, y: 0, z: 0 },
+      { x: 10, y: 0, z: 0 }
+    ],
+    isClosed: false,
+    space: PathSpace.XYZ,
+    controlMode: ControlMode.Automatic,
+    autoControlLength: 0.3,
+    flipNormals: false,
+    globalNormalsAngle: 0
+  };
+
+  it("pads a short array to one entry per anchor", () => {
+    const path = BezierPath.fromJSON({ ...straight, perAnchorNormalsAngle: [] });
+    expect(path.toJSON().perAnchorNormalsAngle).toEqual([0, 0]);
+  });
+
+  it("trims a long one, and replaces a non-finite entry", () => {
+    const path = BezierPath.fromJSON({
+      ...straight,
+      perAnchorNormalsAngle: [12, Number.NaN, 4, 9]
+    });
+    expect(path.toJSON().perAnchorNormalsAngle).toEqual([12, 0]);
+  });
+
+  it("a short array no longer yields NaN frames — the silent failure this fixes", () => {
+    // A length mismatch did not throw: it produced NaN normals that propagated into every
+    // sampled frame, while VertexPath.length still read correctly. So the symptom was a camera
+    // at NaN with a path that measured 10 m.
+    const path = BezierPath.fromJSON({ ...straight, perAnchorNormalsAngle: [] });
+    const vertexPath = new VertexPath(path, { maxAngleError: 0.3, minVertexDistance: 0.01 });
+    const cart = createPathCart({ distance: 5 });
+    const frame = sampleCartFrame(vertexPath, cart, 5);
+    expect(Number.isFinite(frame.position.x)).toBe(true);
+    expect(frame.position.x).toBeCloseTo(5, 1);
+    expect(Number.isFinite(frame.up.y)).toBe(true);
+  });
+
+  it("bezierAnchorCount counts open and closed point lists", () => {
+    expect(bezierAnchorCount(4, false)).toBe(2);
+    expect(bezierAnchorCount(7, false)).toBe(3);
+    expect(bezierAnchorCount(6, true)).toBe(2);
   });
 });

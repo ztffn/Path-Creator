@@ -13,6 +13,8 @@ export const PASCAL_TIME_PLUGIN_ID = "huma-time";
 export const TIMELINE_KIND = "huma-time:timeline";
 export const CUE_KIND = "huma-time:cue";
 export const SHOT_KIND = "huma-time:shot";
+export const PATH_KIND = "huma-time:path";
+export const CART_KIND = "huma-time:cart";
 
 /**
  * The scene's clock. One per scene document: it is what tracks, cues and shots hang off, and
@@ -101,16 +103,36 @@ export const ShotNode = BaseNode.extend({
   type: z.literal(SHOT_KIND).default(SHOT_KIND),
   /** Which clock `timeSeconds` is measured on. A field, not `parentId` — `parentId` is spatial. */
   timelineId: z.string().default(""),
-  /** When this shot takes over. */
+  /** When this shot takes over — the start of its block. */
   timeSeconds: z.number().min(0).default(0),
-  /** Seconds to blend in from the previous shot. 0 is a cut. */
+  /**
+   * When this shot's block ends. A shot whose block ENDS AFTER the next shot's begins overlaps
+   * it, and that overlap **is** the crossover: the blend's duration is derived from it, exactly
+   * as `@huma/path-creator`'s own demo derives it. So the thing an author drags on the lane is
+   * the thing that shapes the hand-off, rather than a number typed somewhere else.
+   *
+   * `end <= start` reads as UNSET, which is how a document written before this field existed
+   * still plays: `readShots` falls back to the legacy `blendSeconds` layout below. A load does
+   * not rewrite what it loaded — the same rule the synthesised camera track follows.
+   */
+  endSeconds: z.number().min(0).default(0),
+  /**
+   * **Legacy.** Before the span above, a shot carried its blend as a duration and blocks abutted.
+   * Nothing authors this any more and it is not an inspector field; it survives only so that
+   * `readShots` can reconstruct the same picture for a document that predates `endSeconds`.
+   */
   blendSeconds: z.number().min(0).default(1),
 
-  body: z.enum(["static", "orbit"]).default("static"),
+  body: z.enum(["static", "orbit", "cart"]).default("static"),
   /** Static body: where the camera is. Also where the gizmo draws, for both bodies. */
   position: Vec3Tuple.default([0, 2, 6]),
   /** Static body: where it looks, as Euler degrees. */
   rotationDeg: Vec3Tuple.default([0, 0, 0]),
+
+  /** Cart body (M1.7): the cart node this shot rides. The rail supplies the pose. */
+  cartId: z.string().default(""),
+  /** Cart body: rail-local offset from the cart — x right, y up, z forward. */
+  cartOffset: Vec3Tuple.default([0, 0, 0]),
 
   /** Orbit body: the node to frame. Empty means use `targetPoint` instead. */
   targetNodeId: z.string().default(""),
@@ -130,7 +152,8 @@ export const ShotNode = BaseNode.extend({
   /**
    * How this shot's blend from the previous one is shaped. A preset name or a full custom curve
    * — the library's `VirtualCameraBlendCurve` is an `Easing`, and this carries all of it. It
-   * only matters when `blendSeconds > 0`; a cut ignores the curve entirely.
+   * only matters when this shot overlaps the previous one; with no overlap the cut has no
+   * hand-off to shape.
    *
    * Not an inspector field: there is no declarative field kind for a curve. The panel mounts
    * `EasingEditor` for it, which is the widget the library already shipped for exactly this.
@@ -208,3 +231,82 @@ export const ShotNode = BaseNode.extend({
   noiseRotationFrequencyDeg: Vec3Tuple.default([1, 1, 1])
 });
 export type ShotNodeType = z.infer<typeof ShotNode>;
+
+/**
+ * A rail: an editable cubic bezier the author draws in the viewport, and the oldest strength of
+ * `@huma/path-creator`. Under the classification test this is as spatial as a kind gets — a
+ * person places every control point — so it parents where spatial things parent and it draws.
+ *
+ * **The points are LOCAL to this node, and that is load-bearing.** The reader bakes the node's
+ * world matrix into them when it builds the `BezierPath`, so the library always receives a
+ * world-space path and every cart frame is world-space. That is what lets Pascal's own move
+ * gizmo drag the whole rail — with Pascal's own undo — instead of this package inventing a rig
+ * transform and threading it through the library's resolve context.
+ *
+ * The field names mirror `SerializedBezierPath` exactly, because `BezierPath.fromJSON` takes that
+ * shape and a translation layer between two identical shapes is a place for them to drift.
+ * Points are `{x,y,z}` objects for the same reason, even though every other vector on these kinds
+ * is a tuple (tuples are what Pascal's `vec3` inspector field wants; a point list is never one).
+ */
+export const PathNode = BaseNode.extend({
+  type: z.literal(PATH_KIND).default(PATH_KIND),
+  /** Anchor/control points, interleaved as `BezierPath` stores them. Local to this node. */
+  points: z.array(z.object({ x: z.number(), y: z.number(), z: z.number() })).default([]),
+  perAnchorNormalsAngle: z.array(z.number()).default([]),
+  isClosed: z.boolean().default(false),
+  /** Which axes the path is free in. `xyz` is a full 3D rail; `xz` keeps it on the ground plane. */
+  space: z.enum(["xyz", "xz", "xy"]).default("xyz"),
+  controlMode: z.enum(["aligned", "mirrored", "free", "automatic"]).default("automatic"),
+  /** Floored at 0.01 by `BezierPath` itself; the schema agrees rather than allowing a 0 it
+   *  would silently raise. */
+  autoControlLength: z.number().min(0.01).default(0.3),
+  flipNormals: z.boolean().default(false),
+  globalNormalsAngle: z.number().default(0),
+
+  /** Sampling tolerances for the vertex path the runtime actually measures distance along. */
+  maxAngleError: z.number().min(0).default(0.3),
+  minVertexDistance: z.number().min(0).default(0.01),
+  /** Fixed spacing in metres; 0 means adaptive (use `maxAngleError` instead). */
+  spacing: z.number().min(0).default(0),
+
+  /** Where the node sits. The points above are measured from here. */
+  position: Vec3Tuple.default([0, 0, 0])
+});
+export type PathNodeType = z.infer<typeof PathNode>;
+
+/**
+ * A cart riding a rail — Cinemachine's dolly cart. It names its path by id, so moving or
+ * reshaping the rail moves the cart with no edit here at all.
+ *
+ * It has no position, deliberately, and this is the one kind where that is interesting: a cart
+ * IS placed by a person, but placed *along a path by distance* rather than in space. Its world
+ * position is derived every frame from the rail, so storing one would create a second, always
+ * stale answer to where it is. It still draws (the rail gizmo), so it parents at the root where
+ * spatial things parent — trap 11's rule applies to anything that draws, not just to anything
+ * with a position.
+ *
+ * `distance` here is the cart's RESTING place. Where it sits at time t is a cart track's
+ * business; with no track it holds this distance.
+ */
+export const CartNode = BaseNode.extend({
+  type: z.literal(CART_KIND).default(CART_KIND),
+  /** Which clock a cart track for this cart is measured on. A field, like the shot's. */
+  timelineId: z.string().default(""),
+  /** The path node this cart rides. Empty means the cart is inert. */
+  pathId: z.string().default(""),
+  /** Resting distance along the rail, in metres. */
+  distance: z.number().default(0),
+  /** Metres per second, for the live (non-timeline) advance. 0 leaves it to the timeline. */
+  speed: z.number().default(0),
+  /** What happens at the end of the rail. */
+  endOfPathInstruction: z.enum(["loop", "reverse", "stop"]).default("loop"),
+  /**
+   * `path-frame` banks with the rail (full frame), `path-yaw` follows the rail's heading with a
+   * level horizon, `fixed` keeps a world orientation. All three, because the library has all
+   * three — a narrower mirror would reject a document that used the one it left out.
+   */
+  orientationMode: z.enum(["path-frame", "path-yaw", "fixed"]).default("path-frame"),
+  /** Rail-local offset — x along right, y along up, z along forward. */
+  positionOffset: Vec3Tuple.default([0, 0, 0])
+});
+export type CartNodeType = z.infer<typeof CartNode>;

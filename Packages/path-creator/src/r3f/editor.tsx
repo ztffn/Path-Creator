@@ -40,11 +40,16 @@ export function useEditorHelpersVisible(visible = true, layer = EDITOR_HELPERS_L
   const raycaster = useThree((state) => state.raycaster);
   useEffect(() => {
     if (!visible) return;
-    camera.layers.enable(layer);
-    raycaster.layers.enable(layer);
+    // Restore, do not just disable. A host may render helpers on a layer it ALREADY had enabled
+    // — an editor whose own gizmos share that layer, for instance — and unconditionally disabling
+    // on unmount would silently turn the host's own overlays and picking off.
+    const cameraHad = camera.layers.isEnabled(layer);
+    const raycasterHad = raycaster.layers.isEnabled(layer);
+    if (!cameraHad) camera.layers.enable(layer);
+    if (!raycasterHad) raycaster.layers.enable(layer);
     return () => {
-      camera.layers.disable(layer);
-      raycaster.layers.disable(layer);
+      if (!cameraHad) camera.layers.disable(layer);
+      if (!raycasterHad) raycaster.layers.disable(layer);
     };
   }, [camera, layer, raycaster, visible]);
 }

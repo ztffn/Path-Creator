@@ -7,7 +7,11 @@
 "use client";
 
 import { Editor } from "@pascal-app/editor";
-import { PascalTimeCameraPip, PascalTimeSceneDriver } from "@huma/pascal-time";
+import {
+  PascalTimeCameraPip,
+  PascalTimePathEditOverlay,
+  PascalTimeSceneDriver
+} from "@huma/pascal-time";
 import { CameraProbeBridge } from "./camera-probe";
 import { DevProbe } from "./dev-probe";
 
@@ -25,6 +29,10 @@ export default function Home() {
             {/* After the driver, so the inset renders from the pose the director just applied.
                 It draws at useFrame priority 2 — behind Pascal's post pass at 1. */}
             <PascalTimeCameraPip />
+            {/* Rail handles for the path the panel has in shape mode. Renders on Pascal's own
+                overlay layer — the post pass composes fixed layer sets, so anywhere else is
+                silently never drawn. */}
+            <PascalTimePathEditOverlay />
             <CameraProbeBridge />
           </>
         }
