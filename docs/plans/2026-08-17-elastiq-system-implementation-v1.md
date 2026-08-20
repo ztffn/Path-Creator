@@ -835,7 +835,7 @@ that gap. They are independent of M2/M3 and of each other except where noted; ea
 same shape as M1.3 — reuse the library's implementation, author through Pascal nodes and the
 panel, prove in the browser measure. The pascal-plugin skill carries the traps.
 
-### M1.7 — Rails: paths, carts, and cart-bodied shots *(L)*
+### M1.7 — Rails: paths, carts, and cart-bodied shots — **DONE** (2026-08-20)
 
 The library's oldest strength, absent from the plugin entirely. `VirtualCameraBodyDefinition`
 already has a `cart` body; the lane editor already has dolly lanes with speed-profile
@@ -851,6 +851,95 @@ arrays by the dock; the demo has path/dolly inspectors and the WebGPU-safe `RigL
   already exist, no-op'd); `showDollyEntries` flips back on for this host.
 - **Done when:** an author draws a path in the viewport, a shot rides it between two times with
   an eased speed profile, and the dock shows the run with its sparkline. Measured end to end.
+
+**Delivered.** `huma-time:path` is a rail whose field names mirror `SerializedBezierPath` exactly,
+and whose **points are local to the node** — the reader folds the node's world matrix into them, so
+the library always receives a world-space path and every cart frame comes out in world space. That
+one decision is what lets *Pascal's own* move and rotate gizmos drag a whole rail, with Pascal's
+own undo, instead of this package inventing a rig transform and threading it through the library's
+resolve context. `huma-time:cart` rides one by id, and has no position and no move gizmo on
+purpose: a cart is placed *along a path by distance*, its world position is derived every frame,
+and storing one would be a second always-stale answer to where it is. A shot's `body: "cart"` names
+a cart; where the cart is at `t` is a **cart track's** business, so a dolly run is a track like any
+other and a shot says only which rail it is on.
+
+**Viewport shaping is the library's `PathEditor`, injected twice.** It was already controlled, so
+what a Pascal host must supply is two things and both fail silently: `gizmo={TransformGizmo}`
+(drei's `PivotControls` draws fat lines, which three's WebGPU backend cannot auto-map — it loses
+the device), and a **helpers layer**, which is the finding worth carrying: Pascal's post-processing
+composes the frame from passes with FIXED layer sets, so a subtree on the library's own reserved
+helper layer is in no pass and is **never drawn**, however the camera's mask is configured. With
+post-processing disabled it renders fine, which is what makes it a trap rather than a bug. The
+handles belong on Pascal's `OVERLAY_LAYER`, where its own gizmos live; the library gained an
+optional `helpersLayer` prop for it and a spec pins the number against Pascal's real export.
+
+**Two library bugs surfaced and were fixed at the source.** `perAnchorNormalsAngle` is a parallel
+array to the anchors, and a length mismatch does not fail — it yields NaN normals that propagate
+into every sampled frame's up/right and then into any cart offset, while `VertexPath.length` still
+reads correctly. So the symptom is a camera at NaN on a rail that measures 10 m. `toJSON` always
+emits the right length, so it only bites a hand-authored document, which is exactly what node data
+is; `fromJSON` now normalizes, with the NaN case kept as a regression test. Separately,
+`useEditorHelpersVisible` disabled its layer unconditionally on unmount, which would have turned
+off Pascal's own gizmo picking — it now restores the prior state.
+
+**The rig is built tolerantly, where `buildRigRuntime` throws.** Rejecting a cart that names an
+unknown path is right for a finished document loaded whole and wrong mid-edit: a cart exists for a
+moment before its path is chosen, and a path can be deleted while a cart still names it. Throwing
+would take the viewer down during authoring, so such a cart is skipped and the director's existing
+"write nothing at all" handles the rest.
+
+**One library asymmetry is worth remembering:** a `CartKey`'s easing shapes the segment AFTER it,
+while a `TransformKey`'s eases INTO it. Putting a run's curve on the wrong key is not an error — it
+is a run that quietly stays linear, so a control test pins it.
+
+**A bug the browser found and the headless suite now pins.** A rail's world transform is NOT a
+document change and it lags one frame behind one: moving a path node replaces the nodes map, but
+the live object's `matrixWorld` is only recomposed during the render that follows. So a rig cached
+on the document-change frame baked the OLD transform and, its cache key satisfied, never re-baked —
+moving a rail left the cart exactly where it was, permanently. The driver now watches the rail
+transforms as their own signal, cheaply enough to check per frame without re-walking a curve.
+
+**Evidence.** 86 browser checks became **113**, and the new ones are driven through the panel's own
+controls and the real viewport: a rail is authored and samples at 8.00 m the moment it exists;
+every one of its 28 handle objects sits on Pascal's overlay layer; a real mouse drag on a handle
+reshapes the document by 0.227 m and costs no more undo entries at 24 pointer moves than at 6; the
+run rides the whole rail eased from its first key; the dolly lane shows the run with its speed
+sparkline; the cart travels 10.87 m as the clock advances with **no position anywhere in the
+document**; a cart-bodied shot puts the viewport camera on its cart to **1.99e-15 m** and rides
+10.87 m through the controller; and moving the rail moves the shot riding it by exactly the 5 m the
+rail moved, with no timeline edit at all. Plus 203 plugin tests (from 155) and 256 in the library.
+
+### M1.7a — A shot owns a block, and the overlap is the crossover *(2026-08-20)*
+
+Raised by the product owner while M1.7 was in flight, and it was a model gap rather than a UI one.
+The demo gives each shot an independent start and end, draws blocks at exactly those times so
+consecutive shots overlap, and **derives** the blend from the overlap. What this plugin had — a
+`blendSeconds` number on the shot, with `synthesiseCameraTrack` making blocks abut — was wrong in
+three ways, and only the first is cosmetic: the lane drew a hard seam over a real ramp, the
+crossover was editable only by typing a number, and the lane's own drag handler *kept* blocks
+abutting, so pushing one block over the next merely pushed the next along in front of it and an
+overlap could not exist.
+
+The library was already on the demo's side: `evaluateCameraTrack` takes the last block whose start
+has passed, so overlapping blocks blend correctly, and `gapMode` defaults to `hold`, so an explicit
+end does not release the camera early. So this was a plugin-side choice, now corrected — the shot
+carries a span, `readShotBlocks` derives the blend from the overlap, and the lane draws and drags
+it. The one thing the demo leaves on the table is the curve, which it hardcodes to `easeInOut`; the
+overlap now gives the blend its length and M1.8's `blendCurve` gives it its shape.
+
+**The migration runs at read time and does not rewrite the document.** An `endSeconds` at or before
+the start reads as unset, and the legacy layout is reconstructed *as an overlap*: blocks abut and
+the next shot's old `blendSeconds` becomes the overlap that produces the crossover it used to
+describe. A control drives the same moment both ways and checks the camera lands in the same place.
+`blendSeconds` survives in the schema only for that reconstruction — nothing authors it, and it is
+deliberately not an inspector field, because the blend's duration now has exactly one home.
+
+**Measured through the panel:** each shot owns a real span; the second shot's blend equals its
+overlap with the first to 1e-6; moving a shot's start back over its predecessor lengthens the
+crossover to 3.00 s; mid-crossover the viewport camera sits 1.55 m from one shot and 4.44 m from
+the other across a 5.99 m gap, so the hand-off is real rather than a cut; the overlapping block
+names its crossover on the lane; and seeking to an overlapped shot lands where it fully owns the
+frame.
 
 ### M1.8 — The camera language: blends, easing, lens, overrides, PiP — **DONE** (2026-08-19)
 
