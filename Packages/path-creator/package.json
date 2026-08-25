@@ -51,6 +51,7 @@
   ],
   "scripts": {
     "build": "tsup",
+    "publish:github": "npm run build && node scripts/publish-github.mjs",
     "test": "vitest run",
     "lint": "tsc --noEmit",
     "clean": "rm -rf dist"
