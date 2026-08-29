@@ -1,0 +1,57 @@
+/* Stage chrome for the logo intro preview. The .anim-piece / .letter rules are the
+   ones the artwork depends on: transform-box fill-box makes a group scale about its
+   OWN bbox, and the starting opacity of 0 is what a piece falls back to before its
+   animation's backwards fill takes over. */
+.logo-stage {
+  position: relative;
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: radial-gradient(ellipse at center, #1c1d14 0%, #0f100b 55%, #060704 100%);
+  overflow: hidden;
+}
+
+/* Each wrapper must carry a definite size, or the percentage height on the wrap below
+   has nothing to resolve against and the artwork falls back to its intrinsic size. */
+.logo-stage__pulse,
+.logo-stage__shake1,
+.logo-stage__shake2 {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 100%;
+  height: 100%;
+}
+
+/* Sized off the STAGE HEIGHT rather than a fixed width: the panel below is twelve lanes
+   tall, so a width-driven logo overflows the space that is left and the wordmark — the
+   part being timed — is the half that gets cut off. */
+.logo-stage__wrap {
+  position: relative;
+  height: 86%;
+  aspect-ratio: 901 / 1037;
+}
+
+.logo-stage__artwork,
+.logo-stage__artwork svg {
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.logo-stage__wrap .anim-piece,
+.logo-stage__wrap .letter {
+  opacity: 0;
+  transform-box: fill-box;
+  transform-origin: 50% 50%;
+}
+
+.logo-stage__flash {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  opacity: 0;
+  background: radial-gradient(ellipse at center, rgba(230, 225, 210, 0.9) 0%, rgba(230, 225, 210, 0) 70%);
+}
