@@ -372,6 +372,10 @@ export function TimelineLanes({
   const suppressClickSelectRef = useRef<string | null>(null);
   const keyHandlerRef = useRef<(event: KeyboardEvent) => void>(() => {});
   const panelCleanupRef = useRef<(() => void) | null>(null);
+  const scrollCleanupRef = useRef<(() => void) | null>(null);
+  // Read by the scroll handler, which is registered once and so must not close over a theme.
+  const rulerBackgroundRef = useRef<string>(t.panelBackground);
+  rulerBackgroundRef.current = t.panelBackground;
   const laneAreaRef = useRef<HTMLDivElement>(null);
   // The rubber band, in coordinates local to the lane area. Null when not banding —
   // a mousedown does not start one until the pointer has travelled far enough to be a
@@ -537,6 +541,33 @@ export function TimelineLanes({
     event.stopPropagation();
     nudgeSelection(direction * (nudgeSeconds ?? snapSeconds) * (event.shiftKey ? 10 : 1));
   };
+
+  /**
+   * Keeps the embedded editor's time ruler in view while the lanes scroll under it.
+   *
+   * `position: sticky` cannot do this: the editor and the div wrapping it are both
+   * `overflow: hidden`, so each is its own scroll container and the ruler would stick to a
+   * box that never scrolls. Offsetting it by the scroll position is the same effect without
+   * touching the third-party layout — and it only runs when the content actually exceeds
+   * the cap, so a host that shows all its lanes is untouched.
+   */
+  const attachScroller = useCallback((node: HTMLDivElement | null) => {
+    scrollCleanupRef.current?.();
+    scrollCleanupRef.current = null;
+    if (!node) return;
+    const pin = () => {
+      const ruler = node.querySelector<HTMLElement>(".timeline-editor-time-area");
+      if (!ruler) return;
+      const offset = node.scrollTop;
+      ruler.style.transform = offset > 0 ? `translateY(${offset}px)` : "";
+      ruler.style.zIndex = "3";
+      // Opaque, or the lane blocks passing underneath show through the ruler.
+      ruler.style.background = rulerBackgroundRef.current;
+    };
+    node.addEventListener("scroll", pin, { passive: true });
+    pin();
+    scrollCleanupRef.current = () => node.removeEventListener("scroll", pin);
+  }, []);
 
   /**
    * A CALLBACK ref, not `useRef` plus an empty-dependency effect. StrictMode's simulated
@@ -715,6 +746,7 @@ export function TimelineLanes({
 
         {(
           <div
+            ref={attachScroller}
             style={{
               display: "flex",
               alignItems: "flex-start",

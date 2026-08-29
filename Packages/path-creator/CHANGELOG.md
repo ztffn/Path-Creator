@@ -43,9 +43,11 @@ All notable changes to `@huma/path-creator` are documented here.
     carries a permanently empty shot row.
   - `maxVisibleLanes` (default `3`) — the cap that protects a 3D editing viewport from a
     tall show was a module constant, so a host that owns the whole panel could not opt out.
-    One lane per animated element hits it immediately. Note the embedded editor's time ruler
-    scrolls away with the rows once the cap is exceeded, so sizing this to the lane count is
-    better than scrolling.
+    One lane per animated element hits it immediately. The embedded editor's time ruler stays
+    in view when the lanes scroll under it — pinned by offsetting it against the scroll
+    position, because the editor and the div wrapping it are both `overflow: hidden`, so each
+    is its own scroll container and `position: sticky` would pin the ruler to a box that never
+    scrolls.
   - `snapSeconds` (default `0.25`) — drag/resize quantum, and the minimum clip length. A
     quarter second suits a camera show and cannot express the 50-80 ms spacing of element
     timings on a title animation.
