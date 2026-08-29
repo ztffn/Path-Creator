@@ -8,7 +8,8 @@ import {
   replacePiece,
   retimePiece,
   retimePieces,
-  timingSource
+  timingFile,
+  timingJson
 } from "./logo-timing";
 
 const piece = (id: string) => {
@@ -80,10 +81,25 @@ describe("logo timing model", () => {
     expect(list.find((p) => p.id === "dagger")).toBe(piece("dagger"));
   });
 
-  it("prints a step only for pieces that have one", () => {
-    const source = timingSource(DEFAULT_PIECES);
-    expect(source).toContain("dagger: { delay: 1050, duration: 450 }");
-    expect(source).toContain("distant-letters: { delay: 2190, duration: 200, step: 70 }");
+  it("exports a step only for pieces that have one", () => {
+    const file = timingFile(DEFAULT_PIECES);
+    expect(file.pieces.dagger).toEqual({ delay: 1050, duration: 450 });
+    expect(file.pieces["distant-letters"]).toEqual({ delay: 2190, duration: 200, step: 70 });
+  });
+
+  it("serialises to valid JSON that round-trips", () => {
+    // The printer this replaced emitted a `var T` literal with hyphenated ids as unquoted
+    // keys, so its output did not parse at all. Parsing the export is the regression test.
+    const parsed = JSON.parse(timingJson(DEFAULT_PIECES));
+    expect(parsed.version).toBe(1);
+    expect(Object.keys(parsed.pieces)).toHaveLength(DEFAULT_PIECES.length);
+    expect(parsed.pieces["impact-shake"].delay).toBe(550);
+  });
+
+  it("names every piece the renderer has to place", () => {
+    // A piece missing from the file is a piece the renderer would fall back on, silently.
+    const file = timingFile(DEFAULT_PIECES);
+    for (const piece of DEFAULT_PIECES) expect(file.pieces[piece.id]).toBeDefined();
   });
 });
 

@@ -259,18 +259,42 @@ export function introEndSec(pieces: LogoPiece[]): number {
     .reduce((latest, piece) => Math.max(latest, pieceBlock(piece).end), 0);
 }
 
+/** Schema version of the exported timing file. Bumped if a field changes meaning. */
+export const TIMING_FORMAT_VERSION = 1;
+
+export interface TimingFile {
+  version: number;
+  /** Keyed by piece id; `step` is present only for a staggered piece. */
+  pieces: Record<string, { delay: number; duration: number; step?: number }>;
+}
+
 /**
- * The timing table as pasteable source for the renderer's `T` constants
- * (tools/logo-video/render-logo-intro.mjs in the distantfront project). Emitting the
- * numbers the renderer already names is the whole point of the round trip — a table
- * that needed hand-translation would just be a second place to make a mistake.
+ * The edited timings as the file the offline renderer reads
+ * (`tools/logo-video/render-logo-intro.mjs --timings` in the distantfront project).
+ *
+ * JSON rather than pasteable source, and this replaced a printer that emitted a `var T`
+ * literal: piece ids contain hyphens, so every one of them was an unquoted object key and
+ * the output was not valid JavaScript at all. A data file also means the renderer has no
+ * second copy of the timeline to keep in sync — it derives both the picture and its
+ * procedural score from these numbers.
  */
-export function timingSource(pieces: LogoPiece[]): string {
-  const rows = pieces.flatMap((piece) => {
-    const entries = [`    ${piece.id}: { delay: ${piece.delayMs}, duration: ${piece.durationMs}`];
-    if (piece.stepMs > 0) entries.push(`, step: ${piece.stepMs}`);
-    entries.push(" }");
-    return entries.join("");
-  });
-  return `  var T = {\n${rows.join(",\n")}\n  };`;
+export function timingFile(pieces: LogoPiece[]): TimingFile {
+  return {
+    version: TIMING_FORMAT_VERSION,
+    pieces: Object.fromEntries(
+      pieces.map((piece) => [
+        piece.id,
+        {
+          delay: piece.delayMs,
+          duration: piece.durationMs,
+          ...(piece.stepMs > 0 && { step: piece.stepMs })
+        }
+      ])
+    )
+  };
+}
+
+/** The same thing serialised, for the export panel and the download. */
+export function timingJson(pieces: LogoPiece[]): string {
+  return JSON.stringify(timingFile(pieces), null, 2);
 }

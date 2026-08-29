@@ -17,7 +17,7 @@ import {
   introEndSec,
   pieceBlock,
   retimePieces,
-  timingSource,
+  timingJson,
   type LogoPiece
 } from "./logo-timing";
 
@@ -135,7 +135,24 @@ export function App() {
             +100 ms after playhead
           </button>
           <button onClick={() => setShowSource((open) => !open)}>
-            {showSource ? "Hide source" : "Export timings"}
+            {showSource ? "Hide JSON" : "Export timings"}
+          </button>
+          <button
+            onClick={() => {
+              // A real file, because the renderer reads one — copying JSON out of a <pre>
+              // is the step where a timing quietly loses a digit.
+              const url = URL.createObjectURL(
+                new Blob([timingJson(pieces)], { type: "application/json" })
+              );
+              const link = document.createElement("a");
+              link.href = url;
+              link.download = "logo-timing.json";
+              link.click();
+              URL.revokeObjectURL(url);
+            }}
+            title="Save logo-timing.json for tools/logo-video/render-logo-intro.mjs"
+          >
+            Download JSON
           </button>
           <button
             onClick={() => {
@@ -163,7 +180,7 @@ export function App() {
             color: "#c8c2b4"
           }}
         >
-          {timingSource(pieces)}
+          {timingJson(pieces)}
         </pre>
       )}
 

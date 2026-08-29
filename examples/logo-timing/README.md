@@ -75,7 +75,17 @@ its duration.
 
 ## Where the numbers go
 
-The export prints the `T` table read by `tools/logo-video/render-logo-intro.mjs` in the
-distantfront project, which renders this same SVG to video offline. The artwork here
-(`distant-front-logo.svg`) is a copy of that project's `design/logo/animated/` source; the
-element ids are the contract the timing model addresses, so renaming one silently drops its lane.
+**Export timings** shows the JSON and **Download JSON** saves `logo-timing.json`, which is
+what `tools/logo-video/render-logo-intro.mjs` in the distantfront project reads — it renders
+this same SVG to video offline, and derives both the picture and its procedural score from
+that file, so retiming a piece carries its sound along. Drop the download at
+`design/logo/animated/logo-timing.json` and re-run the renderer.
+
+It emits JSON rather than pasteable source for a reason worth keeping: the first version
+printed a `var T = { … }` literal, and piece ids contain hyphens, so every key was an
+unquoted identifier and the output did not parse at all. A data file also means the renderer
+holds no second copy of the timeline to drift from this one.
+
+The artwork here (`distant-front-logo.svg`) is a copy of that project's
+`design/logo/animated/` source; the element ids are the contract the timing model addresses,
+so renaming one silently drops its lane.
