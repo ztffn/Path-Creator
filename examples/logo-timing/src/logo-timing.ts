@@ -3,6 +3,8 @@
 // so drag/resize semantics and the source export are unit-testable, and so the lane
 // editor edits a value rather than reaching into the animation. Spans are seconds
 // because TimelineLanes speaks seconds; the piece records are milliseconds like the CSS.
+import type { Easing } from "@huma/path-creator/core";
+import { CSS_EASE_IN_OUT, CSS_EASE_OUT, bezierEasing, easingToCss } from "./easing-css";
 
 /** A target element, and which way a mirrored motion travels for it. */
 export interface LogoTarget {
@@ -34,7 +36,8 @@ export interface LogoPiece {
   durationMs: number;
   /** Milliseconds between successive targets. Zero when the targets move together. */
   stepMs: number;
-  easing: string;
+  /** The authored curve, in the package's model. CSS is derived by `easingToCss`. */
+  easing: Easing;
   motion: LogoMotion;
   /** Repeats forever from its delay (the idle glow), so its block end is nominal. */
   loop?: boolean;
@@ -58,7 +61,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 0,
     durationMs: 560,
     stepMs: 0,
-    easing: "cubic-bezier(.2,.8,.3,1.05)",
+    easing: bezierEasing(0.2, 0.8, 0.3, 1.05),
     motion: { type: "scaleIn", from: 0.25, overshoot: 1.06 }
   },
   {
@@ -85,7 +88,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 650,
     durationMs: 340,
     stepMs: 0,
-    easing: "cubic-bezier(.22,.61,.36,1)",
+    easing: bezierEasing(0.22, 0.61, 0.36, 1),
     motion: { type: "slideX", fromPx: 220 }
   },
   {
@@ -97,7 +100,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 1050,
     durationMs: 450,
     stepMs: 0,
-    easing: "cubic-bezier(.16,1,.3,1)",
+    easing: bezierEasing(0.16, 1, 0.3, 1),
     motion: { type: "dropIn", fromPx: 230, overshootPx: -16 }
   },
   {
@@ -121,7 +124,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 1880,
     durationMs: 260,
     stepMs: 0,
-    easing: "ease-out",
+    easing: bezierEasing(CSS_EASE_OUT.x1, CSS_EASE_OUT.y1, CSS_EASE_OUT.x2, CSS_EASE_OUT.y2),
     motion: { type: "glint" }
   },
   {
@@ -136,7 +139,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 2140,
     durationMs: 300,
     stepMs: 0,
-    easing: "cubic-bezier(.22,.61,.36,1)",
+    easing: bezierEasing(0.22, 0.61, 0.36, 1),
     motion: { type: "slideX", fromPx: 240 }
   },
   {
@@ -151,7 +154,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 2190,
     durationMs: 200,
     stepMs: 70,
-    easing: "ease-out",
+    easing: bezierEasing(CSS_EASE_OUT.x1, CSS_EASE_OUT.y1, CSS_EASE_OUT.x2, CSS_EASE_OUT.y2),
     motion: { type: "pop", fromPx: 22 }
   },
   {
@@ -163,7 +166,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 2490,
     durationMs: 200,
     stepMs: 80,
-    easing: "ease-out",
+    easing: bezierEasing(CSS_EASE_OUT.x1, CSS_EASE_OUT.y1, CSS_EASE_OUT.x2, CSS_EASE_OUT.y2),
     motion: { type: "pop", fromPx: 18 }
   },
   {
@@ -175,7 +178,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 3090,
     durationMs: 340,
     stepMs: 0,
-    easing: "ease-out",
+    easing: bezierEasing(CSS_EASE_OUT.x1, CSS_EASE_OUT.y1, CSS_EASE_OUT.x2, CSS_EASE_OUT.y2),
     motion: { type: "pulse", scale: 1.045 }
   },
   {
@@ -187,7 +190,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 3090,
     durationMs: 420,
     stepMs: 0,
-    easing: "ease-out",
+    easing: bezierEasing(CSS_EASE_OUT.x1, CSS_EASE_OUT.y1, CSS_EASE_OUT.x2, CSS_EASE_OUT.y2),
     motion: { type: "flash", peak: 0.55 }
   },
   {
@@ -199,7 +202,7 @@ export const DEFAULT_PIECES: LogoPiece[] = [
     delayMs: 3540,
     durationMs: 3200,
     stepMs: 0,
-    easing: "ease-in-out",
+    easing: bezierEasing(CSS_EASE_IN_OUT.x1, CSS_EASE_IN_OUT.y1, CSS_EASE_IN_OUT.x2, CSS_EASE_IN_OUT.y2),
     motion: { type: "glow", fromPx: 6, toPx: 22 },
     loop: true
   }
@@ -231,6 +234,11 @@ export function retimePiece(piece: LogoPiece, startSec: number, endSec: number):
   return { ...piece, delayMs, durationMs, stepMs: Math.max(0, Math.round((spanMs - durationMs) / gaps)) };
 }
 
+/** Author a new curve for one piece. */
+export function setPieceEasing(pieces: LogoPiece[], id: string, easing: Easing): LogoPiece[] {
+  return pieces.map((piece) => (piece.id === id ? { ...piece, easing } : piece));
+}
+
 export function replacePiece(pieces: LogoPiece[], next: LogoPiece): LogoPiece[] {
   return pieces.map((piece) => (piece.id === next.id ? next : piece));
 }
@@ -260,12 +268,12 @@ export function introEndSec(pieces: LogoPiece[]): number {
 }
 
 /** Schema version of the exported timing file. Bumped if a field changes meaning. */
-export const TIMING_FORMAT_VERSION = 1;
+export const TIMING_FORMAT_VERSION = 2;
 
 export interface TimingFile {
   version: number;
   /** Keyed by piece id; `step` is present only for a staggered piece. */
-  pieces: Record<string, { delay: number; duration: number; step?: number }>;
+  pieces: Record<string, { delay: number; duration: number; step?: number; easing: string }>;
 }
 
 /**
@@ -287,7 +295,8 @@ export function timingFile(pieces: LogoPiece[]): TimingFile {
         {
           delay: piece.delayMs,
           duration: piece.durationMs,
-          ...(piece.stepMs > 0 && { step: piece.stepMs })
+          ...(piece.stepMs > 0 && { step: piece.stepMs }),
+          easing: easingToCss(piece.easing)
         }
       ])
     )

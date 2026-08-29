@@ -83,15 +83,24 @@ describe("logo timing model", () => {
 
   it("exports a step only for pieces that have one", () => {
     const file = timingFile(DEFAULT_PIECES);
-    expect(file.pieces.dagger).toEqual({ delay: 1050, duration: 450 });
-    expect(file.pieces["distant-letters"]).toEqual({ delay: 2190, duration: 200, step: 70 });
+    expect(file.pieces.dagger).toMatchObject({ delay: 1050, duration: 450 });
+    expect(file.pieces.dagger).not.toHaveProperty("step");
+    expect(file.pieces["distant-letters"]).toMatchObject({ delay: 2190, duration: 200, step: 70 });
+  });
+
+  it("resolves every piece's curve to CSS the renderer can hand straight to WAAPI", () => {
+    const file = timingFile(DEFAULT_PIECES);
+    for (const piece of DEFAULT_PIECES) expect(file.pieces[piece.id]?.easing).toBeTruthy();
+    // The authored single-bezier curves keep their exact spelling rather than being sampled.
+    expect(file.pieces.dagger?.easing).toBe("cubic-bezier(0.16,1,0.3,1)");
+    expect(file.pieces["impact-shake"]?.easing).toBe("linear");
   });
 
   it("serialises to valid JSON that round-trips", () => {
     // The printer this replaced emitted a `var T` literal with hyphenated ids as unquoted
     // keys, so its output did not parse at all. Parsing the export is the regression test.
     const parsed = JSON.parse(timingJson(DEFAULT_PIECES));
-    expect(parsed.version).toBe(1);
+    expect(parsed.version).toBe(2);
     expect(Object.keys(parsed.pieces)).toHaveLength(DEFAULT_PIECES.length);
     expect(parsed.pieces["impact-shake"].delay).toBe(550);
   });

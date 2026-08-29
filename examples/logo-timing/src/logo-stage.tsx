@@ -6,6 +6,7 @@
 import { forwardRef, useEffect, useImperativeHandle, useRef } from "react";
 import logoSvg from "./distant-front-logo.svg?raw";
 import { type LogoPiece, type LogoTarget } from "./logo-timing";
+import { easingToCss } from "./easing-css";
 import "./logo-stage.css";
 
 /** The logo's own CSS sizes it at 480px; px-valued effects are authored against that. */
@@ -125,7 +126,7 @@ export const LogoStage = forwardRef<LogoStageHandle, { pieces: LogoPiece[] }>(
           const animation = element.animate(keyframesFor(piece, target, scale), {
             delay: piece.delayMs + index * piece.stepMs,
             duration: piece.durationMs,
-            easing: piece.easing,
+            easing: easingToCss(piece.easing),
             // `both` is load-bearing: backwards fill is what holds a piece off-screen
             // before its delay, and forwards fill is what keeps it placed afterwards.
             fill: "both",

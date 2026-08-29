@@ -5,6 +5,7 @@
 // panel prints the edited timings back as source for the offline renderer.
 import { useEffect, useMemo, useRef, useState } from "react";
 import {
+  EasingEditor,
   TimelineLanes,
   rippleClips,
   type ExtraClipMove,
@@ -12,11 +13,13 @@ import {
 } from "@huma/path-creator/timeline-ui";
 import { createTimelinePlayer } from "@huma/path-creator/timeline";
 import { LogoStage, type LogoStageHandle } from "./logo-stage";
+import { easingToCss } from "./easing-css";
 import {
   DEFAULT_PIECES,
   introEndSec,
   pieceBlock,
   retimePieces,
+  setPieceEasing,
   timingJson,
   type LogoPiece
 } from "./logo-timing";
@@ -25,6 +28,11 @@ import {
 const TAIL_SECONDS = 1.5;
 /** 10 ms: the intro's own numbers are 50-80 ms apart, so a coarser grid cannot hit them. */
 const SNAP_SECONDS = 0.01;
+
+/** A sampled curve is 33 numbers; show enough to tell it apart, not all of it. */
+function shortEasing(css: string): string {
+  return css.length <= 46 ? css : `${css.slice(0, 43)}…)`;
+}
 
 const THEME = {
   panelBackground: "#12140e",
@@ -100,6 +108,12 @@ export function App() {
     [pieces, activeAt]
   );
 
+  const selectedPiece = pieces.find((piece) => piece.id === selectedLaneId) ?? null;
+  // What the timing file will carry for this curve — a single cubic-bezier keeps its exact
+  // CSS spelling, anything else is sampled, and seeing which is which avoids a surprise
+  // when the same curve is read back by the renderer.
+  const easingPreview = selectedPiece ? shortEasing(easingToCss(selectedPiece.easing)) : "";
+
   /** Insert or remove time at the playhead: everything starting after it shifts. */
   const ripple = (deltaSeconds: number) => {
     const clips: ExtraClipMove[] = pieces.map((piece) => ({
@@ -165,7 +179,38 @@ export function App() {
         </span>
       </header>
 
-      <LogoStage ref={stageRef} pieces={pieces} />
+      <div style={{ flex: 1, minHeight: 0, display: "flex" }}>
+        <LogoStage ref={stageRef} pieces={pieces} />
+        {selectedPiece && (
+          <aside
+            style={{
+              width: 320,
+              flex: "0 0 auto",
+              padding: "12px 14px",
+              borderLeft: "1px solid rgba(147, 127, 96, 0.35)",
+              background: "#12140e",
+              overflowY: "auto"
+            }}
+          >
+            <div style={{ fontSize: 12, letterSpacing: "0.14em", marginBottom: 2 }}>
+              {selectedPiece.label.toUpperCase()}
+            </div>
+            <div style={{ fontSize: 11, color: "#8b8a78", marginBottom: 10 }}>
+              Easing — how the {selectedPiece.durationMs} ms move is distributed. Drag an
+              anchor or its handles; the preview updates as you scrub.
+            </div>
+            <EasingEditor
+              value={selectedPiece.easing}
+              onChange={(next) => setPieces((current) => setPieceEasing(current, selectedPiece.id, next))}
+              height={150}
+              theme={{ background: "#0f100b", grid: "rgba(147,127,96,0.18)" }}
+            />
+            <div style={{ fontSize: 10, color: "#6b6a5a", marginTop: 10, lineHeight: 1.5 }}>
+              Exported as <code>{easingPreview}</code>
+            </div>
+          </aside>
+        )}
+      </div>
 
       {showSource && (
         <pre

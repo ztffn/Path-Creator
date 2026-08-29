@@ -33,7 +33,8 @@ Still camera-shaped, and deliberately left alone: the transport prints a `PiP` s
 
 | File | What it owns |
 |---|---|
-| `logo-timing.ts` | The show as DATA — one record per timed piece — plus the drag/resize semantics and the source export. Pure, and where the tests are. |
+| `logo-timing.ts` | The show as DATA — one record per timed piece — plus the drag/resize semantics and the file export. Pure, and where the tests are. |
+| `easing-css.ts` | The bridge from the package's `Easing` model to a CSS timing function. |
 | `logo-stage.tsx` | The preview. Builds one PAUSED animation per target and seeks them. |
 | `App.tsx` | The clock, the lane wiring, and the export panel. |
 
@@ -65,6 +66,23 @@ The two header buttons are the operation you actually reach for most: ripple. Th
 everything starting at or after the playhead, which is how you buy 100 ms for the dagger
 without selecting the eight things that follow it. That is `rippleClips` from the package —
 the arithmetic is exported, the button is the demo's.
+
+## Easing
+
+Selecting a lane opens the package's `EasingEditor` beside the stage, bound to that piece's
+curve — timing is only half of what makes an intro land, and "the dagger should hit harder"
+is a curve change, not a delay change.
+
+The model carries the package's own `Easing` value and resolves it to CSS at the edge
+(`easing-css.ts`), because `Element.animate` takes a CSS timing function and `Easing` is a
+preset name or a multi-anchor curve. A single cubic-bezier keeps its exact CSS spelling;
+anything else is sampled into CSS `linear()`, which can express a curve with more than one
+inflection that no single cubic-bezier can. The panel shows which form the export takes.
+
+Worth knowing: the package's `easeIn`, `easeOut` and `easeInOut` presets are its own
+polynomials and differ from the CSS keywords of the same name by up to 0.069 of progress —
+measured, and pinned by a test. Mapping them onto the keywords would render a curve the
+editor never drew, so only `linear` is spelled directly and the rest are sampled.
 
 ## Resizing a stagger
 
