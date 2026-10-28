@@ -43,6 +43,12 @@ pnpm dev:demo
 
 Demo files are intentionally excluded from npm output.
 
+Publishing (from `Packages/path-creator`, source name `@huma/path-creator`, published as
+`@ztffn/path-creator`):
+- `pnpm publish:npm` — npmjs, public. Needs `npm login`; 2FA is prompted interactively
+  (run in a real terminal) or passed as `NPM_OTP=<code>`.
+- `pnpm publish:github` — GitHub Packages. Needs `GH_PACKAGES_TOKEN` or `gh auth`.
+
 ## Design + Tracking Docs
 
 - `docs/plans/2026-03-07-path-creator-r3f-port-design.md`

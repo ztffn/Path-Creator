@@ -4,9 +4,15 @@ Path creation and runtime sampling primitives for Three.js + React Three Fiber.
 
 ## Install
 
+The package is published to npmjs as `@ztffn/path-creator` (public, no token needed).
+Install it under its source name with an npm alias so imports stay `@huma/path-creator/...`:
+
 ```bash
-npm install @huma/path-creator three
+npm install @huma/path-creator@npm:@ztffn/path-creator three
 ```
+
+The same name is also on GitHub Packages (`npm.pkg.github.com`), which needs a GitHub
+token with `read:packages`; npmjs is the recommended source.
 
 If you use the React hooks, also install:
 
