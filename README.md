@@ -1,24 +1,21 @@
 # Path Creator for Three.js + React Three Fiber
 
-A runtime-first port of the ideas behind Seb Lague's Unity Path Creator, rebuilt for modern web 3D workflows.
+A runtime-first toolkit for editable cubic Bezier paths, precise sampling, and path-driven motion in web 3D applications.
 
-This repository is not trying to mirror the Unity editor. It is focused on the parts that matter in production: editable cubic Bezier paths, reliable sampling, path-following runtime logic, and Three.js/R3F integration that can actually drive scenes, cameras, and animation.
+This library focuses on the parts that matter in production: clean path math, reliable sampling, path-following runtime logic, and Three.js/R3F integrations that can drive scenes, cameras, and animation.
 
 ## Why this exists
 
-Path tools are usually either:
+Web 3D projects often need more than a visual curve. They need path data that can be queried, sampled, and used at runtime for motion, camera rails, and procedural animation.
 
-- editor-heavy and tied to a specific app model, or
-- math libraries with no runtime behavior to drive real objects.
-
-This project sits in the middle:
+This project brings those concerns together in one reusable package:
 
 - core path math is framework-agnostic
 - Three.js adapters produce geometry and camera rails
 - R3F hooks let you animate objects along a path in real apps
 - the demo is only for validation, not a published package concern
 
-The goal is practical parity with the runtime concepts of Path Creator, not a 1:1 Unity editor clone.
+The goal is practical, reusable runtime behavior for path-based motion in modern web 3D apps.
 
 ## What is included
 
